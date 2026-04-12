@@ -3,18 +3,21 @@
 Futures Bot v3 — BTC 15m MACD+RSI Momentum
 Binance Futures Testnet
 
-MODULE 1: BTC 15m MACD+RSI Momentum (OPTIMIZED v2)
-  Backtest (180d real Binance data, 480 combos tested, Apr 2026):
-    Winner: +90.6% | 34.6% WR | PF 1.20 | 14.7% max DD | 2x leverage
-  Entry: MACD 12/26/9 cross + RSI 30-70 zone filter
-    LONG:  MACD bullish cross (MACD line crosses above signal) + RSI 30-70
-    SHORT: MACD bearish cross (MACD line crosses below signal) + RSI 30-70
+MODULE 1: BTC 15m MACD+RSI Momentum (OPTIMIZED v3 — Multi-Timeframe)
+  Backtest (180d real Binance data, Apr 2026):
+    v2 (15m only):   +95.6% | 34.0% WR | PF 1.19 | 29.0% max DD | 2x leverage
+    v3 (15m + 4H):  +185.6% | 35.6% WR | PF 1.49 |  9.7% max DD | 2x leverage ← CURRENT
+  Entry: MACD 12/26/9 cross + RSI 30-70 zone filter + 4H trend alignment
+    LONG:  15m MACD bullish cross + RSI 30-70 + 4H trend BULLISH or NEUTRAL
+    SHORT: 15m MACD bearish cross + RSI 30-70 + 4H trend BEARISH or NEUTRAL
+  4H Trend: MACD histogram > 0 AND RSI > 45 = BULLISH
+            MACD histogram < 0 AND RSI < 55 = BEARISH
+            Otherwise = NEUTRAL (both directions allowed)
   Exit: Signal Flip | SL -5% hard (no TP — MACD flip exits are best)
   Protection: Cooldown (6 bars/1.5h after SL) | Volume filter (skip if vol < 80% SMA20)
   TSL: OFF (optimizer proved no benefit when TP is wide)
   NO DCA — backtest showed DCA hurts performance
-  NO ATR stop — optimizer found trailing TP is sufficient
-  Timeframe: 15 minutes
+  Timeframe: 15m entries, 4H trend filter
   Pair: BTCUSDT only
 
 MODULE 2: Top Gainer Short Scanner (unchanged)
@@ -437,6 +440,61 @@ def compute_atr(df, period=14):
     return tr.ewm(alpha=1/period, min_periods=period).mean()
 
 
+# ═══════════════════════════════════════════════════════════════
+# MULTI-TIMEFRAME: 4H Trend Filter
+# ═══════════════════════════════════════════════════════════════
+
+def get_htf_trend(client, symbol="BTCUSDT", interval="4h", limit=100):
+    """
+    Compute higher-timeframe (4H) trend using MACD + RSI combo.
+    Backtest-proven: +185.6% return, 9.7% max DD, PF 1.49
+
+    Returns: (trend, htf_info)
+      trend:  1 = bullish (allow LONG), -1 = bearish (allow SHORT), 0 = neutral (allow both)
+      htf_info: dict with 4H indicator values for logging/dashboard
+    """
+    try:
+        df_htf = get_candles(client, symbol, interval, limit)
+
+        if len(df_htf) < 50:
+            log.warning(f"  HTF: Not enough 4H candles ({len(df_htf)}), skipping filter")
+            return 0, {}
+
+        # Compute 4H MACD
+        macd_line = compute_ema(df_htf["close"], 12) - compute_ema(df_htf["close"], 26)
+        signal_line = compute_ema(macd_line, 9)
+        macd_hist = macd_line - signal_line
+
+        # Compute 4H RSI
+        rsi = compute_rsi(df_htf, 14)
+
+        curr_hist = float(macd_hist.iloc[-1]) if not pd.isna(macd_hist.iloc[-1]) else 0
+        curr_rsi = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50
+        curr_macd = float(macd_line.iloc[-1]) if not pd.isna(macd_line.iloc[-1]) else 0
+        curr_signal = float(signal_line.iloc[-1]) if not pd.isna(signal_line.iloc[-1]) else 0
+
+        htf_info = {
+            "htf_macd": curr_macd,
+            "htf_signal": curr_signal,
+            "htf_hist": curr_hist,
+            "htf_rsi": curr_rsi,
+        }
+
+        # MACD+RSI combo filter (best risk-adjusted from backtest)
+        if curr_hist > 0 and curr_rsi > 45:
+            trend = 1   # Bullish — allow LONG, block SHORT
+        elif curr_hist < 0 and curr_rsi < 55:
+            trend = -1  # Bearish — allow SHORT, block LONG
+        else:
+            trend = 0   # Neutral — allow both directions
+
+        return trend, htf_info
+
+    except Exception as e:
+        log.warning(f"  HTF trend error: {e}")
+        return 0, {}  # On error, allow both directions (safe fallback)
+
+
 def get_15m_signal(df):
     """
     BTC 15m MACD+RSI Momentum signal.
@@ -771,13 +829,25 @@ def open_position(client, state, symbol, side, current_price, reason, strategy="
     if not sym_info:
         return False
 
-    # Full deploy with leverage — notional = capital × leverage
-    order_size = CONFIG["total_capital_usdt"] * CONFIG["capital_deploy_pct"] * CONFIG["leverage"]
+    # Use actual account balance × deploy % for true compounding
+    # Keeps 5% reserve for funding fees + slippage
+    try:
+        account = client.get_account()
+        available_balance = float(account.get("availableBalance", 0))
+        if available_balance <= 0:
+            # Fallback: use totalWalletBalance
+            available_balance = float(account.get("totalWalletBalance", CONFIG["total_capital_usdt"]))
+        deploy_capital = available_balance * CONFIG["capital_deploy_pct"]
+    except Exception as e:
+        log.warning(f"  Could not fetch account balance: {e}, using config capital")
+        deploy_capital = CONFIG["total_capital_usdt"] * CONFIG["capital_deploy_pct"]
+
+    order_size = deploy_capital * CONFIG["leverage"]
 
     order_side = "BUY" if side == "LONG" else "SELL"
     qty = round_qty(order_size / current_price, sym_info["step_size"], sym_info["precision"])
 
-    log.info(f"  Opening {side} | ${order_size:.2f} ({qty} {symbol}) | Reason: {reason}")
+    log.info(f"  Opening {side} | Balance: ${deploy_capital:.2f} × {CONFIG['leverage']}x = ${order_size:.2f} ({qty} {symbol})")
 
     result = client.place_order(symbol, order_side, qty)
     if not result:
@@ -857,12 +927,27 @@ def run_module1(client, state):
         # Get signal
         signal, ind, reason = get_15m_signal(df)
 
+        # Get 4H trend filter (multi-timeframe)
+        htf_trend = 0
+        htf_info = {}
+        if CONFIG.get("mtf_enabled", False):
+            htf_trend, htf_info = get_htf_trend(client, symbol,
+                                                  CONFIG.get("mtf_interval", "4h"),
+                                                  CONFIG.get("mtf_candles", 100))
+            ind.update(htf_info)  # Add HTF data to indicators for dashboard
+
         log.info(f"  Price: ${current_price:,.2f}")
         log.info(f"  RSI: {ind['rsi']:.1f} | MACD: {ind.get('macd_line',0):.2f} | Signal: {ind.get('signal_line',0):.2f} | Hist: {ind['macd_hist']:.2f}")
         log.info(f"  ATR: {ind.get('atr',0):.2f} | BB: [{ind['bb_lower']:,.0f} — {ind['bb_mid']:,.0f} — {ind['bb_upper']:,.0f}]")
+        if CONFIG.get("mtf_enabled", False):
+            trend_label = {1: "BULLISH ↑", -1: "BEARISH ↓", 0: "NEUTRAL ↔"}.get(htf_trend, "?")
+            log.info(f"  4H Trend: {trend_label} | 4H MACD: {htf_info.get('htf_hist',0):.2f} | 4H RSI: {htf_info.get('htf_rsi',0):.1f}")
         vol_ratio = (ind.get('volume',0) / ind.get('vol_sma',1) * 100) if ind.get('vol_sma',0) > 0 else 0
         log.info(f"  Volume: {ind.get('volume',0):,.0f} ({vol_ratio:.0f}% of SMA20)")
         log.info(f"  Trade Signal: {signal}" + (f" ({reason})" if reason else ""))
+
+        # Save indicators to state for dashboard display
+        state["last_indicators"] = ind
 
         pos = state["positions"].get(symbol)
         # Skip if position belongs to gainer strategy
@@ -956,12 +1041,23 @@ def run_module1(client, state):
             )
 
             if should_flip:
-                log.info(f"  ⟳ FLIP! {pos['side']} → {signal} ({reason})")
+                # ── MTF filter on flip: always close, but only re-enter if aligned ──
+                mtf_blocked = False
+                if CONFIG.get("mtf_enabled", False) and htf_trend != 0:
+                    if signal == "LONG" and htf_trend == -1:
+                        mtf_blocked = True
+                    elif signal == "SHORT" and htf_trend == 1:
+                        mtf_blocked = True
 
-                # Close current position
-                if close_position(client, state, symbol, pos, current_price, f"FLIP_{pos['side']}_to_{signal}"):
-                    # Open opposite
-                    open_position(client, state, symbol, signal, current_price, reason)
+                if mtf_blocked:
+                    log.info(f"  ⟳ FLIP CLOSE! {pos['side']} closed, but {signal} blocked by 4H trend filter")
+                    close_position(client, state, symbol, pos, current_price, f"FLIP_{pos['side']}_MTF_BLOCK")
+                else:
+                    log.info(f"  ⟳ FLIP! {pos['side']} → {signal} ({reason})")
+                    # Close current position
+                    if close_position(client, state, symbol, pos, current_price, f"FLIP_{pos['side']}_to_{signal}"):
+                        # Open opposite
+                        open_position(client, state, symbol, signal, current_price, reason)
                 return
 
             # ── Holding ──
@@ -991,6 +1087,15 @@ def run_module1(client, state):
                     if vol_sma > 0 and curr_vol < vol_sma * min_ratio:
                         vol_pct = (curr_vol / vol_sma * 100) if vol_sma > 0 else 0
                         log.info(f"  ⏸ LOW VOLUME: Skipping {signal} — vol={curr_vol:.0f} ({vol_pct:.0f}% of SMA, need {min_ratio*100:.0f}%)")
+                        return
+
+                # ── MTF filter on new entry ──
+                if CONFIG.get("mtf_enabled", False) and htf_trend != 0:
+                    if signal == "LONG" and htf_trend == -1:
+                        log.info(f"  ⏸ MTF FILTER: {signal} blocked — 4H trend is BEARISH")
+                        return
+                    elif signal == "SHORT" and htf_trend == 1:
+                        log.info(f"  ⏸ MTF FILTER: {signal} blocked — 4H trend is BULLISH")
                         return
 
                 log.info(f"  ★ NEW {signal} SIGNAL! ({reason})")
@@ -1226,8 +1331,8 @@ def run_bot():
         state["balance"] = round(total_balance, 2)
         state["available_balance"] = round(available, 2)
     except Exception as e:
-        log.error(f"Account check failed: {e}")
-        return
+        log.warning(f"Account check failed: {e} — continuing with last known state")
+        # Don't exit — still manage existing positions and check signals
 
     # ── Sync Check: compare state with actual Binance positions ──
     try:

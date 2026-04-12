@@ -77,7 +77,7 @@ th:first-child,td:first-child{text-align:left}
   <div class="top-right">
     <span><span class="dot"></span> Live</span>
     <span id="lastRun">—</span>
-    <span>MACD + RSI · SL 5% · 2×</span>
+    <span>MACD + RSI · SL 5% · 2× · MTF 4H</span>
   </div>
 </div>
 
@@ -106,6 +106,7 @@ th:first-child,td:first-child{text-align:left}
 <div class="ss">
   <span class="sl" id="sigLbl">—</span>
   <span id="sigInfo"></span>
+  <span id="htfTrend" style="margin-left:12px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;"></span>
 </div>
 
 <div id="tv"></div>
@@ -389,6 +390,21 @@ function renderSig(){
   } else {
     lbl.textContent='WAITING';lbl.style.color='var(--warn)';
     info.textContent='No position — waiting for next MACD signal';
+  }
+  // 4H Trend badge
+  const htfEl=document.getElementById('htfTrend');
+  if(htfEl && state.last_indicators){
+    const h=state.last_indicators.htf_hist;
+    const r=state.last_indicators.htf_rsi;
+    if(h!==undefined && r!==undefined){
+      let trend='NEUTRAL',clr='#f59e0b',bg='rgba(245,158,11,0.15)';
+      if(h>0&&r>45){trend='4H BULL ↑';clr='#22c55e';bg='rgba(34,197,94,0.15)';}
+      else if(h<0&&r<55){trend='4H BEAR ↓';clr='#ef4444';bg='rgba(239,68,68,0.15)';}
+      htfEl.textContent=trend+' (RSI '+r.toFixed(1)+')';
+      htfEl.style.color=clr;htfEl.style.background=bg;
+    } else {
+      htfEl.textContent='';
+    }
   }
 }
 
