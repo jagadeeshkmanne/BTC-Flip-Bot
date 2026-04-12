@@ -1,0 +1,10 @@
+# Secrets — NEVER push
+.env
+config/testnet.json
+config/production.json
+
+# Runtime data
+data/
+*.log
+__pycache__/
+botenv/
