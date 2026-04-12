@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Backtest: Single Timeframe (15m) vs Multi-Timeframe (15m + 1H / 15m + 4H)
-Uses real Binance BTCUSDT data (180 days)
+Uses real Binance BTCUSDT data (up to 5 years / 1825 days)
 Same MACD(12,26,9) + RSI(14) strategy — adds higher TF trend filter.
+Covers bull, bear, and consolidation markets for robust testing.
 
 This is a standalone script — does NOT affect the running bot.
 """
@@ -15,30 +16,46 @@ import time
 from datetime import datetime, timezone, timedelta
 
 # ─── Fetch Binance Klines ───
-def fetch_klines(symbol="BTCUSDT", interval="15m", days=180):
-    """Fetch historical klines from Binance public API."""
-    url = "https://fapi.binance.com/fapi/v1/klines"
+def fetch_klines(symbol="BTCUSDT", interval="15m", days=1825):
+    """Fetch historical klines from Binance public API (spot — works worldwide)."""
+    # Use spot API — same candle data, no geo-restrictions
+    url = "https://api.binance.com/api/v3/klines"
     all_candles = []
     end_time = int(time.time() * 1000)
     start_time = int((time.time() - days * 86400) * 1000)
 
-    print(f"  Fetching {days} days of {interval} data for {symbol}...")
+    print(f"  Fetching {days} days ({days/365:.1f} years) of {interval} data for {symbol}...")
+    print(f"  This may take a few minutes for 5 years of 15m data...")
 
     current = start_time
+    batch = 0
+    retries = 0
+    max_retries = 5
     while current < end_time:
         params = {
             "symbol": symbol,
             "interval": interval,
             "startTime": current,
-            "limit": 1500
+            "limit": 1000
         }
         try:
             r = requests.get(url, params=params, timeout=15)
+            # Handle rate limiting
+            if r.status_code == 429:
+                wait = int(r.headers.get("Retry-After", 10))
+                print(f"    Rate limited, waiting {wait}s...")
+                time.sleep(wait)
+                continue
             r.raise_for_status()
             data = r.json()
+            retries = 0  # reset on success
         except Exception as e:
-            print(f"    Error: {e}, retrying...")
-            time.sleep(2)
+            retries += 1
+            if retries > max_retries:
+                print(f"    Too many errors, stopping at {len(all_candles)} candles")
+                break
+            print(f"    Error: {e}, retry {retries}/{max_retries}...")
+            time.sleep(3)
             continue
 
         if not data:
@@ -46,13 +63,18 @@ def fetch_klines(symbol="BTCUSDT", interval="15m", days=180):
 
         all_candles.extend(data)
         current = data[-1][0] + 1
+        batch += 1
 
-        if len(data) < 1500:
+        if batch % 50 == 0:
+            days_fetched = (current - start_time) / 86400000
+            print(f"    ... {len(all_candles)} candles ({days_fetched:.0f} days fetched)")
+
+        if len(data) < 1000:
             break
 
-        time.sleep(0.2)
+        time.sleep(0.15)  # respect rate limits
 
-    print(f"    Got {len(all_candles)} candles")
+    print(f"    Got {len(all_candles):,} candles")
 
     df = pd.DataFrame(all_candles, columns=[
         "open_time", "open", "high", "low", "close", "volume",
@@ -410,19 +432,66 @@ def print_results(r):
         print(f"  Counter-Trend: {r['counter_trades']} trades, {r['counter_wr']:.1f}% WR, ${r['counter_pnl']:+,.0f}")
 
 
+def yearly_breakdown(trades, capital=5000):
+    """Show P&L breakdown by year to see how strategy performs in bull/bear/consolidation."""
+    if not trades:
+        return
+
+    by_year = {}
+    for t in trades:
+        year = t["entry_time"][:4] if t.get("entry_time") else "Unknown"
+        if year not in by_year:
+            by_year[year] = {"trades": 0, "wins": 0, "pnl": 0}
+        by_year[year]["trades"] += 1
+        if t["pnl_usd"] > 0:
+            by_year[year]["wins"] += 1
+        by_year[year]["pnl"] += t["pnl_usd"]
+
+    print(f"\n  {'Year':<8} {'Trades':>7} {'WR%':>7} {'P&L $':>12} {'P&L %':>9} {'Market':>14}")
+    print(f"  {'-'*60}")
+
+    # Market context per year
+    market = {
+        "2021": "Bull Run",
+        "2022": "Bear Market",
+        "2023": "Recovery",
+        "2024": "Halving Rally",
+        "2025": "Post-Halving",
+        "2026": "Consolidation",
+    }
+
+    cumulative = 0
+    for year in sorted(by_year.keys()):
+        d = by_year[year]
+        wr = d["wins"] / max(d["trades"], 1) * 100
+        pnl_pct = d["pnl"] / capital * 100
+        cumulative += d["pnl"]
+        mkt = market.get(year, "")
+        print(f"  {year:<8} {d['trades']:>7} {wr:>6.1f}% {d['pnl']:>+11,.0f} {pnl_pct:>+8.1f}% {mkt:>14}")
+
+    print(f"  {'-'*60}")
+    print(f"  {'TOTAL':<8} {sum(d['trades'] for d in by_year.values()):>7} {'':>7} {cumulative:>+11,.0f} {cumulative/capital*100:>+8.1f}%")
+
+
 def main():
     print("=" * 70)
-    print("  MULTI-TIMEFRAME BACKTEST")
+    print("  MULTI-TIMEFRAME BACKTEST — 5 YEAR HISTORY")
     print("  Strategy: MACD(12,26,9) + RSI(14) · 2x Leverage · $5,000")
     print("  Comparing: 15m Only vs 15m + 1H vs 15m + 4H")
+    print("  Covers: Bull (2021) · Bear (2022) · Recovery (2023)")
+    print("          Halving (2024) · Post-Halving (2025-2026)")
     print("=" * 70)
 
-    # Fetch data
-    df_15m = fetch_klines("BTCUSDT", "15m", 180)
+    # Fetch 5 years of data
+    df_15m = fetch_klines("BTCUSDT", "15m", 1825)
+
+    if len(df_15m) < 100:
+        print("  ERROR: Not enough data fetched. Check your internet connection.")
+        return
 
     date_start = df_15m["timestamp"].iloc[0].strftime("%Y-%m-%d")
     date_end = df_15m["timestamp"].iloc[-1].strftime("%Y-%m-%d")
-    print(f"\n  Period: {date_start} to {date_end} ({len(df_15m)} candles)")
+    print(f"\n  Period: {date_start} to {date_end} ({len(df_15m):,} candles)")
 
     results = []
 
@@ -497,16 +566,16 @@ def main():
     # ═══════════════════════════════════════════════════════
     # SUMMARY TABLE
     # ═══════════════════════════════════════════════════════
-    print(f"\n\n{'='*110}")
-    print(f"  COMPARISON SUMMARY — ALL STRATEGIES")
-    print(f"{'='*110}")
-    print(f"  {'Strategy':<42} {'Trades':>6} {'WR%':>6} {'P&L $':>10} {'P&L %':>8} {'DD%':>6} {'PF':>5} {'SL':>4} {'Filtered':>9}")
-    print(f"  {'-'*105}")
+    print(f"\n\n{'='*115}")
+    print(f"  COMPARISON SUMMARY — ALL STRATEGIES (5 YEARS)")
+    print(f"{'='*115}")
+    print(f"  {'Strategy':<42} {'Trades':>6} {'WR%':>6} {'P&L $':>12} {'P&L %':>9} {'DD%':>6} {'PF':>5} {'SL':>4} {'Filtered':>9}")
+    print(f"  {'-'*108}")
 
     for r in results:
-        print(f"  {r['label']:<42} {r['total_trades']:>6} {r['win_rate']:>5.1f}% {r['total_pnl_usd']:>+10,.0f} {r['total_pnl_pct']:>+7.1f}% {r['max_drawdown_pct']:>5.1f}% {r['profit_factor']:>4.2f} {r['sl_exits']:>4} {r['filtered_signals']:>9}")
+        print(f"  {r['label']:<42} {r['total_trades']:>6} {r['win_rate']:>5.1f}% {r['total_pnl_usd']:>+11,.0f} {r['total_pnl_pct']:>+8.1f}% {r['max_drawdown_pct']:>5.1f}% {r['profit_factor']:>4.2f} {r['sl_exits']:>4} {r['filtered_signals']:>9}")
 
-    print(f"  {'-'*105}")
+    print(f"  {'-'*108}")
 
     # Find winners
     best_pnl = max(results, key=lambda r: r['total_pnl_usd'])
@@ -525,11 +594,28 @@ def main():
     print(f"  BEST WIN RATE:      {best_wr['label']} → {best_wr['win_rate']:.1f}%")
     print(f"  BEST RISK-ADJUSTED: {best_risk['label']} → {best_risk['total_pnl_pct']:+.1f}% / {best_risk['max_drawdown_pct']:.1f}% DD = {best_risk['risk_adj']:.2f}")
 
+    # ═══════════════════════════════════════════════════════
+    # YEARLY BREAKDOWN — Best strategy
+    # ═══════════════════════════════════════════════════════
+    print(f"\n\n{'='*70}")
+    print(f"  YEARLY BREAKDOWN — {best_risk['label']}")
+    print(f"{'='*70}")
+
+    # Find the best risk-adjusted result and show its yearly performance
+    best_idx = results.index(best_risk)
+    yearly_breakdown(results[best_idx]["trades"])
+
+    # Also show baseline yearly for comparison
+    print(f"\n  YEARLY BREAKDOWN — BASELINE: 15m Only (5% SL)")
+    print(f"  {'-'*60}")
+    yearly_breakdown(results[0]["trades"])
+
     # Save results
     output = {
         "backtest_date": datetime.now(timezone.utc).isoformat(),
         "period": f"{date_start} to {date_end}",
         "candles": len(df_15m),
+        "years_covered": f"{date_start[:4]} to {date_end[:4]}",
         "results": [{k: v for k, v in r.items() if k != "trades"} for r in results],
         "best_pnl": best_pnl["label"],
         "best_dd": best_dd["label"],
@@ -541,7 +627,7 @@ def main():
         json.dump(output, f, indent=2)
 
     print(f"\n  Results saved to backtest_mtf_results.json")
-    print(f"{'='*110}")
+    print(f"{'='*115}")
 
 
 if __name__ == "__main__":

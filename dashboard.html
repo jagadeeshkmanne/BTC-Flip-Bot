@@ -77,7 +77,7 @@ th:first-child,td:first-child{text-align:left}
   <div class="top-right">
     <span><span class="dot"></span> Live</span>
     <span id="lastRun">—</span>
-    <span>MACD + RSI · SL 5% · 2× · MTF 4H</span>
+    <span>MACD + RSI · SL 5% · 2× · 4H RSI Filter</span>
   </div>
 </div>
 
@@ -383,23 +383,143 @@ function renderSig(){
   if(!state)return;
   const keys=Object.keys(state.positions||{});
   const lbl=document.getElementById('sigLbl'),info=document.getElementById('sigInfo');
+  // Hide checklist when position is active
+  const existingCheck=document.getElementById('waitCheck');
   if(keys.length){
+    if(existingCheck) existingCheck.innerHTML='';
     const pos=state.positions[keys[0]];
     lbl.textContent=pos.side+' ACTIVE';lbl.style.color=pos.side==='LONG'?'var(--up)':'var(--dn)';
-    info.textContent=(pos.entry_reason||'')+' · SL $'+(pos.sl_price||'—')+' · Exit on MACD flip';
+    const ind=state.last_indicators;
+    let posInfo='Entered via '+(pos.entry_reason||'MACD signal')+' · Stop loss at $'+(pos.sl_price||'—');
+    if(ind){
+      const r=ind.htf_rsi;
+      let htfDir='neutral';
+      if(r!==undefined){
+        if(r>50) htfDir='bullish';
+        else htfDir='bearish';
+      }
+      if(pos.side==='SHORT'&&htfDir==='bearish') posInfo+=' · 4H RSI confirms bearish ✓ · Holding until MACD flips bullish';
+      else if(pos.side==='LONG'&&htfDir==='bullish') posInfo+=' · 4H RSI confirms bullish ✓ · Holding until MACD flips bearish';
+      else if(pos.side==='SHORT'&&htfDir==='bullish') posInfo+=' · 4H RSI turning bullish ⚠ · May exit soon on MACD flip';
+      else if(pos.side==='LONG'&&htfDir==='bearish') posInfo+=' · 4H RSI turning bearish ⚠ · May exit soon on MACD flip';
+    } else {
+      posInfo+=' · Exit on MACD flip';
+    }
+    info.textContent=posInfo;
   } else {
     lbl.textContent='WAITING';lbl.style.color='var(--warn)';
-    info.textContent='No position — waiting for next MACD signal';
+    info.textContent='';
+    // Show checklist table
+    const ind=state.last_indicators;
+    let checkEl=document.getElementById('waitCheck');
+    if(!checkEl){checkEl=document.createElement('div');checkEl.id='waitCheck';checkEl.style.cssText='margin:8px 16px;font-size:13px;line-height:1.8';info.parentNode.after(checkEl);}
+    if(ind){
+      const r=ind.htf_rsi,rsi15=ind.rsi,macdH=ind.macd_hist;
+      const ml=ind.macd_line,sl=ind.signal_line;
+      let htfDir='NEUTRAL';
+      if(r!==undefined){
+        if(r>50) htfDir='BULLISH';
+        else htfDir='BEARISH';
+      }
+      // Determine which side we're looking for
+      let lookFor=htfDir==='BEARISH'?'SHORT':'LONG';
+
+      // Build checklist rows
+      const ok='<span style="color:#22c55e">✓ Ready</span>';
+      const no='<span style="color:#ef4444">✗ Not yet</span>';
+      const warn='<span style="color:#f59e0b">⚠ Warning</span>';
+
+      let rows=[];
+
+      // Row 1: 4H RSI Trend
+      let r1status,r1current,r1needed;
+      if(htfDir==='BEARISH'){r1status=ok;r1current='RSI '+r.toFixed(0)+' — Bearish (looking for SHORT)';r1needed='RSI below 50';}
+      else{r1status=ok;r1current='RSI '+r.toFixed(0)+' — Bullish (looking for LONG)';r1needed='RSI above 50';}
+      rows.push({check:'4H RSI Direction',status:r1status,current:r1current,needed:r1needed});
+
+      // Row 2: 15m MACD Cross
+      let r2status,r2current,r2needed;
+      if(htfDir==='BEARISH'){
+        r2needed='MACD line crosses below signal line';
+        if(ml!==undefined&&sl!==undefined){
+          if(ml<sl){r2status=ok;r2current='MACD below signal (bearish cross happened)';}
+          else{r2status=no;r2current='MACD is above signal — waiting for it to cross below';}
+        } else if(macdH!==undefined){
+          if(macdH<0){r2status=ok;r2current='MACD histogram is negative';}
+          else{r2status=no;r2current='MACD histogram is positive (+'+macdH.toFixed(1)+') — needs to go negative';}
+        } else{r2status=no;r2current='Waiting for data';}
+      } else if(htfDir==='BULLISH'){
+        r2needed='MACD line crosses above signal line';
+        if(ml!==undefined&&sl!==undefined){
+          if(ml>sl){r2status=ok;r2current='MACD above signal (bullish cross happened)';}
+          else{r2status=no;r2current='MACD is below signal — waiting for it to cross above';}
+        } else if(macdH!==undefined){
+          if(macdH>0){r2status=ok;r2current='MACD histogram is positive';}
+          else{r2status=no;r2current='MACD histogram is negative ('+macdH.toFixed(1)+') — needs to go positive';}
+        } else{r2status=no;r2current='Waiting for data';}
+      } else {
+        r2needed='Any MACD crossover (bullish or bearish)';
+        r2status=no;r2current='No crossover detected yet';
+      }
+      rows.push({check:'15m MACD Crossover',status:r2status,current:r2current,needed:r2needed});
+
+      // Row 3: RSI in range
+      let r3status,r3current,r3needed;
+      r3needed='Between 30 and 70';
+      if(rsi15!==undefined){
+        if(rsi15>=30&&rsi15<=70){r3status=ok;r3current='RSI is '+rsi15.toFixed(0)+' (in range)';}
+        else if(rsi15<30){r3status=warn;r3current='RSI is '+rsi15.toFixed(0)+' (oversold — may block SHORT entry)';}
+        else{r3status=warn;r3current='RSI is '+rsi15.toFixed(0)+' (overbought — may block LONG entry)';}
+      } else{r3status=no;r3current='Waiting for data';}
+      rows.push({check:'15m RSI Filter',status:r3status,current:r3current,needed:r3needed});
+
+      // Row 4: Volume
+      let r4status,r4current,r4needed;
+      r4needed='Volume above 80% of 20-bar average';
+      if(ind.volume!==undefined&&ind.vol_sma!==undefined&&ind.vol_sma>0){
+        const vr=(ind.volume/ind.vol_sma*100);
+        if(vr>=80){r4status=ok;r4current='Volume is '+vr.toFixed(0)+'% of average (enough activity)';}
+        else{r4status=no;r4current='Volume is only '+vr.toFixed(0)+'% of average (too quiet, will skip trade)';}
+      } else{r4status=no;r4current='Waiting for data';}
+      rows.push({check:'Volume Check',status:r4status,current:r4current,needed:r4needed});
+
+      // Summary
+      const allOk=rows.every(r=>r.status===ok);
+      let summary;
+      if(allOk) summary='<div style="color:#22c55e;font-weight:600;margin-top:6px">All conditions met — will enter on next 15m candle close</div>';
+      else{
+        const waiting=rows.filter(r=>r.status!==ok).map(r=>r.check);
+        summary='<div style="color:#f59e0b;margin-top:6px">Waiting for: '+waiting.join(', ')+'</div>';
+      }
+
+      checkEl.innerHTML=`
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <tr style="color:#484f58;border-bottom:1px solid #21262d">
+            <th style="text-align:left;padding:4px 8px;font-weight:600">Condition</th>
+            <th style="text-align:left;padding:4px 8px;font-weight:600">Status</th>
+            <th style="text-align:left;padding:4px 8px;font-weight:600">Current</th>
+            <th style="text-align:left;padding:4px 8px;font-weight:600">Needed</th>
+          </tr>
+          ${rows.map(r=>`<tr style="border-bottom:1px solid #161b22">
+            <td style="padding:4px 8px;color:#c9d1d9">${r.check}</td>
+            <td style="padding:4px 8px">${r.status}</td>
+            <td style="padding:4px 8px;color:#8b949e">${r.current}</td>
+            <td style="padding:4px 8px;color:#484f58">${r.needed}</td>
+          </tr>`).join('')}
+        </table>
+        ${summary}`;
+    } else {
+      checkEl.innerHTML='<span style="color:#8b949e">No data yet — waiting for bot to run</span>';
+    }
   }
-  // 4H Trend badge
+  // 4H RSI Trend badge
   const htfEl=document.getElementById('htfTrend');
   if(htfEl && state.last_indicators){
-    const h=state.last_indicators.htf_hist;
     const r=state.last_indicators.htf_rsi;
-    if(h!==undefined && r!==undefined){
-      let trend='NEUTRAL',clr='#f59e0b',bg='rgba(245,158,11,0.15)';
-      if(h>0&&r>45){trend='4H BULL ↑';clr='#22c55e';bg='rgba(34,197,94,0.15)';}
-      else if(h<0&&r<55){trend='4H BEAR ↓';clr='#ef4444';bg='rgba(239,68,68,0.15)';}
+    if(r!==undefined){
+      let trend,clr,bg;
+      if(r>50){trend='4H BULL ↑';clr='#22c55e';bg='rgba(34,197,94,0.15)';}
+      else{trend='4H BEAR ↓';clr='#ef4444';bg='rgba(239,68,68,0.15)';}
       htfEl.textContent=trend+' (RSI '+r.toFixed(1)+')';
       htfEl.style.color=clr;htfEl.style.background=bg;
     } else {

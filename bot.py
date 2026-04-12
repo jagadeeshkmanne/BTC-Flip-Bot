@@ -446,11 +446,16 @@ def compute_atr(df, period=14):
 
 def get_htf_trend(client, symbol="BTCUSDT", interval="4h", limit=100):
     """
-    Compute higher-timeframe (4H) trend using MACD + RSI combo.
-    Backtest-proven: +185.6% return, 9.7% max DD, PF 1.49
+    Compute higher-timeframe (4H) trend using RSI only.
+    5-year backtest winner: PF 1.55, DD 33.7%, WR 36.2%
+    Profitable in bull (2021), bear (2022), recovery (2023), halving (2024), and beyond.
+
+    RSI > 50 = bullish (allow LONG only)
+    RSI < 50 = bearish (allow SHORT only)
+    No neutral zone — always picks a direction.
 
     Returns: (trend, htf_info)
-      trend:  1 = bullish (allow LONG), -1 = bearish (allow SHORT), 0 = neutral (allow both)
+      trend:  1 = bullish (allow LONG), -1 = bearish (allow SHORT)
       htf_info: dict with 4H indicator values for logging/dashboard
     """
     try:
@@ -460,33 +465,20 @@ def get_htf_trend(client, symbol="BTCUSDT", interval="4h", limit=100):
             log.warning(f"  HTF: Not enough 4H candles ({len(df_htf)}), skipping filter")
             return 0, {}
 
-        # Compute 4H MACD
-        macd_line = compute_ema(df_htf["close"], 12) - compute_ema(df_htf["close"], 26)
-        signal_line = compute_ema(macd_line, 9)
-        macd_hist = macd_line - signal_line
-
-        # Compute 4H RSI
+        # Compute 4H RSI — the only indicator needed for trend direction
         rsi = compute_rsi(df_htf, 14)
-
-        curr_hist = float(macd_hist.iloc[-1]) if not pd.isna(macd_hist.iloc[-1]) else 0
         curr_rsi = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50
-        curr_macd = float(macd_line.iloc[-1]) if not pd.isna(macd_line.iloc[-1]) else 0
-        curr_signal = float(signal_line.iloc[-1]) if not pd.isna(signal_line.iloc[-1]) else 0
 
         htf_info = {
-            "htf_macd": curr_macd,
-            "htf_signal": curr_signal,
-            "htf_hist": curr_hist,
             "htf_rsi": curr_rsi,
         }
 
-        # MACD+RSI combo filter (best risk-adjusted from backtest)
-        if curr_hist > 0 and curr_rsi > 45:
+        # RSI-only filter (5-year backtest champion)
+        if curr_rsi > 50:
             trend = 1   # Bullish — allow LONG, block SHORT
-        elif curr_hist < 0 and curr_rsi < 55:
-            trend = -1  # Bearish — allow SHORT, block LONG
         else:
-            trend = 0   # Neutral — allow both directions
+            trend = -1  # Bearish — allow SHORT, block LONG
+        # No neutral zone — always picks a direction
 
         return trend, htf_info
 
