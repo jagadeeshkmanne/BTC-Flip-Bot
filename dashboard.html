@@ -131,6 +131,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 let state=null, lp=0, pp=0, chart, cSeries, vSeries, curC=null, ws=null;
+let bbUpperSeries, bbMidSeries, bbLowerSeries;
 let candleData=[];
 
 async function boot(){
@@ -170,10 +171,35 @@ function mkChart(){
     scaleMargins:{top:0.92,bottom:0},
   });
 
+  // Bollinger Bands overlay
+  bbUpperSeries=chart.addLineSeries({color:'rgba(99,102,241,0.35)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:''});
+  bbMidSeries=chart.addLineSeries({color:'rgba(99,102,241,0.6)',lineWidth:1,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:'BB Mid'});
+  bbLowerSeries=chart.addLineSeries({color:'rgba(99,102,241,0.35)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:''});
+
   new ResizeObserver(e=>{
     const {width,height}=e[0].contentRect;
     chart.applyOptions({width,height});
   }).observe(el);
+}
+
+function calcAndDrawBB(period=20, mult=2){
+  if(candleData.length<period) return;
+  const upper=[],mid=[],lower=[];
+  for(let i=period-1;i<candleData.length;i++){
+    let sum=0;
+    for(let j=i-period+1;j<=i;j++) sum+=candleData[j].close;
+    const sma=sum/period;
+    let sqSum=0;
+    for(let j=i-period+1;j<=i;j++) sqSum+=Math.pow(candleData[j].close-sma,2);
+    const std=Math.sqrt(sqSum/period);
+    const t=candleData[i].time;
+    upper.push({time:t,value:sma+mult*std});
+    mid.push({time:t,value:sma});
+    lower.push({time:t,value:sma-mult*std});
+  }
+  bbUpperSeries.setData(upper);
+  bbMidSeries.setData(mid);
+  bbLowerSeries.setData(lower);
 }
 
 async function loadCandles(){
@@ -185,6 +211,7 @@ async function loadCandles(){
     cSeries.setData(candleData);
     vSeries.setData(vols);
     if(candleData.length){curC={...candleData[candleData.length-1]};lp=curC.close;showPrice();}
+    calcAndDrawBB();
     addMarkers();
   }catch(e){console.error('Candle fail',e);}
 }
@@ -291,9 +318,28 @@ function updCandle(p,t){
   if(!curC) return;
   const sec=({['1m']:60,['5m']:300,['15m']:900,['1h']:3600,['4h']:14400,['1d']:86400}[TF]||3600);
   const cs=Math.floor(t/sec)*sec;
-  if(cs>curC.time){curC={time:cs,open:p,high:p,low:p,close:p};}
+  if(cs>curC.time){
+    candleData.push({...curC});
+    curC={time:cs,open:p,high:p,low:p,close:p};
+    calcAndDrawBB();
+  }
   else{curC.high=Math.max(curC.high,p);curC.low=Math.min(curC.low,p);curC.close=p;}
   cSeries.update(curC);
+  // Update BB mid line in real time for current candle
+  if(candleData.length>=20){
+    const period=20;
+    let sum=0;
+    for(let j=candleData.length-period+1;j<candleData.length;j++) sum+=candleData[j].close;
+    sum+=curC.close;
+    const sma=sum/period;
+    let sqSum=0;
+    for(let j=candleData.length-period+1;j<candleData.length;j++) sqSum+=Math.pow(candleData[j].close-sma,2);
+    sqSum+=Math.pow(curC.close-sma,2);
+    const std=Math.sqrt(sqSum/period);
+    bbUpperSeries.update({time:curC.time,value:sma+2*std});
+    bbMidSeries.update({time:curC.time,value:sma});
+    bbLowerSeries.update({time:curC.time,value:sma-2*std});
+  }
 }
 
 function showPrice(){
@@ -486,6 +532,27 @@ function renderSig(){
         else{r4status=no;r4current='Volume is only '+vr.toFixed(0)+'% of average (too quiet, will skip trade)';}
       } else{r4status=no;r4current='Waiting for data';}
       rows.push({check:'Volume Check',status:r4status,current:r4current,needed:r4needed});
+
+      // Row 5: BB Mid filter
+      let r5status,r5current,r5needed;
+      const bbMid=ind.bb_mid;
+      const bbUpper=ind.bb_upper;
+      const bbLower=ind.bb_lower;
+      if(bbMid!==undefined&&bbMid>0){
+        if(htfDir==='BEARISH'){
+          r5needed='Price above BB mid (better short entry)';
+          if(ind.price>=bbMid){r5status=ok;r5current='Price $'+ind.price.toFixed(0)+' above BB mid $'+bbMid.toFixed(0)+' (good short zone)';}
+          else{r5status=no;r5current='Price $'+ind.price.toFixed(0)+' below BB mid $'+bbMid.toFixed(0)+' (waiting for price to rise for better short)';}
+        } else if(htfDir==='BULLISH'){
+          r5needed='Price below BB mid (better long entry)';
+          if(ind.price<=bbMid){r5status=ok;r5current='Price $'+ind.price.toFixed(0)+' below BB mid $'+bbMid.toFixed(0)+' (good long zone)';}
+          else{r5status=no;r5current='Price $'+ind.price.toFixed(0)+' above BB mid $'+bbMid.toFixed(0)+' (waiting for price to dip for better long)';}
+        } else{
+          r5needed='Price on correct side of BB mid';
+          r5status=ok;r5current='Neutral trend — BB filter relaxed';
+        }
+      } else{r5status=no;r5needed='BB data';r5current='Waiting for data';}
+      rows.push({check:'BB Mid Filter',status:r5status,current:r5current,needed:r5needed});
 
       // Summary
       const allOk=rows.every(r=>r.status===ok);

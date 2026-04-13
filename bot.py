@@ -1097,6 +1097,17 @@ def run_module1(client, state):
                         log.info(f"  ⏸ MTF FILTER: {signal} blocked — 4H trend is BULLISH")
                         return
 
+                # ── BB Mid filter: better entries — short above mid, long below mid ──
+                if CONFIG.get("bb_filter_enabled", True):
+                    bb_mid = ind.get("bb_mid", 0)
+                    if bb_mid > 0:
+                        if signal == "SHORT" and current_price < bb_mid:
+                            log.info(f"  ⏸ BB FILTER: {signal} blocked — price ${current_price:,.2f} below BB mid ${bb_mid:,.2f} (waiting for better entry)")
+                            return
+                        elif signal == "LONG" and current_price > bb_mid:
+                            log.info(f"  ⏸ BB FILTER: {signal} blocked — price ${current_price:,.2f} above BB mid ${bb_mid:,.2f} (waiting for better entry)")
+                            return
+
                 log.info(f"  ★ NEW {signal} SIGNAL! ({reason})")
                 open_position(client, state, symbol, signal, current_price, reason)
             else:
