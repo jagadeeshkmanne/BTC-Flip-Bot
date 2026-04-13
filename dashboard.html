@@ -172,9 +172,9 @@ function mkChart(){
   });
 
   // Bollinger Bands overlay
-  bbUpperSeries=chart.addLineSeries({color:'rgba(99,102,241,0.35)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:''});
-  bbMidSeries=chart.addLineSeries({color:'rgba(99,102,241,0.6)',lineWidth:1,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:'BB Mid'});
-  bbLowerSeries=chart.addLineSeries({color:'rgba(99,102,241,0.35)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:''});
+  bbUpperSeries=chart.addLineSeries({color:'rgba(255,193,7,0.5)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:''});
+  bbMidSeries=chart.addLineSeries({color:'#f59e0b',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:'BB Mid'});
+  bbLowerSeries=chart.addLineSeries({color:'rgba(255,193,7,0.5)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,title:''});
 
   new ResizeObserver(e=>{
     const {width,height}=e[0].contentRect;
