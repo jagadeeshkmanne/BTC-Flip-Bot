@@ -198,19 +198,21 @@ function addMarkers(){
   const m=[];
   const hist=state.trade_history||[];
 
-  // For each closed trade, show:
-  //   1. Entry marker (▲ LONG or ▼ SHORT) — find candle closest to entry price before exit
-  //   2. Exit marker (▼ SHORT or ▲ LONG with P&L) — at the exit time
+  // For each closed trade, show TWO clear markers:
+  //   1. OPEN marker: ▲ (LONG) or ▼ (SHORT) with "OPEN LONG" / "OPEN SHORT"
+  //   2. CLOSE marker: ✕ with P&L result colored green/red
   hist.forEach((t,i)=>{
     if(!t.time) return;
     const exitTs=roundC(Math.floor(new Date(t.time).getTime()/1000));
     const long=t.side==='LONG';
     const pnlStr=t.pnl_pct>0?'+'+t.pnl_pct.toFixed(1)+'%':t.pnl_pct.toFixed(1)+'%';
+    const pnlUsd=t.pnl_usd?(t.pnl_usd>0?'+':'')+t.pnl_usd.toFixed(0):'';
 
-    // Find entry candle: search BACKWARDS from exit, find closest price to entry_avg
-    // within last 200 candles (avoids matching random old candle at same price)
+    // Find entry candle using entry_time (precise) or price match (fallback)
     let entryTs=null;
-    if(t.entry_avg){
+    if(t.entry_time){
+      entryTs=roundC(Math.floor(new Date(t.entry_time).getTime()/1000));
+    } else if(t.entry_avg){
       const exitIdx=candleData.findIndex(c=>c.time>=exitTs);
       if(exitIdx>0){
         let bestDist=Infinity;
@@ -218,52 +220,50 @@ function addMarkers(){
         for(let j=exitIdx-1;j>=searchStart;j--){
           const dist=Math.abs(candleData[j].close-t.entry_avg);
           if(dist<bestDist){bestDist=dist;entryTs=candleData[j].time;}
-          // If we found exact or very close match, stop searching further back
           if(dist<50) break;
         }
       }
     }
-    // Show entry marker for first trade (initial entry before any flip)
-    if(i===0 && entryTs){
+
+    // ── OPEN marker: green arrow up (LONG) or red arrow down (SHORT) ──
+    if(entryTs){
       m.push({
         time:entryTs,
         position:long?'belowBar':'aboveBar',
         color:long?'#22c55e':'#ef4444',
         shape:long?'arrowUp':'arrowDown',
         size:3,
-        text:long?'LONG':'SHORT',
+        text:'OPEN '+(long?'LONG':'SHORT'),
       });
     }
 
-    // Exit/flip marker — shows NEW direction + P&L colored by result
-    const newLong=!long;
+    // ── CLOSE marker: shows exit reason + P&L ──
     const pnlColor=(t.pnl_pct||0)>=0?'#22c55e':'#ef4444';
+    const reason=(t.reason||'CLOSE').replace(/_/g,' ');
     m.push({
       time:exitTs,
-      position:newLong?'belowBar':'aboveBar',
+      position:long?'aboveBar':'belowBar',
       color:pnlColor,
-      shape:newLong?'arrowUp':'arrowDown',
-      size:3,
-      text:`${newLong?'LONG':'SHORT'} ${pnlStr}`,
+      shape:'circle',
+      size:2,
+      text:`CLOSE ${pnlStr} $${pnlUsd}`,
     });
   });
 
-  // Current open position — if it's the very first entry (no history)
-  if(hist.length===0){
-    Object.values(state.positions||{}).forEach(pos=>{
-      if(!pos.start_time) return;
-      const ts=roundC(Math.floor(new Date(pos.start_time).getTime()/1000));
-      const long=pos.side==='LONG';
-      m.push({
-        time:ts,
-        position:long?'belowBar':'aboveBar',
-        color:long?'#22c55e':'#ef4444',
-        shape:long?'arrowUp':'arrowDown',
-        size:3,
-        text:long?'LONG':'SHORT',
-      });
+  // ── Current open position marker ──
+  Object.values(state.positions||{}).forEach(pos=>{
+    if(!pos.start_time) return;
+    const ts=roundC(Math.floor(new Date(pos.start_time).getTime()/1000));
+    const long=pos.side==='LONG';
+    m.push({
+      time:ts,
+      position:long?'belowBar':'aboveBar',
+      color:long?'#22c55e':'#ef4444',
+      shape:long?'arrowUp':'arrowDown',
+      size:3,
+      text:'OPEN '+(long?'LONG ▶':'SHORT ▶'),
     });
-  }
+  });
 
   m.sort((a,b)=>a.time-b.time);
   cSeries.setMarkers(m);
@@ -398,12 +398,12 @@ function renderSig(){
         if(r>50) htfDir='bullish';
         else htfDir='bearish';
       }
-      if(pos.side==='SHORT'&&htfDir==='bearish') posInfo+=' · 4H RSI confirms bearish ✓ · Holding until MACD flips bullish';
-      else if(pos.side==='LONG'&&htfDir==='bullish') posInfo+=' · 4H RSI confirms bullish ✓ · Holding until MACD flips bearish';
-      else if(pos.side==='SHORT'&&htfDir==='bullish') posInfo+=' · 4H RSI turning bullish ⚠ · May exit soon on MACD flip';
-      else if(pos.side==='LONG'&&htfDir==='bearish') posInfo+=' · 4H RSI turning bearish ⚠ · May exit soon on MACD flip';
+      if(pos.side==='SHORT'&&htfDir==='bearish') posInfo+=' · 4H confirms bearish ✓ · Holding (ignoring counter-trend noise) · Exits: aligned MACD flip or 5% SL';
+      else if(pos.side==='LONG'&&htfDir==='bullish') posInfo+=' · 4H confirms bullish ✓ · Holding (ignoring counter-trend noise) · Exits: aligned MACD flip or 5% SL';
+      else if(pos.side==='SHORT'&&htfDir==='bullish') posInfo+=' · 4H turning bullish ⚠ · Will close on next bearish MACD cross (aligned flip)';
+      else if(pos.side==='LONG'&&htfDir==='bearish') posInfo+=' · 4H turning bearish ⚠ · Will close on next bullish MACD cross (aligned flip)';
     } else {
-      posInfo+=' · Exit on MACD flip';
+      posInfo+=' · Exit on aligned MACD flip or 5% SL';
     }
     info.textContent=posInfo;
   } else {
@@ -437,24 +437,28 @@ function renderSig(){
       else{r1status=ok;r1current='RSI '+r.toFixed(0)+' — Bullish (looking for LONG)';r1needed='RSI above 50';}
       rows.push({check:'4H RSI Direction',status:r1status,current:r1current,needed:r1needed});
 
-      // Row 2: 15m MACD Cross
+      // Row 2: 15m MACD Cross — distinguish FRESH cross (this candle) vs STALE (previous candle)
       let r2status,r2current,r2needed;
+      const freshBull=ind.fresh_bull_cross||false;
+      const freshBear=ind.fresh_bear_cross||false;
       if(htfDir==='BEARISH'){
-        r2needed='MACD line crosses below signal line';
-        if(ml!==undefined&&sl!==undefined){
-          if(ml<sl){r2status=ok;r2current='MACD below signal (bearish cross happened)';}
+        r2needed='Fresh MACD bearish cross on current candle';
+        if(freshBear){r2status=ok;r2current='MACD just crossed below signal (fresh bearish cross!)';}
+        else if(ml!==undefined&&sl!==undefined){
+          if(ml<sl){r2status=no;r2current='MACD below signal but cross happened earlier — waiting for next fresh cross';r2needed='MACD must cross from above to below signal on this candle';}
           else{r2status=no;r2current='MACD is above signal — waiting for it to cross below';}
         } else if(macdH!==undefined){
-          if(macdH<0){r2status=ok;r2current='MACD histogram is negative';}
+          if(macdH<0){r2status=no;r2current='MACD histogram negative but no fresh cross this candle';}
           else{r2status=no;r2current='MACD histogram is positive (+'+macdH.toFixed(1)+') — needs to go negative';}
         } else{r2status=no;r2current='Waiting for data';}
       } else if(htfDir==='BULLISH'){
-        r2needed='MACD line crosses above signal line';
-        if(ml!==undefined&&sl!==undefined){
-          if(ml>sl){r2status=ok;r2current='MACD above signal (bullish cross happened)';}
+        r2needed='Fresh MACD bullish cross on current candle';
+        if(freshBull){r2status=ok;r2current='MACD just crossed above signal (fresh bullish cross!)';}
+        else if(ml!==undefined&&sl!==undefined){
+          if(ml>sl){r2status=no;r2current='MACD above signal but cross happened earlier — waiting for next fresh cross';r2needed='MACD must cross from below to above signal on this candle';}
           else{r2status=no;r2current='MACD is below signal — waiting for it to cross above';}
         } else if(macdH!==undefined){
-          if(macdH>0){r2status=ok;r2current='MACD histogram is positive';}
+          if(macdH>0){r2status=no;r2current='MACD histogram positive but no fresh cross this candle';}
           else{r2status=no;r2current='MACD histogram is negative ('+macdH.toFixed(1)+') — needs to go positive';}
         } else{r2status=no;r2current='Waiting for data';}
       } else {
@@ -486,7 +490,7 @@ function renderSig(){
       // Summary
       const allOk=rows.every(r=>r.status===ok);
       let summary;
-      if(allOk) summary='<div style="color:#22c55e;font-weight:600;margin-top:6px">All conditions met — will enter on next 15m candle close</div>';
+      if(allOk) summary='<div style="color:#22c55e;font-weight:600;margin-top:6px">All conditions met — entering on this candle!</div>';
       else{
         const waiting=rows.filter(r=>r.status!==ok).map(r=>r.check);
         summary='<div style="color:#f59e0b;margin-top:6px">Waiting for: '+waiting.join(', ')+'</div>';

@@ -531,11 +531,17 @@ def get_15m_signal(df):
     curr_vol = float(vol.iloc[-1]) if not pd.isna(vol.iloc[-1]) else 0
     curr_vol_sma = float(vol_sma.iloc[-1]) if not pd.isna(vol_sma.iloc[-1]) else 0
 
+    # Detect fresh crossovers (happened THIS candle, not a previous one)
+    fresh_bull_cross = (prev_macd <= prev_signal and curr_macd > curr_signal)
+    fresh_bear_cross = (prev_macd >= prev_signal and curr_macd < curr_signal)
+
     indicators = {
         "price": curr_price, "rsi": curr_rsi,
         "bb_upper": curr_bb_u, "bb_lower": curr_bb_l, "bb_mid": curr_bb_m,
         "bb_bandwidth": curr_bw, "macd_hist": curr_hist,
         "macd_line": curr_macd, "signal_line": curr_signal, "atr": curr_atr,
+        "macd_line_prev": prev_macd, "signal_line_prev": prev_signal,
+        "fresh_bull_cross": fresh_bull_cross, "fresh_bear_cross": fresh_bear_cross,
         "volume": curr_vol, "vol_sma": curr_vol_sma,
     }
 
@@ -1033,7 +1039,7 @@ def run_module1(client, state):
             )
 
             if should_flip:
-                # ── MTF filter on flip: always close, but only re-enter if aligned ──
+                # ── MTF filter on flip ──
                 mtf_blocked = False
                 if CONFIG.get("mtf_enabled", False) and htf_trend != 0:
                     if signal == "LONG" and htf_trend == -1:
@@ -1042,11 +1048,12 @@ def run_module1(client, state):
                         mtf_blocked = True
 
                 if mtf_blocked:
-                    log.info(f"  ⟳ FLIP CLOSE! {pos['side']} closed, but {signal} blocked by 4H trend filter")
-                    close_position(client, state, symbol, pos, current_price, f"FLIP_{pos['side']}_MTF_BLOCK")
+                    # OPTION B: Position is aligned with 4H trend, opposite signal is noise
+                    # HOLD the position — don't close on counter-trend signals
+                    log.info(f"  ⟳ FLIP BLOCKED: {signal} signal blocked by 4H trend — HOLDING {pos['side']} (trusting 4H trend)")
                 else:
                     log.info(f"  ⟳ FLIP! {pos['side']} → {signal} ({reason})")
-                    # Close current position
+                    # Close current position and open opposite (both aligned with 4H)
                     if close_position(client, state, symbol, pos, current_price, f"FLIP_{pos['side']}_to_{signal}"):
                         # Open opposite
                         open_position(client, state, symbol, signal, current_price, reason)

@@ -8,3 +8,6 @@ data/
 *.log
 __pycache__/
 botenv/
+
+# Generated backtest results (re-run scripts to regenerate)
+*_results.json
