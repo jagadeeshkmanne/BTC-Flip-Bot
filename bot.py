@@ -29,7 +29,7 @@ sys.path.insert(0, BOT_DIR)
 
 from core import (
     LEVERAGE as STRAT_LEV, RISK_PCT,
-    SAME_DIR_CD_BARS, DD_HALT_PCT, DD_HALT_BARS,
+    SAME_DIR_CD_BARS, COOLDOWN_BARS, DD_HALT_PCT, DD_HALT_BARS,
     USE_PARTIAL_TP, PARTIAL_TP_R, PARTIAL_TP_FRAC,
     build_signals, evaluate_signal, evaluate_exit,
     calc_pattern_sl, position_size, Position,
@@ -217,6 +217,7 @@ def default_state():
         "position": None,                # dict if open, None if flat
         "last_long_sl_time":  0,         # epoch seconds
         "last_short_sl_time": 0,
+        "last_exit_time":     0,         # generic post-exit cooldown (any reason, any side)
         "halt_until_time":    0,         # epoch seconds (DD halt)
         "peak_equity":        0.0,
         "weekly_start":       None,
@@ -277,7 +278,13 @@ def main():
         log.error("Not enough 1H bars after resample")
         return
 
-    last = df_1h.iloc[-1]
+    # V5 parity: evaluate on the last CLOSED 1H bar, not the in-progress one.
+    # Backtest iterates closed bars only; reading iloc[-1] mid-hour saw a half-built
+    # candle (volume ~0, engulfing undefined) and silently blocked entries.
+    if len(df_1h) < 3:
+        log.error("Need ≥3 resampled 1H bars"); return
+    last = df_1h.iloc[-2]                  # last closed 1H bar (signal bar)
+    prev = df_1h.iloc[-3]                  # prior closed 1H bar (for pattern SL)
     sig  = evaluate_signal(last)
     price = sig.price
 
@@ -343,9 +350,12 @@ def main():
         log.info(f"    SHORT conditions: " + ", ".join(
             f"{k}={'✓' if v else '✗'}" for k, v in sig.conditions_short.items()))
 
-        # Same-direction cooldown check
+        # Same-direction SL cooldown + generic post-exit cooldown (v5 parity)
         long_cd_remain  = max(0, state["last_long_sl_time"]  + SAME_DIR_CD_BARS*3600 - now_ts)
         short_cd_remain = max(0, state["last_short_sl_time"] + SAME_DIR_CD_BARS*3600 - now_ts)
+        post_exit_cd    = max(0, state.get("last_exit_time", 0) + COOLDOWN_BARS*3600 - now_ts)
+        long_cd_remain  = max(long_cd_remain,  post_exit_cd)
+        short_cd_remain = max(short_cd_remain, post_exit_cd)
 
         status.update({
             "state": "FLAT",
@@ -368,7 +378,7 @@ def main():
             sl_price = calc_pattern_sl(
                 sig.side, price,
                 float(last["low"]), float(last["high"]),
-                float(df_1h.iloc[-2]["low"]), float(df_1h.iloc[-2]["high"]),
+                float(prev["low"]), float(prev["high"]),
             )
             qty = position_size(balance, price, sl_price, leverage=LEV, risk_pct=RISK_PCT)
             qty = round_qty(qty, info["step"])
@@ -384,7 +394,7 @@ def main():
                     sl_price = calc_pattern_sl(
                         sig.side, fill_price,
                         float(last["low"]), float(last["high"]),
-                        float(df_1h.iloc[-2]["low"]), float(df_1h.iloc[-2]["high"]),
+                        float(prev["low"]), float(prev["high"]),
                     )
                     sl_side = "SELL" if sig.side == "LONG" else "BUY"
                     client.stop_market(PAIR, sl_side, sl_price, close_position=True)
@@ -473,6 +483,7 @@ def main():
                 if ex.reason == "SL":
                     if pos.side == "LONG":  state["last_long_sl_time"]  = now_ts
                     else:                   state["last_short_sl_time"] = now_ts
+                state["last_exit_time"] = now_ts      # generic 2h post-exit cooldown (v5 parity)
                 state["position"] = None
                 log.info(f"  ✕ EXIT {pos.side} via {ex.reason} @${fill_price:.2f}  PnL {pnl_pct:+.2f}%")
                 status["just_closed"] = trade_record

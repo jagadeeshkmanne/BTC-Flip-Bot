@@ -42,6 +42,7 @@ PARTIAL_TP_FRAC   = 0.30
 
 # Cooldown
 SAME_DIR_CD_BARS  = 36             # 36h same-dir cooldown — optimal from sweep ($157K vs $154K @24h)
+COOLDOWN_BARS     = 2              # 2h generic post-exit cooldown (any direction) — matches v5 backtest
 
 # DD circuit breaker
 DD_HALT_PCT       = 0.25
@@ -212,7 +213,7 @@ def evaluate_signal(row: pd.Series) -> SignalState:
         "1H MACD > signal":            bool(macd_bull),
         "1H Bullish engulfing":        eng_bull,
         "1H ATR > MA(50)":             high_vol,
-        "1H Vol > 1.2×SMA20":          vol_ok,
+        f"1H Vol > {VOL_SPIKE_RATIO}×SMA20":  vol_ok,
     }
     s.conditions_short = {
         "Daily EMA50 trend (bearish)": daily_bear,
@@ -221,7 +222,7 @@ def evaluate_signal(row: pd.Series) -> SignalState:
         "1H MACD < signal":            bool(macd_bear),
         "1H Bearish engulfing":        eng_bear,
         "1H ATR > MA(50)":             high_vol,
-        "1H Vol > 1.2×SMA20":          vol_ok,
+        f"1H Vol > {VOL_SPIKE_RATIO}×SMA20":  vol_ok,
     }
     s.long_ok  = all(s.conditions_long.values())
     s.short_ok = all(s.conditions_short.values())
