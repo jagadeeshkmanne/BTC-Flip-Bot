@@ -56,7 +56,7 @@ BE_TRIGGER_R     = 999.0        # disabled — BE-move killed winners
 
 RSI_LONG_MIN     = 45
 RSI_SHORT_MAX    = 55
-ENGULF_BODY_MULT = 1.2
+ENGULF_BODY_MULT = 1.0           # any-size engulfing (sweep: +2 trades, +3pp CAGR)
 ATR_MA_LEN       = 50
 
 # V3 SAFE additions (do not alter V2 entry/exit core logic):

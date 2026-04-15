@@ -50,7 +50,7 @@ DD_HALT_BARS      = 168            # 7 days × 24h
 # Entry filter thresholds
 RSI_LONG_MIN      = 45
 RSI_SHORT_MAX     = 55
-ENGULF_BODY_MULT  = 1.2
+ENGULF_BODY_MULT  = 1.0            # any-size engulfing (sweep: +2 trades, +3 pp CAGR, same DD)
 ATR_MA_LEN        = 50
 VOL_SMA_LEN       = 20
 VOL_SPIKE_RATIO   = 1.2
