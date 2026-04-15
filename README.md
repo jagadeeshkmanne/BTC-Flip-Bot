@@ -7,13 +7,16 @@ with Daily + 4H trend filters. Runs on GCP free tier (~$0/month).
 
 | Metric | Value |
 |---|---|
-| Final | $157,827 (+1,478%) |
-| CAGR | **+73.7%** |
-| Max drawdown | -25.0% |
-| Profit factor | **3.74** |
-| Win rate | 25.9% |
-| Trades | 58 (~12/yr) |
+| Final | **$155,646** (+1,456%) |
+| CAGR | **+73.2%** |
+| Max drawdown | **-21.8%** |
+| Profit factor | **4.46** |
+| Win rate | **41.7%** |
+| Trades | 60 (~12/yr) |
 | Years positive | **6 of 6** |
+
+At 3× leverage: $10K → ~$379K (+107% CAGR / -27% DD).
+At $5K start (2× lev): $5K → ~$78K.
 
 ---
 
@@ -27,7 +30,7 @@ with Daily + 4H trend filters. Runs on GCP free tier (~$0/month).
 | **4H** | RSI(14) > 50 confirms LONG · RSI < 50 confirms SHORT |
 | **1H (entry)** | RSI(14) in pullback zone (long > 45, short < 55) |
 | | MACD(12,26,9): line vs signal must agree |
-| | Bullish/Bearish engulfing (body > 1.2× prev body) |
+| | Bullish/Bearish engulfing (any-size, body > 1.0× prev body) |
 | | ATR(14) > rolling 50-bar mean (volatility regime) |
 | | Volume > 1.2× SMA(20) (real participation) |
 
@@ -35,7 +38,7 @@ with Daily + 4H trend filters. Runs on GCP free tier (~$0/month).
 
 - **Stop loss** — pattern-based (low/high of entry candle ± 0.1% buffer, capped at 2.5% from entry).
   Placed as `STOP_MARKET` on Binance immediately after entry → fires intrabar even if bot is offline.
-- **Partial TP** — at +6R favorable, lock 30% of position, leave 70% running on original SL.
+- **Partial TP** — at +3R favorable, lock 30% of position, leave 70% running on original SL.
 - **Opposite signal** — when reverse setup fires, exit position. **Do NOT open opposite** (V4 fix
   prevents giving back profits to bounces).
 - **No fixed TP** — let runners run.
@@ -119,9 +122,12 @@ Every V5 parameter was sweep-tested:
 |---|---|---|
 | Same-direction cooldown after SL | 0, 4, 8, 12, 16, 20, 24, **36**, 48, 72, 168h | **36h** |
 | SL cap (% from entry) | 1.5%, 2.0%, **2.5%**, 3.5%, 5.0%, 7.5% | **2.5%** (pattern-based) |
-| Partial TP trigger | none, 2R, 3R, 4R, **6R**, 8R | **6R** (lock 30%) |
+| Partial TP trigger | 1.5R, 2R, 2.5R, **3R**, 4R, 5R, 6R, 8R | **3R** (lock 30%) — best WR + lowest DD |
+| Engulfing body size multiplier | **1.0×**, 1.2×, 1.5× | **1.0×** (any-size engulfing) |
 | Cooldown approach | time, fresh-signal reset, 4H RSI cycle | **time-based** |
 | Flip-open after opposite signal | enabled / disabled | **disabled** (V4 fix) |
+| Volume filter (vol > 1.2× SMA20) | on / off | **on** (off doubles trades but kills CAGR) |
+| Leverage | 1×, **2×**, 3×, 4×, 5× | **2×** default (3× viable, see deploy) |
 
 Post-mortem audit on the 5yr backtest:
 - **94% of SL hits were correct** — price continued adverse direction within 24h
