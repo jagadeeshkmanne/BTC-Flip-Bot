@@ -65,6 +65,8 @@
   .cond.met .dot{background:#3fb950;box-shadow:0 0 6px rgba(63,185,80,.5)}
   .cond .dot{width:7px;height:7px;border-radius:50%;background:#3a4250;flex-shrink:0}
   .cond .label{flex:1}
+  .cond .val-now{font-size:11px;font-weight:600;color:#9ca3af;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 6px;background:rgba(255,255,255,.05);border-radius:3px;margin-right:4px}
+  .cond.met .val-now{color:#7ee094;background:rgba(63,185,80,.12)}
   .cond .check{font-size:13px;font-weight:700;opacity:.7}
   .cond.met .check{opacity:1}
   .cd-warn{font-size:10px;color:#ffb454;margin-top:6px;padding:4px 8px;background:rgba(255,180,84,.08);border-radius:3px}
@@ -243,13 +245,46 @@ function isTrue(v){ return v === true || v === 'True' || v === 'true'; }
 function countMet(o){ return Object.values(o || {}).filter(isTrue).length; }
 function setBadge(el, text, cls){ el.textContent = text; el.className = 'badge ' + cls; }
 
-function renderConds(listEl, conds, total) {
+function valueFor(condKey, ind) {
+  // Map condition name → current numeric value (from raw_indicators)
+  if (!ind) return '';
+  if (condKey.includes('Daily EMA50')) {
+    return ind.bias_d === 1 ? 'BULL' : ind.bias_d === -1 ? 'BEAR' : 'flat';
+  }
+  if (condKey.startsWith('4H RSI')) {
+    return ind.confirm_4h === 1 ? '>50' : ind.confirm_4h === -1 ? '<50' : '50';
+  }
+  if (condKey.startsWith('1H RSI')) {
+    return ind.rsi_1h !== null ? ind.rsi_1h.toFixed(1) : '';
+  }
+  if (condKey.startsWith('1H MACD')) {
+    const diff = (ind.macd_line ?? 0) - (ind.macd_signal ?? 0);
+    return (diff >= 0 ? '+' : '') + diff.toFixed(1);
+  }
+  if (condKey.includes('engulfing')) {
+    return ''; // boolean only — check icon shows it
+  }
+  if (condKey.includes('ATR')) {
+    return (ind.atr_1h ?? 0).toFixed(0) + ' / ' + (ind.atr_ma ?? 0).toFixed(0);
+  }
+  if (condKey.includes('Vol')) {
+    const ratio = (ind.vol_sma && ind.vol_sma > 0) ? (ind.volume / ind.vol_sma).toFixed(2) : '—';
+    return ratio + 'x';
+  }
+  return '';
+}
+
+function renderConds(listEl, conds, ind) {
   listEl.innerHTML = '';
   Object.entries(conds || {}).forEach(([k, v]) => {
     const met = isTrue(v);
+    const val = valueFor(k, ind);
     const row = document.createElement('div');
     row.className = 'cond' + (met ? ' met' : '');
-    row.innerHTML = `<span class="dot"></span><span class="label">${k}</span><span class="check">${met ? '✓' : ''}</span>`;
+    row.innerHTML = `<span class="dot"></span>` +
+      `<span class="label">${k}</span>` +
+      (val ? `<span class="val-now">${val}</span>` : '') +
+      `<span class="check">${met ? '✓' : ''}</span>`;
     listEl.appendChild(row);
   });
 }
@@ -359,8 +394,8 @@ async function refresh() {
   $('longProgress').style.width  = lT ? (lM/lT*100) + '%' : '0%';
   $('shortProgress').style.width = sT ? (sM/sT*100) + '%' : '0%';
   $('setupSummary').textContent = `LONG ${lM}/${lT} · SHORT ${sM}/${sT}`;
-  renderConds($('longConds'),  lc);
-  renderConds($('shortConds'), sc);
+  renderConds($('longConds'),  lc, data.raw_indicators);
+  renderConds($('shortConds'), sc, data.raw_indicators);
   const lcd = data.long_cooldown_remaining_sec || 0;
   const scd = data.short_cooldown_remaining_sec || 0;
   $('longCd').style.display  = lcd > 0 ? '' : 'none';
