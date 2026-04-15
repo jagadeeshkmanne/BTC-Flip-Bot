@@ -266,6 +266,30 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         if self._is_public(path):
             return super().do_GET()
 
+        # ── Public V5 dashboard endpoints (no auth) ──
+        if path == '/api/status':
+            env = parse_qs(parsed.query).get('env', ['testnet'])[0]
+            status_file = os.path.join(BOT_DIR, 'data', env, 'status.json')
+            if os.path.exists(status_file):
+                try:
+                    with open(status_file) as f:
+                        return self._json_response(json.load(f))
+                except Exception:
+                    return self._json_response({"error": "status read failed"})
+            return self._json_response({"state": "NO_DATA", "env": env})
+
+        if path == '/api/trades':
+            env = parse_qs(parsed.query).get('env', ['testnet'])[0]
+            state_file = os.path.join(BOT_DIR, 'data', env, 'state.json')
+            if os.path.exists(state_file):
+                try:
+                    with open(state_file) as f:
+                        st = json.load(f)
+                    return self._json_response(st.get('trade_log', []))
+                except Exception:
+                    return self._json_response([])
+            return self._json_response([])
+
         # Everything else requires auth
         if not self._require_auth():
             return
