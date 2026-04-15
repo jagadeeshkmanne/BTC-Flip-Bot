@@ -37,7 +37,7 @@ SL_MAX_PCT        = 0.025          # cap pattern SL at 2.5%
 
 # Partial TP
 USE_PARTIAL_TP    = True
-PARTIAL_TP_R      = 6.0            # lock 30% at +6R favorable
+PARTIAL_TP_R      = 3.0            # lock 30% at +3R favorable (best balance: WR 41%, DD -22%, CAGR +70%)
 PARTIAL_TP_FRAC   = 0.30
 
 # Cooldown
