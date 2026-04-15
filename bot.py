@@ -2,12 +2,12 @@
 """
 bot.py — Strategy V5 live bot (one-shot per 1H candle close).
 
-V5 spec (5yr backtest: $10K → $154,657, +73% CAGR, PF 3.63, -25% DD):
-  Entry  : Daily EMA50 + 4H RSI + 1H stack (RSI/MACD/engulf/ATR/vol) ALL agree
+V5 spec (5yr backtest: $10K → $241K, +89% CAGR, PF 5.50, -19.5% DD, Calmar 4.57):
+  Entry  : Daily EMA50 + 4H RSI + 1H stack (RSI/MACD/engulf/ATR/vol 1.5×) ALL agree
   SL     : pattern-based — min(low_entry, low_prior) − 0.1%, capped at 2.5%
-  Partial TP: lock 30% at +6R favorable, leave 70% on original SL
+  Partial TP: lock 30% at +5R favorable, leave 70% on original SL
   Exit   : opposite signal closes (NO flip-open — V4 fix)
-  Cooldown: 24h after SL hit (same direction)
+  Cooldown: 36h after SL hit (same direction)
   DD halt : 7 days after −25% peak-to-trough drawdown
   Leverage: 2× (configurable in config/{env}.json)
 

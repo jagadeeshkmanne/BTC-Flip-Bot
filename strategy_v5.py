@@ -62,9 +62,9 @@ ATR_MA_LEN       = 50
 # V3 SAFE additions (do not alter V2 entry/exit core logic):
 USE_VOLUME_FILTER = True
 VOL_SMA_LEN       = 20
-VOL_SPIKE_RATIO   = 1.2          # 1H volume must be > 1.2× rolling SMA → real participation
+VOL_SPIKE_RATIO   = 1.5          # stricter vol filter (sweep: +8pp CAGR, better DD+PF)
 USE_PARTIAL_TP    = True
-PARTIAL_TP_R      = 3.0          # lock 30% at +3R (sweep: best WR 41%, lowest DD -22%, CAGR +70%)
+PARTIAL_TP_R      = 5.0          # lock 30% at +5R (best Calmar 4.57 with vol 1.5×)
 PARTIAL_TP_FRAC   = 0.30         # take 30% off, leave 70% to keep running on original SL
 
 

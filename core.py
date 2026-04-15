@@ -37,7 +37,7 @@ SL_MAX_PCT        = 0.025          # cap pattern SL at 2.5%
 
 # Partial TP
 USE_PARTIAL_TP    = True
-PARTIAL_TP_R      = 3.0            # lock 30% at +3R favorable (best balance: WR 41%, DD -22%, CAGR +70%)
+PARTIAL_TP_R      = 5.0            # lock 30% at +5R (best Calmar 4.57 with vol 1.5×)
 PARTIAL_TP_FRAC   = 0.30
 
 # Cooldown
@@ -53,7 +53,7 @@ RSI_SHORT_MAX     = 55
 ENGULF_BODY_MULT  = 1.0            # any-size engulfing (sweep: +2 trades, +3 pp CAGR, same DD)
 ATR_MA_LEN        = 50
 VOL_SMA_LEN       = 20
-VOL_SPIKE_RATIO   = 1.2
+VOL_SPIKE_RATIO   = 1.5            # stricter vol filter (sweep: +8pp CAGR, lower DD, higher PF)
 
 Side = Literal["LONG", "SHORT"]
 

@@ -7,16 +7,17 @@ with Daily + 4H trend filters. Runs on GCP free tier (~$0/month).
 
 | Metric | Value |
 |---|---|
-| Final | **$155,646** (+1,456%) |
-| CAGR | **+73.2%** |
-| Max drawdown | **-21.8%** |
-| Profit factor | **4.46** |
-| Win rate | **41.7%** |
-| Trades | 60 (~12/yr) |
+| Final | **$241,102** (+2,311%) |
+| CAGR | **+89.1%** |
+| Max drawdown | **-19.5%** |
+| Profit factor | **5.50** |
+| Calmar | **4.57** (best risk-adjusted) |
+| Win rate | 37.2% |
+| Trades | 43 (~9/yr) |
 | Years positive | **6 of 6** |
 
-At 3× leverage: $10K → ~$379K (+107% CAGR / -27% DD).
-At $5K start (2× lev): $5K → ~$78K.
+At $5K start (2× lev): $5K → **$120,551**.
+At 3× leverage: $5K → **$275,092** (+123% CAGR / -27.6% DD).
 
 ---
 
@@ -32,13 +33,13 @@ At $5K start (2× lev): $5K → ~$78K.
 | | MACD(12,26,9): line vs signal must agree |
 | | Bullish/Bearish engulfing (any-size, body > 1.0× prev body) |
 | | ATR(14) > rolling 50-bar mean (volatility regime) |
-| | Volume > 1.2× SMA(20) (real participation) |
+| | Volume > 1.5× SMA(20) (strong participation) |
 
 ### Exit
 
 - **Stop loss** — pattern-based (low/high of entry candle ± 0.1% buffer, capped at 2.5% from entry).
   Placed as `STOP_MARKET` on Binance immediately after entry → fires intrabar even if bot is offline.
-- **Partial TP** — at +3R favorable, lock 30% of position, leave 70% running on original SL.
+- **Partial TP** — at +5R favorable, lock 30% of position, leave 70% running on original SL.
 - **Opposite signal** — when reverse setup fires, exit position. **Do NOT open opposite** (V4 fix
   prevents giving back profits to bounces).
 - **No fixed TP** — let runners run.
@@ -122,7 +123,8 @@ Every V5 parameter was sweep-tested:
 |---|---|---|
 | Same-direction cooldown after SL | 0, 4, 8, 12, 16, 20, 24, **36**, 48, 72, 168h | **36h** |
 | SL cap (% from entry) | 1.5%, 2.0%, **2.5%**, 3.5%, 5.0%, 7.5% | **2.5%** (pattern-based) |
-| Partial TP trigger | 1.5R, 2R, 2.5R, **3R**, 4R, 5R, 6R, 8R | **3R** (lock 30%) — best WR + lowest DD |
+| Partial TP trigger | 1.5R, 2R, 2.5R, 3R, 4R, **5R**, 6R, 8R | **5R** (lock 30%) — best Calmar w/ vol 1.5× |
+| Volume spike ratio | 1.0×, 1.2×, **1.5×**, 2.0×, 2.5× | **1.5×** (stricter = higher PF + lower DD) |
 | Engulfing body size multiplier | **1.0×**, 1.2×, 1.5× | **1.0×** (any-size engulfing) |
 | Cooldown approach | time, fresh-signal reset, 4H RSI cycle | **time-based** |
 | Flip-open after opposite signal | enabled / disabled | **disabled** (V4 fix) |
