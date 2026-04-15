@@ -259,7 +259,8 @@ function valueFor(condKey, ind) {
   }
   if (condKey.startsWith('1H MACD')) {
     const diff = (ind.macd_line ?? 0) - (ind.macd_signal ?? 0);
-    return (diff >= 0 ? '+' : '') + diff.toFixed(1);
+    const dir = diff > 0 ? '▲ bull' : diff < 0 ? '▼ bear' : 'neutral';
+    return dir;
   }
   if (condKey.includes('engulfing')) {
     return ''; // boolean only — check icon shows it
