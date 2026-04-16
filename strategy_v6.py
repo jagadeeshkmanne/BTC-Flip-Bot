@@ -4,9 +4,10 @@ strategy_v6.py — MTF Candlestick Flip Bot + SL-Flip extension  ◀ LIVE VERSIO
 ⭐ THIS IS THE CURRENT LIVE STRATEGY (deployed on GCP testnet as of 2026-04-16).
    bot.py + core.py mirror this backtest exactly.
 
-5-year Binance BTCUSDT backtest: $5K → $147,496 (+96.9% CAGR, -19.7% DD, PF 4.29, 73 trades)
-vs previous v6 (no BE after TP): $5K → $148,562 (+97.1% CAGR, -19.7% DD, PF 4.20, 79 trades)
-→ BE-after-partial-TP cuts 8 SLs, lifts PF 4.20→4.29, same CAGR/DD. Kills runner-giveback.
+5-year Binance BTCUSDT backtest (15%@6R + BE+0.1%): $5K → $181,943 (+105.3% CAGR, -19.7% DD, PF 4.63, 74 trades)
+vs 30%@5R + BE (previous V6):                          $5K → $147,496 (+96.9% CAGR, -19.7% DD, PF 4.29, 73 trades)
+→ Smaller partial (15% vs 30%) + higher R trigger (6R vs 5R) lets 85% of position ride fat-tail winners.
+   Lifts CAGR +8.4pp, PF 4.29 → 4.63. DD unchanged. WR 43.8% → 41.9%.
 
 Architecture (3 timeframes):
   Daily : EMA50 trend         (close > Daily EMA50 → LONG bias / < → SHORT bias)
@@ -22,8 +23,8 @@ Entry  : ALL of the above must agree (Daily trend + 4H RSI + 1H entry stack)
 
 Exit:
   Stop loss     : pattern-based (min of bar/prev low), capped at 2.5% from entry
-  Partial TP    : 30% off at +5R, remainder runs with SL moved to BE+0.1%
-                  (break-even exit after partial locks in profit + kills giveback)
+  Partial TP    : 15% off at +6R, remainder (85%) runs with SL moved to BE+0.1%
+                  (small partial + high R trigger + BE-move = maximal fat-tail capture)
   Opposite exit : close only on opposite signal (no flip-open, V4 rule)
   DD circuit    : halt 7 days after −25% peak-to-trough drawdown
   Cooldown      : 24h same-dir after SL hit + 2h generic post-exit
@@ -73,8 +74,8 @@ USE_VOLUME_FILTER = True
 VOL_SMA_LEN       = 20
 VOL_SPIKE_RATIO   = 1.5          # stricter vol filter (sweep: +8pp CAGR, better DD+PF)
 USE_PARTIAL_TP    = True
-PARTIAL_TP_R      = 5.0          # lock 30% at +5R (best Calmar 4.57 with vol 1.5×)
-PARTIAL_TP_FRAC   = 0.30         # take 30% off, leave 70% to keep running on original SL
+PARTIAL_TP_R      = 6.0          # lock partial at +6R (sweep: 6R peak Calmar 7.20, DD stays <17%)
+PARTIAL_TP_FRAC   = 0.15         # take only 15% off — 85% runs to capture fat-tail winners
 PARTIAL_BE_BUF    = 0.001        # after partial TP fires, move SL to entry ± 0.1% (covers fees)
 
 # ─── V6 SL-FLIP extension (+$131K over baseline in 5yr backtest) ───

@@ -57,10 +57,10 @@ slBufPct       = input.float(0.1,   "SL buffer (%)", minval=0.0, maxval=1, step=
 
 // Take Profit
 grpTP          = "🎯 Partial Take Profit"
-partialTpR     = input.float(5.0,   "TP trigger (R multiple)", minval=1, maxval=20, step=0.5, group=grpTP,
-     tooltip="Lock in partial profit when price moves this many R in your favor. 5R = 5× the SL distance.")
-partialTpFrac  = input.float(30.0,  "TP close (%)", minval=10, maxval=90, step=5, group=grpTP,
-     tooltip="Percentage of position to close at TP trigger. Remainder runs on original SL.")
+partialTpR     = input.float(6.0,   "TP trigger (R multiple)", minval=1, maxval=20, step=0.5, group=grpTP,
+     tooltip="Lock in partial profit when price moves this many R in your favor. 6R is the sweep peak — higher R risks DD halt, lower R gives up edge.")
+partialTpFrac  = input.float(15.0,  "TP close (%)", minval=5, maxval=90, step=5, group=grpTP,
+     tooltip="Percentage of position to close at TP trigger. 15% lets 85% run to catch fat-tail winners. Sweep peak vs old 30% default: +11pp CAGR.")
 partialBeBufPct = input.float(0.1,  "Move SL to BE+buf (%) after partial TP", minval=0.0, maxval=2, step=0.05, group=grpTP,
      tooltip="After partial TP fires, move SL to entry ± this %. Kills giveback on runners (Trade 15 pattern). Backtest: +3pp CAGR, -3.6pp DD. Set 0 to disable.") / 100
 

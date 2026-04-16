@@ -37,8 +37,8 @@ SL_MAX_PCT        = 0.025          # cap pattern SL at 2.5%
 
 # Partial TP
 USE_PARTIAL_TP    = True
-PARTIAL_TP_R      = 5.0            # lock 30% at +5R (best Calmar 4.57 with vol 1.5×)
-PARTIAL_TP_FRAC   = 0.30
+PARTIAL_TP_R      = 6.0            # lock partial at +6R (sweep: 15%@6R = peak +11pp CAGR vs 30%@5R)
+PARTIAL_TP_FRAC   = 0.15           # take only 15% off — let 85% runner capture fat-tail upside
 PARTIAL_BE_BUF    = 0.001          # after partial TP fires, move SL to entry ± 0.1%
                                    # (kills runner-giveback — Trade 15 pattern)
 
