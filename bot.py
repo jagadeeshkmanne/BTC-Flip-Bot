@@ -347,10 +347,15 @@ def main():
 
     if pos_dict is None:
         # ── V6 SL-FLIP: check if a pending flip is ready to execute ──
+        # Respects DD halt + post-exit cooldown (bug fix: flips were bypassing halt)
         pending = state.get("pending_flip")
-        if USE_SL_FLIP and pending and not ARGS.dry:
+        if USE_SL_FLIP and pending and not ARGS.dry and not halted:
+            # Also respect 2h generic post-exit cooldown
+            generic_cd_remaining = state.get("last_exit_time", 0) + COOLDOWN_BARS*3600 - now_ts
+            if generic_cd_remaining > 0:
+                log.info(f"  🔄 Flip queued but generic cooldown has {generic_cd_remaining//60}min remaining")
             elapsed_sec = now_ts - pending.get("sl_time", now_ts)
-            if elapsed_sec >= FLIP_WAIT_BARS * 3600:
+            if elapsed_sec >= FLIP_WAIT_BARS * 3600 and generic_cd_remaining <= 0:
                 flip_side = pending["side"]
                 ref_price = pending["ref_price"]
                 lb = FLIP_SR_LOOKBACK

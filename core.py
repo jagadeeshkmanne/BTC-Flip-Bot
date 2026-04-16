@@ -304,10 +304,12 @@ def calc_flip_sl(side: Side, ref_price: float,
 
 def position_size(equity: float, entry_price: float, sl_price: float,
                   leverage: float = LEVERAGE, risk_pct: float = RISK_PCT) -> float:
-    """Risk-based sizing: qty such that SL hit loses risk_pct of equity (with leverage)."""
-    sl_dist = abs(entry_price - sl_price)
-    if sl_dist <= 0: return 0.0
-    return (equity * risk_pct) / (sl_dist * leverage)
+    """Notional sizing: qty = (equity × leverage) / price — deploys leverage× notional.
+    Matches Python v6 backtest (pnl = price_move × leverage × equity) and Pine Script.
+    At 2× leverage, SL hit = 5% equity loss (2.5% price × 2×).
+    sl_price arg kept for API compat but not used for sizing anymore."""
+    if entry_price <= 0: return 0.0
+    return (equity * leverage) / entry_price
 
 
 # ─── Position management — exit decision with condition state ───

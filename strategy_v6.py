@@ -234,8 +234,10 @@ def run():
             cooldown -= 1
 
         # ─── V6 SL-FLIP: execute pending flip if wait period elapsed ───
+        # Respects DD halt + post-exit cooldown (bug fix: flips were bypassing halt)
         if (USE_SL_FLIP and pending_flip_side != 0 and position == 0
                 and (i - pending_flip_bar) >= FLIP_WAIT_BARS
+                and cooldown == 0 and i >= halt_until
                 and not pd.isna(atr_v) and atr_v > 0):
             side = pending_flip_side
             ref_p = pending_flip_ref_price

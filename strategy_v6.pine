@@ -174,17 +174,18 @@ if drawdownPct <= -ddHaltPct and strategy.position_size == 0
     haltUntilBar := bar_index + ddHaltHours
     peakEquity   := currentEquity
 
-// ─── Position sizing (risk-based) ───
-// qty = (equity × risk%) / SL_distance
-// Leverage is handled by the exchange (margin), not by inflating position size.
-// This matches the Python v5 backtest behavior.
+// ─── Position sizing (notional = equity × leverage) ───
+// qty = (equity × leverage) / price  — deploys leverage× notional of capital
+// This matches Python v6 backtest: pnl = price_move% × leverage × equity
+// A 1% price move at 2× leverage = 2% equity change.
 slDistLong  = close - stopLong
 slDistShort = stopShort - close
-qtyLong  = slDistLong > 0 ? (currentEquity * riskPct) / slDistLong : 0
-qtyShort = slDistShort > 0 ? (currentEquity * riskPct) / slDistShort : 0
+notionalQty = (currentEquity * leverageInput) / close
+qtyLong  = slDistLong > 0 ? notionalQty : 0
+qtyShort = slDistShort > 0 ? notionalQty : 0
 
-// ─── V6 SL-FLIP: execute pending flip if wait elapsed ───
-flipReady = useSlFlip and pendingFlipSide != 0 and strategy.position_size == 0 and not na(pendingFlipBar) and (bar_index - pendingFlipBar) >= flipWaitHours
+// ─── V6 SL-FLIP: execute pending flip if wait elapsed (respects DD halt + generic cooldown) ───
+flipReady = useSlFlip and pendingFlipSide != 0 and strategy.position_size == 0 and not na(pendingFlipBar) and (bar_index - pendingFlipBar) >= flipWaitHours and not isHalted and not exitCdBlocked
 
 if flipReady
     lbStart = math.max(0, bar_index - flipSrLookback)
@@ -194,7 +195,7 @@ if flipReady
         capSl     = pendingFlipRef * (1 + flipSlCapPct)
         flipSL    = math.min(swingSl, capSl)
         flipDist  = flipSL - close
-        flipQty   = flipDist > 0 ? (currentEquity * riskPct) / flipDist : 0
+        flipQty   = flipDist > 0 ? (currentEquity * leverageInput) / close : 0
         if flipQty > 0
             strategy.entry("fS", strategy.short, qty=flipQty)
             strategy.exit("x", from_entry="fS", stop=flipSL)
@@ -208,7 +209,7 @@ if flipReady
         capSl    = pendingFlipRef * (1 - flipSlCapPct)
         flipSL   = math.max(swingSl, capSl)
         flipDist = close - flipSL
-        flipQty  = flipDist > 0 ? (currentEquity * riskPct) / flipDist : 0
+        flipQty  = flipDist > 0 ? (currentEquity * leverageInput) / close : 0
         if flipQty > 0
             strategy.entry("fL", strategy.long, qty=flipQty)
             strategy.exit("x", from_entry="fL", stop=flipSL)
