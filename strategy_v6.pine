@@ -25,6 +25,10 @@
 leverageInput = input.float(2.0, "Leverage", minval=1, maxval=10, step=0.5,
      tooltip="Tested at 2×. Higher leverage amplifies both returns AND drawdowns. Fees scale with leverage — at 5×+ fees may exceed profit margins.")
 
+// IMPORTANT: This strategy is designed for 1H charts ONLY.
+// TradingView's bottom range selectors (1D/5D/1M) can silently switch the chart
+// to 5m/15m — producing wildly different signals than the 1H backtest.
+// A runtime warning (bottom of chart) fires if the current TF is not 1H.
 strategy("BTC Flip Bot V1 — MTF + SL-Flip", overlay=true, initial_capital=5000,
      default_qty_type=strategy.percent_of_equity, default_qty_value=100,
      pyramiding=0, calc_on_order_fills=false, calc_on_every_tick=false,
@@ -57,6 +61,8 @@ partialTpR     = input.float(5.0,   "TP trigger (R multiple)", minval=1, maxval=
      tooltip="Lock in partial profit when price moves this many R in your favor. 5R = 5× the SL distance.")
 partialTpFrac  = input.float(30.0,  "TP close (%)", minval=10, maxval=90, step=5, group=grpTP,
      tooltip="Percentage of position to close at TP trigger. Remainder runs on original SL.")
+partialBeBufPct = input.float(0.1,  "Move SL to BE+buf (%) after partial TP", minval=0.0, maxval=2, step=0.05, group=grpTP,
+     tooltip="After partial TP fires, move SL to entry ± this %. Kills giveback on runners (Trade 15 pattern). Backtest: +3pp CAGR, -3.6pp DD. Set 0 to disable.") / 100
 
 // Entry Filters
 grpEntry       = "📊 Entry Filters"
@@ -146,6 +152,14 @@ var int pendingFlipSide = 0       // 0=none, 1=pending LONG, -1=pending SHORT
 var int pendingFlipBar  = na
 var float pendingFlipRef = na     // reference price (the SL that broke)
 var int flipEntryBar    = na
+
+// ─── Timeframe advisory — strategy's backtest was run on 1H ───
+// TradingView's chart TF affects which resolution the strategy calculates on.
+// On 5m/15m the signals will look completely different from the 1H backtest.
+// We don't BLOCK entries (so history still renders on any TF), but a red
+// warning label pops up whenever the chart isn't 1H so you know results
+// on this TF aren't comparable to the backtest numbers.
+wrongTf = timeframe.period != "60"
 
 // ─── Cooldown checks ───
 longCdBlocked  = not na(lastLongSlBar) and (bar_index - lastLongSlBar) < sameDirCdHours
@@ -246,7 +260,7 @@ if strategy.position_size > 0 and strategy.position_size[1] == 0
 if strategy.position_size < 0 and strategy.position_size[1] == 0
     storedSL := stopShort
 
-// ─── Partial TP ───
+// ─── Partial TP (+ move SL to BE after firing) ───
 // Use the correct entry ID based on whether position is a flip or main entry
 if strategy.position_size > 0 and not partialTaken and not na(storedSL)
     entryPrice = strategy.position_avg_price
@@ -257,6 +271,11 @@ if strategy.position_size > 0 and not partialTaken and not na(storedSL)
             tpId = isFlipPos ? "fL" : "L"
             strategy.close(tpId, qty_percent=partialTpFrac)
             partialTaken := true
+            // Move SL to BE+buffer (replaces existing stop with same id "x")
+            if partialBeBufPct > 0
+                beSL = entryPrice * (1 + partialBeBufPct)
+                strategy.exit("x", from_entry=tpId, stop=beSL)
+                storedSL := beSL
 
 if strategy.position_size < 0 and not partialTaken and not na(storedSL)
     entryPrice = strategy.position_avg_price
@@ -267,6 +286,10 @@ if strategy.position_size < 0 and not partialTaken and not na(storedSL)
             tpId = isFlipPos ? "fS" : "S"
             strategy.close(tpId, qty_percent=partialTpFrac)
             partialTaken := true
+            if partialBeBufPct > 0
+                beSL = entryPrice * (1 - partialBeBufPct)
+                strategy.exit("x", from_entry=tpId, stop=beSL)
+                storedSL := beSL
 
 // ─── Opposite signal exit (no flip-open) — use close_all since full close anyway ───
 if strategy.position_size > 0 and shortSignal
@@ -297,6 +320,13 @@ if strategy.position_size == 0 and strategy.position_size[1] != 0
 
 // ─── Visuals ───
 plot(showEma50 ? dailyEma50 : na, "Daily EMA50", color=color.new(color.yellow, 40), linewidth=2)
+
+// ─── Wrong-timeframe warning (always visible, overrides clean view) ───
+if barstate.islast and wrongTf
+    var table tfWarn = table.new(position.bottom_center, 1, 1, border_width=2, border_color=color.red)
+    table.cell(tfWarn, 0, 0,
+         "⚠ Chart TF is " + timeframe.period + " — Backtest was run on 1H. Results won't match Python numbers unless chart = 1H.",
+         bgcolor=color.new(color.red, 15), text_color=color.white, text_size=size.normal)
 
 // Background highlights (only shown when clean view is OFF)
 haltColor    = (not cleanView and isHalted) ? color.new(color.red, 85) : color(na)

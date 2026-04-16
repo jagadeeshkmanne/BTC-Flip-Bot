@@ -4,8 +4,9 @@ strategy_v6.py — MTF Candlestick Flip Bot + SL-Flip extension  ◀ LIVE VERSIO
 ⭐ THIS IS THE CURRENT LIVE STRATEGY (deployed on GCP testnet as of 2026-04-16).
    bot.py + core.py mirror this backtest exactly.
 
-5-year Binance BTCUSDT backtest: $10K → $348,756 (+103.6% CAGR, -19.6% DD, PF 4.80, 75 trades)
-vs v5 baseline (strategy_v5.py):  $10K → $241,102 (+89.1% CAGR,  -19.5% DD, PF 4.24, 43 trades)
+5-year Binance BTCUSDT backtest: $5K → $147,496 (+96.9% CAGR, -19.7% DD, PF 4.29, 73 trades)
+vs previous v6 (no BE after TP): $5K → $148,562 (+97.1% CAGR, -19.7% DD, PF 4.20, 79 trades)
+→ BE-after-partial-TP cuts 8 SLs, lifts PF 4.20→4.29, same CAGR/DD. Kills runner-giveback.
 
 Architecture (3 timeframes):
   Daily : EMA50 trend         (close > Daily EMA50 → LONG bias / < → SHORT bias)
@@ -21,10 +22,11 @@ Entry  : ALL of the above must agree (Daily trend + 4H RSI + 1H entry stack)
 
 Exit:
   Stop loss     : pattern-based (min of bar/prev low), capped at 2.5% from entry
-  Partial TP    : 30% off at +5R, remainder runs on original SL
+  Partial TP    : 30% off at +5R, remainder runs with SL moved to BE+0.1%
+                  (break-even exit after partial locks in profit + kills giveback)
   Opposite exit : close only on opposite signal (no flip-open, V4 rule)
   DD circuit    : halt 7 days after −25% peak-to-trough drawdown
-  Cooldown      : 36h same-dir after SL hit + 2h generic post-exit
+  Cooldown      : 24h same-dir after SL hit + 2h generic post-exit
 
 V6 SL-FLIP extension (NEW, live on testnet):
   - On SL hit → queue opposite-direction flip (if this wasn't already a flip)
@@ -73,6 +75,7 @@ VOL_SPIKE_RATIO   = 1.5          # stricter vol filter (sweep: +8pp CAGR, better
 USE_PARTIAL_TP    = True
 PARTIAL_TP_R      = 5.0          # lock 30% at +5R (best Calmar 4.57 with vol 1.5×)
 PARTIAL_TP_FRAC   = 0.30         # take 30% off, leave 70% to keep running on original SL
+PARTIAL_BE_BUF    = 0.001        # after partial TP fires, move SL to entry ± 0.1% (covers fees)
 
 # ─── V6 SL-FLIP extension (+$131K over baseline in 5yr backtest) ───
 USE_SL_FLIP       = True         # on SL hit, flip to opposite direction
@@ -370,6 +373,8 @@ def run():
                 partial_pnls.append(net * 100)
                 partial_taken = True
                 n_partial_tps += 1
+                # After partial TP: move SL to break-even + buffer (locks in profit, kills giveback)
+                pos_sl = entry_price * (1 + PARTIAL_BE_BUF)
             elif position == -1 and (entry_price - price) >= PARTIAL_TP_R * initial_sl_dist:
                 pmp = (entry_price - price) / entry_price
                 pnl_lev = pmp * LEVERAGE * PARTIAL_TP_FRAC
@@ -379,6 +384,7 @@ def run():
                 partial_pnls.append(net * 100)
                 partial_taken = True
                 n_partial_tps += 1
+                pos_sl = entry_price * (1 - PARTIAL_BE_BUF)
 
         # Manage open position. pos_sl is the source-of-truth stop (may be moved to BE)
         if position == 1:

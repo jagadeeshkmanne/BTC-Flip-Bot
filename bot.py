@@ -30,7 +30,7 @@ sys.path.insert(0, BOT_DIR)
 from core import (
     LEVERAGE as STRAT_LEV, RISK_PCT,
     SAME_DIR_CD_BARS, COOLDOWN_BARS, DD_HALT_PCT, DD_HALT_BARS,
-    USE_PARTIAL_TP, PARTIAL_TP_R, PARTIAL_TP_FRAC,
+    USE_PARTIAL_TP, PARTIAL_TP_R, PARTIAL_TP_FRAC, PARTIAL_BE_BUF,
     USE_SL_FLIP, FLIP_WAIT_BARS, FLIP_SL_CAP, FLIP_SR_LOOKBACK, FLIP_TIME_STOP,
     build_signals, evaluate_signal, evaluate_exit,
     calc_pattern_sl, calc_flip_sl, position_size, Position,
@@ -517,12 +517,22 @@ def main():
                     pos.qty -= close_qty
                     pos_dict["partial_taken"] = True
                     pos_dict["qty"] = pos.qty
+                    # Move SL to BE + buffer on the exchange (cancel old SL, place new)
+                    old_sl = pos.sl_price
+                    be_sl = (pos.entry_price * (1 + PARTIAL_BE_BUF) if pos.side == "LONG"
+                             else pos.entry_price * (1 - PARTIAL_BE_BUF))
+                    client.cancel_all(PAIR)
+                    sl_side = "SELL" if pos.side == "LONG" else "BUY"
+                    client.stop_market(PAIR, sl_side, be_sl, close_position=True)
+                    pos.sl_price = be_sl
+                    pos_dict["sl_price"] = be_sl
                     state["position"] = pos_dict
-                    log.info(f"  ✦ PARTIAL TP @+{PARTIAL_TP_R}R closed {close_qty} ({PARTIAL_TP_FRAC*100:.0f}%)")
+                    log.info(f"  ✦ PARTIAL TP @+{PARTIAL_TP_R}R closed {close_qty} ({PARTIAL_TP_FRAC*100:.0f}%)  → SL moved to BE ${be_sl:.2f}")
                     status["just_partial"] = True
                     send_email(f"✦ PARTIAL TP +{PARTIAL_TP_R}R · {pos.side}",
                                f"Locked {PARTIAL_TP_FRAC*100:.0f}% of position at +{PARTIAL_TP_R}R favorable.\n"
                                f"Closed qty: {close_qty}\nRemaining: {pos.qty}\n"
+                               f"SL moved to BE: ${be_sl:,.2f} (was ${old_sl:,.2f})\n"
                                f"Price: ${price:,.2f}\nBalance: ${balance:,.2f}")
 
         # Full exit (SL or opposite signal)
