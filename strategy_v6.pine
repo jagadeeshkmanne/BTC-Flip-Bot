@@ -1,17 +1,24 @@
 //@version=6
 // ─────────────────────────────────────────────────────────────────────
-// BTC Flip Bot — MTF Engulfing Momentum (BTCUSDT 1H 2×)
+// BTC Flip Bot V6 — MTF Engulfing + SL-Flip (BTCUSDT 1H 2×)
 //
-// Multi-timeframe trend-following strategy for BTCUSDT perp futures.
+// Multi-timeframe trend-following strategy with SL-flip extension.
 // Tested ONLY on BTCUSDT | 1H | 2× leverage.
-// Python 5yr backtest: $10K → $241K, +89.1% CAGR, -19.5% DD, PF 5.50
+//
+// Python 5yr backtest:
+//   v5 baseline:  $10K → $241K (+89.1% CAGR, -19.5% DD, PF 4.24, 43 trades)
+//   v6 (this):    $10K → $349K (+103.6% CAGR, -19.6% DD, PF 4.80, 75 trades)
+//
+// V6 = v5 + SL-flip: on SL hit, queue opposite-direction flip, wait 1h,
+//      open with tight 1.5% SL at swing high/low or % cap from broken SL.
+//      No flip-on-flip. 24h time-stop on flip positions.
 // ─────────────────────────────────────────────────────────────────────
 
 // ─── Leverage input (must be declared before strategy() for margin calc) ───
 leverageInput = input.float(2.0, "Leverage", minval=1, maxval=10, step=0.5,
      tooltip="Tested at 2×. Higher leverage amplifies both returns AND drawdowns. Fees scale with leverage — at 5×+ fees may exceed profit margins.")
 
-strategy("BTC Flip Bot — MTF Engulfing", overlay=true, initial_capital=5000,
+strategy("BTC Flip Bot V6 — MTF + SL-Flip", overlay=true, initial_capital=5000,
      default_qty_type=strategy.percent_of_equity, default_qty_value=100,
      pyramiding=0, calc_on_order_fills=false, calc_on_every_tick=false,
      process_orders_on_close=true, commission_type=strategy.commission.percent,
@@ -284,7 +291,7 @@ plotshape(canGoShort, title="Short Signal", style=shape.triangledown, location=l
 // ─── Dashboard ───
 if barstate.islast
     var table dash = table.new(position.top_right, 2, 10, border_width=1)
-    table.cell(dash, 0, 0, "BTC Flip Bot", bgcolor=color.gray, text_color=color.white)
+    table.cell(dash, 0, 0, "Flip Bot V6", bgcolor=color.gray, text_color=color.white)
     table.cell(dash, 1, 0, str.tostring(leverageInput, "#.#") + "× LEV", bgcolor=color.teal, text_color=color.white)
 
     table.cell(dash, 0, 1, "Daily EMA50")
