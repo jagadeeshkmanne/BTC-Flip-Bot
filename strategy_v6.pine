@@ -306,15 +306,12 @@ bgcolor(haltColor, title="DD Halt")
 bgcolor(longCdColor, title="Long Cooldown")
 bgcolor(shortCdColor, title="Short Cooldown")
 
-// ─── Minimal trade markers (LuxAlgo/TraderPro style) ───
-// Small arrows only. No text. Let TradingView's built-in entry/exit lines handle P&L display.
+// ─── No custom trade markers — TradingView's built-in strategy markers handle everything ───
+// Users can toggle them cleanly in chart Settings → Style tab:
+//   - Disable "Signal labels" for minimal display
+//   - Enable "Trades on chart" for clean entry/exit lines with P&L
 newLongEntry   = strategy.position_size > 0 and strategy.position_size[1] == 0
 newShortEntry  = strategy.position_size < 0 and strategy.position_size[1] == 0
-
-plotshape(showSignals and newLongEntry  and not isFlipPos, title="Long",      style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0),  size=size.tiny)
-plotshape(showSignals and newShortEntry and not isFlipPos, title="Short",     style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),    size=size.tiny)
-plotshape(showSignals and newLongEntry  and isFlipPos,     title="Flip Long", style=shape.triangleup,   location=location.belowbar, color=color.new(color.aqua, 0),   size=size.tiny)
-plotshape(showSignals and newShortEntry and isFlipPos,     title="Flip Short",style=shape.triangledown, location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny)
 
 // ─── Dashboard (hidden in clean view) ───
 if barstate.islast and not cleanView
