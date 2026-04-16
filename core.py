@@ -41,7 +41,7 @@ PARTIAL_TP_R      = 5.0            # lock 30% at +5R (best Calmar 4.57 with vol 
 PARTIAL_TP_FRAC   = 0.30
 
 # Cooldown
-SAME_DIR_CD_BARS  = 36             # 36h same-dir cooldown — optimal from sweep ($157K vs $154K @24h)
+SAME_DIR_CD_BARS  = 24             # 24h same-dir cooldown (v6+flip: matches 36h performance with +4 trades)
 COOLDOWN_BARS     = 2              # 2h generic post-exit cooldown (any direction) — matches v5 backtest
 
 # DD circuit breaker

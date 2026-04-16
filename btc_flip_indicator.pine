@@ -1,6 +1,9 @@
 //@version=6
 // ─────────────────────────────────────────────────────────────────────
-// BTC Flip Bot — MTF Engulfing Momentum (BTCUSDT 1H 2×)
+// BTC Flip Bot V1 — MTF Engulfing Signals (BTCUSDT 1H 2×)
+//
+// Author:  Jagadeesh Manne
+// Version: V1
 //
 // Signal indicator version — shows entry signals, conditions dashboard,
 // and alert-ready triggers. No simulated trades.
@@ -8,7 +11,7 @@
 // Backtested in Python on 5yr Binance BTCUSDT data:
 // $10K → $241K, +89.1% CAGR, -19.5% DD, PF 5.50, 43 trades
 // ─────────────────────────────────────────────────────────────────────
-indicator("BTC Flip Bot — MTF Engulfing", overlay=true, max_labels_count=500)
+indicator("BTC Flip Bot V6 — MTF Engulfing Signals", overlay=true, max_labels_count=500)
 
 // ─── Inputs ───
 grpEntry       = "📊 Entry Filters"
@@ -24,7 +27,7 @@ slMaxPct       = input.float(2.5,   "SL max (%)", minval=0.5, maxval=10, step=0.
 slBufPct       = input.float(0.1,   "SL buffer (%)", minval=0.0, maxval=1, step=0.05, group=grpSL) / 100
 
 grpCD          = "⏸️ Cooldowns"
-sameDirCdHours = input.int(36,      "Same-dir SL cooldown (hours)", minval=0, maxval=168, group=grpCD)
+sameDirCdHours = input.int(24,      "Same-dir SL cooldown (hours)", minval=0, maxval=168, group=grpCD)
 genCdHours     = input.int(2,       "Generic exit cooldown (hours)", minval=0, maxval=24, group=grpCD)
 
 grpAlerts      = "🔔 Alerts"

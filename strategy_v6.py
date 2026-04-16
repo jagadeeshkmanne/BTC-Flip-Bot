@@ -58,7 +58,7 @@ SL_BUFFER_PCT    = 0.001        # 0.1% padding below/above the pattern low/high
 DD_HALT_PCT      = 0.25
 DD_HALT_BARS     = 168
 COOLDOWN_BARS    = 2
-SAME_DIR_CD_BARS = 36           # optimal from sweep ($157K vs $154K @24h)           # V2: 1-day same-direction cooldown after SL hit
+SAME_DIR_CD_BARS = 24           # 24h same-dir cooldown (v6+flip: tested 24h matches 36h performance with +4 trades)
 BE_TRIGGER_R     = 999.0        # disabled — BE-move killed winners
 
 RSI_LONG_MIN     = 45
