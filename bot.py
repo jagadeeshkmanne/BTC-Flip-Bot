@@ -31,8 +31,9 @@ from core import (
     LEVERAGE as STRAT_LEV, RISK_PCT,
     SAME_DIR_CD_BARS, COOLDOWN_BARS, DD_HALT_PCT, DD_HALT_BARS,
     USE_PARTIAL_TP, PARTIAL_TP_R, PARTIAL_TP_FRAC,
+    USE_SL_FLIP, FLIP_WAIT_BARS, FLIP_SL_CAP, FLIP_SR_LOOKBACK, FLIP_TIME_STOP,
     build_signals, evaluate_signal, evaluate_exit,
-    calc_pattern_sl, position_size, Position,
+    calc_pattern_sl, calc_flip_sl, position_size, Position,
 )
 
 
@@ -222,6 +223,8 @@ def default_state():
         "peak_equity":        0.0,
         "weekly_start":       None,
         "trade_log":          [],        # last 100 trades
+        # V6 SL-flip state
+        "pending_flip": None,            # {"side": "LONG"/"SHORT", "sl_time": epoch, "ref_price": float}
     }
 
 def save_state(s):
@@ -343,6 +346,49 @@ def main():
     }
 
     if pos_dict is None:
+        # ── V6 SL-FLIP: check if a pending flip is ready to execute ──
+        pending = state.get("pending_flip")
+        if USE_SL_FLIP and pending and not ARGS.dry:
+            elapsed_sec = now_ts - pending.get("sl_time", now_ts)
+            if elapsed_sec >= FLIP_WAIT_BARS * 3600:
+                flip_side = pending["side"]
+                ref_price = pending["ref_price"]
+                lb = FLIP_SR_LOOKBACK
+                recent_highs = df_1h["high"].iloc[-lb-2:-1]  # exclude current forming bar
+                recent_lows  = df_1h["low"].iloc[-lb-2:-1]
+                flip_sl = calc_flip_sl(flip_side, ref_price, recent_highs, recent_lows)
+                flip_qty = position_size(balance, price, flip_sl, leverage=LEV, risk_pct=RISK_PCT)
+                flip_qty = round_qty(flip_qty, info["step"])
+                if flip_qty >= info["min_qty"]:
+                    client.set_leverage(PAIR, LEV)
+                    side_api = "BUY" if flip_side == "LONG" else "SELL"
+                    ord_resp = client.market_order(PAIR, side_api, flip_qty)
+                    if ord_resp:
+                        fill_price = float(ord_resp.get("avgPrice", price)) or price
+                        sl_side = "SELL" if flip_side == "LONG" else "BUY"
+                        client.stop_market(PAIR, sl_side, flip_sl, close_position=True)
+                        pos_dict = {
+                            "side": flip_side, "entry_price": fill_price,
+                            "entry_time": datetime.now(timezone.utc).isoformat(),
+                            "qty": flip_qty, "sl_price": flip_sl, "pos_atr": sig.atr,
+                            "partial_taken": False, "is_flip": True,
+                            "flip_entry_time": now_ts,
+                        }
+                        state["position"] = pos_dict
+                        state["pending_flip"] = None
+                        sl_pct = abs(flip_sl - fill_price)/fill_price * 100
+                        log.info(f"  🔄 FLIP OPENED {flip_side} {flip_qty}@{fill_price:.2f}  SL={flip_sl:.2f} ({sl_pct:.2f}%)")
+                        status["just_opened"] = True
+                        send_email(f"🔄 FLIP {flip_side} @${fill_price:,.2f}",
+                                   f"FLIP trade after SL break.\nSide: {flip_side}\nEntry: ${fill_price:,.2f}\n"
+                                   f"Qty: {flip_qty}\nSL: ${flip_sl:,.2f} ({sl_pct:.2f}% away)\n"
+                                   f"Ref price (broken SL): ${ref_price:,.2f}\nBalance: ${balance:,.2f}")
+                        save_state(state)
+                        return  # flip opened, don't also check normal entry this tick
+                else:
+                    log.warning(f"  flip qty {flip_qty} below min {info['min_qty']} — canceling pending flip")
+                    state["pending_flip"] = None
+
         # ── Flat: show entry conditions met/pending ──
         log.info(f"  FLAT — checking entry conditions")
         log.info(f"    LONG conditions: " + ", ".join(
@@ -422,8 +468,19 @@ def main():
             entry_time=pos_dict["entry_time"], qty=pos_dict["qty"],
             sl_price=pos_dict["sl_price"], pos_atr=pos_dict.get("pos_atr", sig.atr),
             partial_taken=pos_dict.get("partial_taken", False),
+            is_flip=pos_dict.get("is_flip", False),
         )
         ex = evaluate_exit(pos, last, sig)
+
+        # V6: flip time-stop — force exit if flip held > FLIP_TIME_STOP hours
+        if pos.is_flip and USE_SL_FLIP and not ARGS.dry:
+            flip_entry_ts = pos_dict.get("flip_entry_time", now_ts)
+            held_hours = (now_ts - flip_entry_ts) / 3600
+            if held_hours >= FLIP_TIME_STOP:
+                log.info(f"  ⏱ FLIP time-stop: held {held_hours:.1f}h ≥ {FLIP_TIME_STOP}h — closing")
+                ex.should_exit = True
+                ex.reason = "FLIP-TIME"
+                ex.exit_price = price
 
         log.info(f"  IN {pos.side} qty={pos.qty} entry=${pos.entry_price:.2f} "
                  f"price=${price:.2f} SL=${pos.sl_price:.2f} ({ex.sl_distance_pct:+.2f}% from SL)")
@@ -480,9 +537,19 @@ def main():
                 }
                 state["trade_log"].append(trade_record)
                 state["trade_log"] = state["trade_log"][-100:]
+                was_flip = pos_dict.get("is_flip", False)
                 if ex.reason == "SL":
                     if pos.side == "LONG":  state["last_long_sl_time"]  = now_ts
                     else:                   state["last_short_sl_time"] = now_ts
+                    # V6: queue opposite-direction flip (but NOT if this was already a flip)
+                    if USE_SL_FLIP and not was_flip:
+                        flip_side = "SHORT" if pos.side == "LONG" else "LONG"
+                        state["pending_flip"] = {
+                            "side": flip_side,
+                            "sl_time": now_ts,
+                            "ref_price": float(pos.sl_price),
+                        }
+                        log.info(f"  🔄 Pending FLIP {flip_side} queued (exec in {FLIP_WAIT_BARS}h)")
                 state["last_exit_time"] = now_ts      # generic 2h post-exit cooldown (v5 parity)
                 state["position"] = None
                 log.info(f"  ✕ EXIT {pos.side} via {ex.reason} @${fill_price:.2f}  PnL {pnl_pct:+.2f}%")

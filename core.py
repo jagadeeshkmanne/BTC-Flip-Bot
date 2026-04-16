@@ -48,6 +48,13 @@ COOLDOWN_BARS     = 2              # 2h generic post-exit cooldown (any directio
 DD_HALT_PCT       = 0.25
 DD_HALT_BARS      = 168            # 7 days × 24h
 
+# ─── V6 SL-Flip (backtest: +$131K over v5 baseline, same DD) ───
+USE_SL_FLIP       = True           # on SL hit, flip to opposite direction
+FLIP_WAIT_BARS    = 1              # wait 1h after SL before flipping (avoids whipsaw)
+FLIP_SL_CAP       = 0.015          # 1.5% max SL for flip (tighter than 2.5%)
+FLIP_SR_LOOKBACK  = 10             # bars to scan for swing high/low
+FLIP_TIME_STOP    = 24             # exit flip after 24h if still open
+
 # Entry filter thresholds
 RSI_LONG_MIN      = 45
 RSI_SHORT_MAX     = 55
@@ -255,6 +262,7 @@ class Position:
     pos_atr: float                     # ATR at entry (for partial TP R-distance)
     partial_taken: bool = False
     entry_reason: str = "v5_entry"
+    is_flip: bool = False              # V6: True if this position is a flip from prior SL
 
 
 def calc_pattern_sl(side: Side, entry_price: float,
@@ -271,6 +279,27 @@ def calc_pattern_sl(side: Side, entry_price: float,
         raw_sl = pat * (1 + SL_BUFFER_PCT)
         cap_sl = entry_price * (1 + SL_MAX_PCT)
         return min(raw_sl, cap_sl)
+
+
+def calc_flip_sl(side: Side, ref_price: float,
+                 recent_highs: pd.Series, recent_lows: pd.Series) -> float:
+    """V6 flip SL — tighter of swing-based or FLIP_SL_CAP from reference price.
+
+    Args:
+        side: direction of the FLIP position ("LONG" or "SHORT")
+        ref_price: the SL price that just broke (used as reference for % cap)
+        recent_highs/lows: last FLIP_SR_LOOKBACK bars of high/low series
+    """
+    if side == "SHORT":
+        swing_high = float(recent_highs.max())
+        swing_sl = swing_high * (1 + SL_BUFFER_PCT)
+        cap_sl   = ref_price * (1 + FLIP_SL_CAP)
+        return min(swing_sl, cap_sl)       # tighter for short = lower SL
+    else:
+        swing_low = float(recent_lows.min())
+        swing_sl = swing_low * (1 - SL_BUFFER_PCT)
+        cap_sl   = ref_price * (1 - FLIP_SL_CAP)
+        return max(swing_sl, cap_sl)       # tighter for long = higher SL
 
 
 def position_size(equity: float, entry_price: float, sl_price: float,

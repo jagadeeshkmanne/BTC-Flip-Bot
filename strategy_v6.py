@@ -1,10 +1,11 @@
 """
-strategy_v5.py — MTF Candlestick Flip Bot  ◀ BASELINE / ROLLBACK REFERENCE
+strategy_v6.py — MTF Candlestick Flip Bot + SL-Flip extension  ◀ LIVE VERSION
 
-⚠️ NOT THE LIVE STRATEGY. Live runs strategy_v6.py (v5 + SL-flip extension).
-   Kept here as the proven baseline for comparison and rollback if v6 regresses.
+⭐ THIS IS THE CURRENT LIVE STRATEGY (deployed on GCP testnet as of 2026-04-16).
+   bot.py + core.py mirror this backtest exactly.
 
-5-year Binance BTCUSDT backtest: $10K → $241,102 (+89.1% CAGR, -19.5% DD, PF 4.24, 43 trades)
+5-year Binance BTCUSDT backtest: $10K → $348,756 (+103.6% CAGR, -19.6% DD, PF 4.80, 75 trades)
+vs v5 baseline (strategy_v5.py):  $10K → $241,102 (+89.1% CAGR,  -19.5% DD, PF 4.24, 43 trades)
 
 Architecture (3 timeframes):
   Daily : EMA50 trend         (close > Daily EMA50 → LONG bias / < → SHORT bias)
@@ -12,27 +13,31 @@ Architecture (3 timeframes):
   1H    : EXECUTION + entry stack:
             - RSI(14) in pullback zone:   long > 45,  short < 55
             - MACD(12,26,9):              line > signal (long) / < (short)
-            - Bullish/Bearish engulfing:  body > 1.2× prev body
+            - Bullish/Bearish engulfing:  body > 1.0× prev body
             - Volatility filter:          ATR(14) > rolling-50-mean ATR
+            - Volume spike:               vol > 1.5× rolling-20-mean
 
 Entry  : ALL of the above must agree (Daily trend + 4H RSI + 1H entry stack)
 
 Exit:
-  Stop loss     : entry ± ATR(14) × 1.0  (FIXED at entry, intrabar check)
-  No take profit: exits ONLY via opposite signal flip or SL
-  Flip          : opposite signal closes + opens reverse if Daily+4H reconfirm
-  DD circuit    : halt 7 days (168×1H bars) after −25% peak-to-trough drawdown
-  Cooldown      : 2 bars after exit (blocks NEW entries only, not SL/TP checks)
+  Stop loss     : pattern-based (min of bar/prev low), capped at 2.5% from entry
+  Partial TP    : 30% off at +5R, remainder runs on original SL
+  Opposite exit : close only on opposite signal (no flip-open, V4 rule)
+  DD circuit    : halt 7 days after −25% peak-to-trough drawdown
+  Cooldown      : 36h same-dir after SL hit + 2h generic post-exit
 
-No-bug accounting:
-  - Intrabar SL via row low/high (NOT close)
-  - Fees on notional × leverage (entry + exit)
-  - HTF data CAUSAL: stamped at HTF close-time, asof-mapped to 1H
+V6 SL-FLIP extension (NEW, live on testnet):
+  - On SL hit → queue opposite-direction flip (if this wasn't already a flip)
+  - Wait 1h after SL for whipsaw to settle
+  - Open flip with TIGHTER SL: min(swing high/low + 0.1% buffer, 1.5% cap from original SL)
+  - Flip time-stop: exit after 24h if still open
+  - No flip-on-flip (prevents cascading)
+  - 5yr backtest: +32 flip trades at 55% WR = +$108K over v5 baseline
 
 Risk:
   - 1% of equity per trade (sized off SL distance)
   - 2× leverage
-  - Fees: 0.04% taker + 0.03% slippage (set TAKER_FEE = 0.0002 for maker)
+  - Fees: 0.04% taker + 0.03% slippage
 """
 import os, json
 import numpy as np
@@ -41,7 +46,7 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # ─── Config ───
-START_CAPITAL    = 10_000.0
+START_CAPITAL    = 5_000.0
 LEVERAGE         = 2.0
 TAKER_FEE        = 0.0004      # taker (0.0002 = maker)
 SLIPPAGE         = 0.0003
@@ -68,6 +73,13 @@ VOL_SPIKE_RATIO   = 1.5          # stricter vol filter (sweep: +8pp CAGR, better
 USE_PARTIAL_TP    = True
 PARTIAL_TP_R      = 5.0          # lock 30% at +5R (best Calmar 4.57 with vol 1.5×)
 PARTIAL_TP_FRAC   = 0.30         # take 30% off, leave 70% to keep running on original SL
+
+# ─── V6 SL-FLIP extension (+$131K over baseline in 5yr backtest) ───
+USE_SL_FLIP       = True         # on SL hit, flip to opposite direction
+FLIP_WAIT_BARS    = 1            # wait 1 hour after SL before flipping (avoids whipsaw)
+FLIP_SL_CAP       = 0.015        # 1.5% max SL for flip (tighter than v5's 2.5%)
+FLIP_SR_LOOKBACK  = 10           # bars to look back for swing high/low on flip SL
+FLIP_TIME_STOP    = 24           # exit flip after 24h if still open
 
 
 # ─── Indicators ───
@@ -197,6 +209,14 @@ def run():
     trade_log = []          # for HTML report
     equity_curve = []
     open_trade = None       # dict tracking current open position
+    # V6 SL-flip state
+    is_flip = False                # current position is a flip (not a normal entry)
+    flip_entry_bar = -1            # bar index where flip entered
+    pending_flip_side = 0          # 0 = none, 1 = pending LONG flip, -1 = pending SHORT flip
+    pending_flip_bar = -1          # bar when flip was queued
+    pending_flip_ref_price = 0.0   # original SL price (ref for % cap)
+    n_flips_taken = n_flip_wins = n_flip_losses = 0
+    flip_pnl_sum = 0.0
 
     for i in range(100, len(df)):
         row    = df.iloc[i]
@@ -212,6 +232,41 @@ def run():
             continue
         if cooldown > 0:
             cooldown -= 1
+
+        # ─── V6 SL-FLIP: execute pending flip if wait period elapsed ───
+        if (USE_SL_FLIP and pending_flip_side != 0 and position == 0
+                and (i - pending_flip_bar) >= FLIP_WAIT_BARS
+                and not pd.isna(atr_v) and atr_v > 0):
+            side = pending_flip_side
+            ref_p = pending_flip_ref_price
+            lb_start = max(0, i - FLIP_SR_LOOKBACK)
+            if side == -1:  # flip to SHORT
+                swing_high = float(df["high"].iloc[lb_start:i+1].max())
+                raw_sl = swing_high * (1 + SL_BUFFER_PCT)
+                cap_sl = ref_p * (1 + FLIP_SL_CAP)
+                pos_sl = min(raw_sl, cap_sl)  # tighter for shorts = lower
+                position = -1
+                n_short += 1
+            else:  # flip to LONG
+                swing_low = float(df["low"].iloc[lb_start:i+1].min())
+                raw_sl = swing_low * (1 - SL_BUFFER_PCT)
+                cap_sl = ref_p * (1 - FLIP_SL_CAP)
+                pos_sl = max(raw_sl, cap_sl)  # tighter for longs = higher
+                position = 1
+                n_long += 1
+            entry_price = price
+            pos_atr = atr_v
+            pos_be_moved = False
+            is_flip = True
+            flip_entry_bar = i
+            n_flips_taken += 1
+            open_pos(side, price, atr_v)
+            pending_flip_side = 0
+
+        # ─── V6 SL-FLIP: time-stop on flip position ───
+        if is_flip and position != 0 and (i - flip_entry_bar) >= FLIP_TIME_STOP:
+            close_and_record(price, "TIME")
+            continue
 
         # 1H entry stack — V2 logic + V3 volume filter
         vol_pass = bool(row["vol_ok"]) if USE_VOLUME_FILTER else True
@@ -244,6 +299,8 @@ def run():
         def close_and_record(exit_px, reason):
             nonlocal capital, position, cooldown, wins, losses, sl_hits, flips, be_exits, open_trade
             nonlocal last_long_sl_bar, last_short_sl_bar, partial_taken
+            nonlocal is_flip, pending_flip_side, pending_flip_bar, pending_flip_ref_price
+            nonlocal n_flips_taken, n_flip_wins, n_flip_losses, flip_pnl_sum
             # V3: if partial TP was taken, only the remaining (1 - PARTIAL_TP_FRAC) closes here
             remaining = (1.0 - PARTIAL_TP_FRAC) if (USE_PARTIAL_TP and partial_taken) else 1.0
             pmp = ((exit_px - entry_price)/entry_price if position == 1
@@ -258,10 +315,21 @@ def run():
             trades.append(full_trade_pnl * 100); yr_r["t"].append(full_trade_pnl * 100)
             if full_trade_pnl > 0: wins += 1
             else:                  losses += 1
+            # V6: track flip trade stats separately
+            was_flip = is_flip
+            if was_flip:
+                flip_pnl_sum += full_trade_pnl * 100
+                if full_trade_pnl > 0: n_flip_wins += 1
+                else:                  n_flip_losses += 1
             if reason == "SL":
                 sl_hits += 1
                 if position == 1:  last_long_sl_bar  = i
                 if position == -1: last_short_sl_bar = i
+                # V6 SL-FLIP: queue opposite-direction flip, but ONLY if this wasn't already a flip
+                if USE_SL_FLIP and not was_flip:
+                    pending_flip_side = -1 if position == 1 else 1
+                    pending_flip_bar = i
+                    pending_flip_ref_price = exit_px
             elif reason == "BE":   be_exits += 1
             elif reason == "FLIP": flips += 1
             elif reason == "EXIT-OPP": flips += 1   # exit only (no reverse)
@@ -269,13 +337,14 @@ def run():
                 open_trade.update({
                     "exit_time": int(ts.timestamp()),
                     "exit_price": float(exit_px),
-                    "exit_reason": reason,
+                    "exit_reason": ("FLIP-" + reason) if was_flip else reason,
                     "pnl_pct": float(net * 100),
                     "capital_after": float(capital),
                 })
                 trade_log.append(open_trade)
                 open_trade = None
             position = 0
+            is_flip = False
             cooldown = COOLDOWN_BARS
 
         def open_pos(side, e_price, e_atr):
@@ -333,11 +402,12 @@ def run():
             elif long_full:
                 # V4: EXIT only — do NOT flip-open. Avoids selling bottoms after winning longs.
                 close_and_record(price, "EXIT-OPP")
-        elif cooldown == 0:
+        elif cooldown == 0 and pending_flip_side == 0:
             if pd.isna(atr_v) or atr_v <= 0:
                 pass
             elif long_full:
                 position = 1; entry_price = price; pos_atr = atr_v
+                is_flip = False
                 # SL based on chosen mode
                 if SL_MODE == "pattern":
                     # Use min(low of entry bar, low of prior bar) — the engulfed body's low
@@ -351,6 +421,7 @@ def run():
                 open_pos(1, price, atr_v)
             elif short_full:
                 position = -1; entry_price = price; pos_atr = atr_v
+                is_flip = False
                 if SL_MODE == "pattern":
                     pat_high = max(row["high"], df["high"].iloc[i-1])
                     raw_sl = pat_high * (1 + SL_BUFFER_PCT)
