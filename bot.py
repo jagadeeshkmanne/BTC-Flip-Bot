@@ -32,6 +32,7 @@ from core import (
     SAME_DIR_CD_BARS, COOLDOWN_BARS, DD_HALT_PCT, DD_HALT_BARS,
     USE_PARTIAL_TP, PARTIAL_TP_R, PARTIAL_TP_FRAC, PARTIAL_BE_BUF,
     USE_SL_FLIP, FLIP_WAIT_BARS, FLIP_SL_CAP, FLIP_SR_LOOKBACK, FLIP_TIME_STOP,
+    USE_PYRAMID, PYRAMID_R, PYRAMID_FRAC, PYRAMID_SL_R,
     build_signals, evaluate_signal, evaluate_exit,
     calc_pattern_sl, calc_flip_sl, position_size, Position,
 )
@@ -64,6 +65,7 @@ API_SECRET = os.environ.get(CFG["api_secret_env"], "")
 BASE_URL   = CFG["base_url"]
 PAIR       = CFG["pair"]
 LEV        = int(CFG.get("leverage", STRAT_LEV))
+LEV_CEILING = LEV * 2 if USE_PYRAMID else LEV  # 4× ceiling for pyramid margin room
 
 DATA_DIR     = os.path.join(BOT_DIR, "data", ENV)
 STATE_FILE   = os.path.join(DATA_DIR, "state.json")
@@ -365,7 +367,7 @@ def main():
                 flip_qty = position_size(balance, price, flip_sl, leverage=LEV, risk_pct=RISK_PCT)
                 flip_qty = round_qty(flip_qty, info["step"])
                 if flip_qty >= info["min_qty"]:
-                    client.set_leverage(PAIR, LEV)
+                    client.set_leverage(PAIR, LEV_CEILING)
                     side_api = "BUY" if flip_side == "LONG" else "SELL"
                     ord_resp = client.market_order(PAIR, side_api, flip_qty)
                     if ord_resp:
@@ -436,7 +438,7 @@ def main():
             if qty < info["min_qty"]:
                 log.warning(f"  qty {qty} below min {info['min_qty']} — skip")
             else:
-                client.set_leverage(PAIR, LEV)
+                client.set_leverage(PAIR, LEV_CEILING)
                 side_api = "BUY" if sig.side == "LONG" else "SELL"
                 ord_resp = client.market_order(PAIR, side_api, qty)
                 if ord_resp:
@@ -506,6 +508,37 @@ def main():
             "partial_taken":    pos.partial_taken,
         })
 
+        # V7 Pyramid execution: add 50% at +3R
+        if USE_PYRAMID and not pos_dict.get("pyramided", False) and not pos.is_flip and not ARGS.dry:
+            sl_dist = abs(pos.entry_price - pos.sl_price)
+            if sl_dist > 0:
+                favorable = (price - pos.entry_price) if pos.side == "LONG" else (pos.entry_price - price)
+                current_r = favorable / sl_dist
+                if current_r >= PYRAMID_R:
+                    pyramid_qty = round_qty(pos.qty * PYRAMID_FRAC, info["step"])
+                    if pyramid_qty >= info["min_qty"]:
+                        pyr_side = "BUY" if pos.side == "LONG" else "SELL"
+                        pyr_resp = client.market_order(PAIR, pyr_side, pyramid_qty)
+                        if pyr_resp:
+                            pos.qty += pyramid_qty
+                            pos_dict["qty"] = pos.qty
+                            pos_dict["pyramided"] = True
+                            # Move SL to entry + 0.5R
+                            sl_move = PYRAMID_SL_R * sl_dist
+                            pyr_sl = (pos.entry_price + sl_move if pos.side == "LONG"
+                                      else pos.entry_price - sl_move)
+                            client.cancel_all(PAIR)
+                            sl_api_side = "SELL" if pos.side == "LONG" else "BUY"
+                            client.stop_market(PAIR, sl_api_side, pyr_sl, close_position=True)
+                            pos.sl_price = pyr_sl
+                            pos_dict["sl_price"] = pyr_sl
+                            state["position"] = pos_dict
+                            log.info(f"  📐 PYRAMID +{PYRAMID_FRAC*100:.0f}% at +{current_r:.1f}R  added {pyramid_qty}  SL→${pyr_sl:.2f} (+{PYRAMID_SL_R}R)")
+                            send_email(f"📐 PYRAMID +{PYRAMID_FRAC*100:.0f}% · {pos.side} at +{current_r:.1f}R",
+                                       f"Added {pyramid_qty} to {pos.side} position.\n"
+                                       f"Total qty: {pos.qty}\nSL moved to: ${pyr_sl:,.2f} (+{PYRAMID_SL_R}R)\n"
+                                       f"Price: ${price:,.2f}\nBalance: ${balance:,.2f}")
+
         # Partial TP execution
         if USE_PARTIAL_TP and ex.partial_tp_hit and not pos.partial_taken and not ARGS.dry:
             close_qty = round_qty(pos.qty * PARTIAL_TP_FRAC, info["step"])
@@ -517,15 +550,20 @@ def main():
                     pos.qty -= close_qty
                     pos_dict["partial_taken"] = True
                     pos_dict["qty"] = pos.qty
-                    # Move SL to BE + buffer on the exchange (cancel old SL, place new)
+                    # Move SL to BE + buffer — but NEVER move SL backwards
                     old_sl = pos.sl_price
                     be_sl = (pos.entry_price * (1 + PARTIAL_BE_BUF) if pos.side == "LONG"
                              else pos.entry_price * (1 - PARTIAL_BE_BUF))
+                    # Keep the better SL (pyramid may have set +0.5R already)
+                    if pos.side == "LONG":
+                        new_sl = max(old_sl, be_sl)
+                    else:
+                        new_sl = min(old_sl, be_sl)
                     client.cancel_all(PAIR)
                     sl_side = "SELL" if pos.side == "LONG" else "BUY"
-                    client.stop_market(PAIR, sl_side, be_sl, close_position=True)
-                    pos.sl_price = be_sl
-                    pos_dict["sl_price"] = be_sl
+                    client.stop_market(PAIR, sl_side, new_sl, close_position=True)
+                    pos.sl_price = new_sl
+                    pos_dict["sl_price"] = new_sl
                     state["position"] = pos_dict
                     log.info(f"  ✦ PARTIAL TP @+{PARTIAL_TP_R}R closed {close_qty} ({PARTIAL_TP_FRAC*100:.0f}%)  → SL moved to BE ${be_sl:.2f}")
                     status["just_partial"] = True

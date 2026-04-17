@@ -50,6 +50,12 @@ COOLDOWN_BARS     = 2              # 2h generic post-exit cooldown (any directio
 DD_HALT_PCT       = 0.25
 DD_HALT_BARS      = 168            # 7 days × 24h
 
+# ─── V7 Pyramiding ───
+USE_PYRAMID       = True
+PYRAMID_R         = 3.0            # add 50% at +3R favorable
+PYRAMID_FRAC      = 0.50
+PYRAMID_SL_R      = 0.5            # move SL to entry + 0.5R on pyramid (locks small profit)
+
 # ─── V6 SL-Flip (backtest: +$131K over v5 baseline, same DD) ───
 USE_SL_FLIP       = True           # on SL hit, flip to opposite direction
 FLIP_WAIT_BARS    = 1              # wait 1h after SL before flipping (avoids whipsaw)
