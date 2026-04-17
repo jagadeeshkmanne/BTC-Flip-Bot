@@ -1,9 +1,9 @@
-BTC Flip Bot V1 — MTF Engulfing + SL-Flip (BTCUSDT 1H 2×)
+BTC Flip Bot V2 — MTF Engulfing + SL-Flip + Pyramiding (BTCUSDT 1H)
 
 Author: Jagadeesh Manne
-Version: V1 — first public release (April 2026)
+Version: V2 (April 2026)
 
-A multi-timeframe trend-following strategy with SL-flip extension for BTC perpetual futures.
+A multi-timeframe trend-following strategy with SL-flip extension and pyramiding for BTC perpetual futures. V2 adds scaling into winners at +3R — same entries, same filters, but amplifies fat-tail trades.
 
 ⚠️ IMPORTANT: This strategy is tested and validated ONLY on BTCUSDT perpetual futures | 1H timeframe | 2× leverage. Do not apply to other pairs, timeframes, or leverage settings without independent testing.
 
@@ -62,6 +62,29 @@ Flip trades add a meaningful contribution over the non-flip baseline while keepi
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+PYRAMIDING (V2 — scale into winners)
+
+When a trade reaches +3R favorable, the strategy adds 50% more position size to ride the trend harder:
+
+• Trigger: price moves +3R in your favor (confirmed trend)
+• Add: 50% of original notional (total position becomes 150% of original)
+• On pyramid: original SL moves to break-even (protects base capital)
+• Max 1 add per trade (no stacking)
+• No pyramiding on flip trades (only on main entries)
+• Effective leverage: 2× normal → ~2.7× during pyramided trades
+
+Why pyramiding works here:
+This is a fat-tail system — ~5 trades per year run to +10R or higher. Pyramiding at +3R confirms the move is real before adding capital. The extra 50% rides the remaining +7R to +20R of the winner. Losers never get pyramided (they stop out before +3R).
+
+Impact (5yr backtest):
+Without pyramid (V1): $5K → $182K (+105% CAGR, PF 4.63)
+With pyramid (V2):    $5K → $420K (+143% CAGR, PF 5.54)
+→ +37pp CAGR, PF improves, DD barely changes (-20% vs -20%).
+
+Note: Requires exchange leverage ceiling of 4× (set once). The bot uses 2× normally and only scales to ~2.7× during the pyramid window of winning trades.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 EXIT RULES
 
 • Stop Loss hit → close (triggers flip if not already a flip)
@@ -89,21 +112,25 @@ Period: September 2019 — April 2026 (~6.5 years)
 Starting capital: $5,000
 Leverage: 2×
 
-Results (V1 with latest tuning: 15%@6R partial + BE+0.1% + SL-flip):
-Start → Final: $5,000 → $181,943 (+3,539%)
-CAGR: +105.3%
-Max DD: -19.7%
-Profit Factor: 4.63
-Win Rate: 41.9% (31W / 43L)
-Total Trades: 74 (~15/yr) — 38 Long, 36 Short, 9 of which were flips
-SL hits: 40
+Results (V2: 15%@6R partial + BE+0.1% + SL-flip + Pyramiding at +3R):
+Start → Final: $5,000 → $420,395 (+8,308%)
+CAGR: +142.8%
+Max DD: -20.3%
+Profit Factor: 5.54
+Win Rate: 34.2% (25W / 48L)
+Total Trades: 73 (~15/yr) — 38 Long, 35 Short, 9 flips
 DD halts triggered: 0
 
+V1 (without pyramiding) for comparison:
+Start → Final: $5,000 → $181,943 (+3,539%)
+CAGR: +105.3% | Max DD: -19.7% | PF: 4.63 | WR: 41.9% | 74 trades
+
 Tuning history (each change validated on 5yr data):
-• Baseline V5 (no flip): +89% CAGR, PF 4.24, 43 trades
-• V6 + SL-flip: +97% CAGR, PF 4.20, 79 trades (flips add more trade opportunities)
-• V6 + BE-move after partial TP: PF 4.20 → 4.29 (kills runner-giveback)
-• V6 + 15%@6R partial: CAGR 97% → 105%, PF 4.29 → 4.63 (current)
+• V5 baseline (no flip): +89% CAGR, PF 4.24, 43 trades
+• V6 + SL-flip: +97% CAGR, PF 4.20, 79 trades
+• V6 + BE-move after partial TP: PF 4.20 → 4.29
+• V6 + 15%@6R partial: CAGR 97% → 105%, PF 4.29 → 4.63
+• V7 + Pyramiding at +3R: CAGR 105% → 143%, PF 4.63 → 5.54 (current)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -166,6 +193,13 @@ SL-Flip:
 • Swing lookback: 10 bars
 • Flip time-stop: 24h
 
+Pyramiding (V2):
+• Enabled by default
+• Pyramid trigger: +3R favorable
+• Pyramid size: 50% of original position
+• Max 1 add per trade
+• Requires 4× exchange leverage ceiling (bot uses 2× normally)
+
 Visuals:
 • Clean view toggle (default ON — hides dashboard for publishing)
 • Daily EMA50 line toggle
@@ -187,6 +221,13 @@ DISCLAIMER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 CHANGELOG
+
+V2 (April 2026):
+• Pyramiding: add 50% position at +3R favorable (amplifies fat-tail winners)
+• Move original SL to BE when pyramid fires (protects base capital)
+• Max 1 pyramid add per trade, no pyramiding on flips
+• Requires pyramiding=1 in strategy settings + 4× exchange leverage ceiling
+• CAGR +105% → +143%, PF 4.63 → 5.54, DD barely changed
 
 V1 (April 2026 — first public release):
 • Multi-timeframe entry: Daily EMA50 + 4H RSI + 1H (RSI + MACD + Engulfing + ATR + Volume)
