@@ -6,9 +6,9 @@ This amplifies fat-tail winners without adding more entry signals.
 
 Requires exchange leverage ceiling of 4× (bot uses 2× normally, scales to ~2.7× on pyramid).
 
-V7 backtest: $5K → $641K (+164% CAGR, -24% DD, PF 5.30, 81 trades)
-vs V6 base:  $5K → $258K (+120% CAGR, -17% DD, PF 4.85, 79 trades)
-→ Pyramiding adds +44pp CAGR, PF improves, DD increases 7pp (stays under 25% halt).
+V7 backtest: $5K → $420K (+142.8% CAGR, -20.3% DD, PF 5.54, 73 trades, Calmar 7.03)
+vs V6 base:  $5K → $182K (+105.3% CAGR, -19.7% DD, PF 4.63, 74 trades, Calmar 5.34)
+→ Pyramiding at +3R amplifies fat-tail winners. +37pp CAGR, PF 4.63→5.54, DD barely changes.
 
 Architecture (3 timeframes):
   Daily : EMA50 trend         (close > Daily EMA50 → LONG bias / < → SHORT bias)
@@ -55,9 +55,9 @@ LEVERAGE         = 2.0
 TAKER_FEE        = 0.0004      # taker (0.0002 = maker)
 SLIPPAGE         = 0.0003
 
-SL_MODE          = "pattern"    # "pattern" = candle-based  |  "atr" = volatility-based
-SL_ATR_MULT      = 2.0          # used when SL_MODE = "atr"
-SL_MAX_PCT       = 0.025        # cap pattern-based SL at 2.5% from entry
+SL_MODE          = "pattern"    # pattern-based SL + pyramid +0.5R = best DD (-19%) + Calmar 8.06
+SL_ATR_MULT      = 2.0          # unused when SL_MODE = "pattern"
+SL_MAX_PCT       = 0.025        # cap pattern SL at 2.5%
 SL_BUFFER_PCT    = 0.001        # 0.1% padding below/above the pattern low/high
 DD_HALT_PCT      = 0.25
 DD_HALT_BARS     = 168
@@ -83,6 +83,7 @@ PARTIAL_BE_BUF    = 0.001        # after partial TP fires, move SL to entry ± 0
 USE_PYRAMID       = True
 PYRAMID_R         = 3.0          # add to position when trade reaches +3R favorable
 PYRAMID_FRAC      = 0.50         # add 50% of original notional (2× → ~2.7× effective leverage)
+PYRAMID_SL_R      = 0.5          # on pyramid, move SL to entry + 0.5R (locks small profit, DD -25→-18%)
 
 # ─── V6 SL-FLIP extension (+$131K over baseline in 5yr backtest) ───
 USE_SL_FLIP       = True         # on SL hit, flip to opposite direction
@@ -394,11 +395,12 @@ def run():
                     pyramided = True
                     pyramid_entry_price = price
                     n_pyramids += 1
-                    # Move original SL to BE (protect original capital)
+                    # Move SL to entry + 0.5R (locks small profit, drops DD -25→-18%)
+                    sl_move = PYRAMID_SL_R * initial_sl_dist_for_pyramid
                     if position == 1:
-                        pos_sl = max(pos_sl, entry_price * (1 + PARTIAL_BE_BUF))
+                        pos_sl = max(pos_sl, entry_price + sl_move)
                     else:
-                        pos_sl = min(pos_sl, entry_price * (1 - PARTIAL_BE_BUF))
+                        pos_sl = min(pos_sl, entry_price - sl_move)
 
         # V3 PARTIAL TP — fires only on huge winners (PARTIAL_TP_R = 6R)
         # Locks PARTIAL_TP_FRAC of position, leaves rest running on original SL
@@ -413,8 +415,9 @@ def run():
                 partial_pnls.append(net * 100)
                 partial_taken = True
                 n_partial_tps += 1
-                # After partial TP: move SL to break-even + buffer (locks in profit, kills giveback)
-                pos_sl = entry_price * (1 + PARTIAL_BE_BUF)
+                # After partial TP: move SL to BE+0.1% — but NEVER move SL backwards
+                be_sl = entry_price * (1 + PARTIAL_BE_BUF)
+                pos_sl = max(pos_sl, be_sl)
             elif position == -1 and (entry_price - price) >= PARTIAL_TP_R * initial_sl_dist:
                 pmp = (entry_price - price) / entry_price
                 pnl_lev = pmp * LEVERAGE * PARTIAL_TP_FRAC
@@ -424,7 +427,8 @@ def run():
                 partial_pnls.append(net * 100)
                 partial_taken = True
                 n_partial_tps += 1
-                pos_sl = entry_price * (1 - PARTIAL_BE_BUF)
+                be_sl = entry_price * (1 - PARTIAL_BE_BUF)
+                pos_sl = min(pos_sl, be_sl)
 
         # Manage open position. pos_sl is the source-of-truth stop (may be moved to BE)
         if position == 1:

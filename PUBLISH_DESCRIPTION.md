@@ -112,10 +112,11 @@ Period: September 2019 — April 2026 (~6.5 years)
 Starting capital: $5,000
 Leverage: 2×
 
-Results (V2: 15%@6R partial + BE+0.1% + SL-flip + Pyramiding at +3R):
+Results (V2: pattern SL 2.5% + 15%@6R partial + SL-flip + Pyramid +3R/+0.5R SL):
 Start → Final: $5,000 → $420,395 (+8,308%)
 CAGR: +142.8%
 Max DD: -20.3%
+Calmar: 7.03
 Profit Factor: 5.54
 Win Rate: 34.2% (25W / 48L)
 Total Trades: 73 (~15/yr) — 38 Long, 35 Short, 9 flips

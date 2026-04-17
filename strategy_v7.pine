@@ -11,8 +11,8 @@
 // Tested ONLY on BTCUSDT | 1H | requires 4× exchange leverage ceiling.
 //
 // Python 5yr backtest (Binance historical data):
-//   V2: $5K → $420K (+142.8% CAGR, -20.3% DD, PF 5.54, 73 trades)
-//   V1: $5K → $182K (+105.3% CAGR, -19.7% DD, PF 4.63, 74 trades)
+//   V2: $5K → $420K (+142.8% CAGR, -20.3% DD, PF 5.54, 73 trades, Calmar 7.03)
+//   V1: $5K → $182K (+105.3% CAGR, -19.7% DD, PF 4.63, 74 trades, Calmar 5.34)
 //
 // Pyramid rule: at +3R, add 50% notional, move SL to BE on original.
 // Same entries, same exits, same filters as V1 — only scales winners.
@@ -283,11 +283,11 @@ if usePyramid and strategy.position_size != 0 and not pyramided and not isFlipPo
             pyramidQty = (currentEquity * leverageInput * pyramidFrac) / close
             if pyramidQty > 0
                 strategy.entry("pL", strategy.long, qty=pyramidQty)
-                // Move SL to BE on original (protect base capital)
-                beSL = entryPx * (1 + partialBeBufPct)
-                strategy.exit("x", from_entry="L", stop=beSL)
-                strategy.exit("px", from_entry="pL", stop=beSL)
-                storedSL := beSL
+                // Move SL to entry + 0.5R (lock small profit)
+                pyrSL = entryPx + 0.5 * initSlDist
+                strategy.exit("x", from_entry="L", stop=pyrSL)
+                strategy.exit("px", from_entry="pL", stop=pyrSL)
+                storedSL := pyrSL
                 pyramided := true
                 pyramidEntry := close
     else if strategy.position_size < 0
@@ -296,10 +296,10 @@ if usePyramid and strategy.position_size != 0 and not pyramided and not isFlipPo
             pyramidQty = (currentEquity * leverageInput * pyramidFrac) / close
             if pyramidQty > 0
                 strategy.entry("pS", strategy.short, qty=pyramidQty)
-                beSL = entryPx * (1 - partialBeBufPct)
-                strategy.exit("x", from_entry="S", stop=beSL)
-                strategy.exit("px", from_entry="pS", stop=beSL)
-                storedSL := beSL
+                pyrSL = entryPx - 0.5 * initSlDist
+                strategy.exit("x", from_entry="S", stop=pyrSL)
+                strategy.exit("px", from_entry="pS", stop=pyrSL)
+                storedSL := pyrSL
                 pyramided := true
                 pyramidEntry := close
 
@@ -314,11 +314,12 @@ if strategy.position_size > 0 and not partialTaken and not na(storedSL)
             tpId = isFlipPos ? "fL" : "L"
             strategy.close(tpId, qty_percent=partialTpFrac)
             partialTaken := true
-            // Move SL to BE+buffer (replaces existing stop with same id "x")
+            // Move SL to BE+buffer — but NEVER move SL backwards
             if partialBeBufPct > 0
                 beSL = entryPrice * (1 + partialBeBufPct)
-                strategy.exit("x", from_entry=tpId, stop=beSL)
-                storedSL := beSL
+                newSL = math.max(storedSL, beSL)
+                strategy.exit("x", from_entry=tpId, stop=newSL)
+                storedSL := newSL
 
 if strategy.position_size < 0 and not partialTaken and not na(storedSL)
     entryPrice = strategy.position_avg_price
@@ -331,8 +332,9 @@ if strategy.position_size < 0 and not partialTaken and not na(storedSL)
             partialTaken := true
             if partialBeBufPct > 0
                 beSL = entryPrice * (1 - partialBeBufPct)
-                strategy.exit("x", from_entry=tpId, stop=beSL)
-                storedSL := beSL
+                newSL = math.min(storedSL, beSL)
+                strategy.exit("x", from_entry=tpId, stop=newSL)
+                storedSL := newSL
 
 // ─── Opposite signal exit (no flip-open) — use close_all since full close anyway ───
 if strategy.position_size > 0 and shortSignal
