@@ -1,22 +1,23 @@
 """
-core.py — Strategy V5 logic.
+core.py — Strategy V8 logic (live bot).
 
-V5 spec (5yr backtest: $10K → $154,657, +73% CAGR, PF 3.63, -25% DD, 6 of 6 yrs positive):
+V8 spec ($5K → $572K, +158% CAGR, PF 7.29, -20.6% DD, 62 trades, Calmar 7.68):
   Architecture:
     Daily : EMA50 trend filter
     4H    : RSI(14) confirmation
     1H    : execution + entry stack:
-              - RSI(14) > 45 long  /  < 55 short
+              - RSI(21) > 45 long  /  < 55 short    ← V8: 14→21
               - MACD(12,26,9) line vs signal
-              - Bullish/Bearish engulfing (body > 1.2× prev body)
-              - ATR(14) > rolling-50-mean (volatility regime)
-              - Volume(1H) > 1.2× rolling-20-mean (V3 addition)
+              - Bullish/Bearish engulfing (body > 1.0× prev body)
+              - ATR(20) > rolling-50-mean            ← V8: 14→20
+              - Volume(1H) > 1.5× rolling-20-mean
 
   Entry:  Daily bias + 4H confirm + 1H entry stack ALL agree
   SL:     pattern-based — min(low_entry, low_prior) - 0.1%, capped at 2.5% from entry
-  TP:     None (let runners run)
-  Partial TP at +6R: lock 30% of position, leave 70% on original SL
+  Partial TP at +6R: lock 15% of position, move SL to BE+0.1%
   Exit:   Opposite signal closes position (NO flip-open — V4 fix)
+  SL-Flip: on SL hit → flip opposite with 1.5% cap SL, 24h time-stop
+  Pyramiding: add 50% at +3R, move SL to entry+0.5R
   Cooldown: 24h after SL hit (same direction)
   Risk mgmt: DD halt for 7 days after −25% peak-to-trough drawdown
   Leverage: 2× (configurable)
@@ -70,6 +71,11 @@ ENGULF_BODY_MULT  = 1.0            # any-size engulfing (sweep: +2 trades, +3 pp
 ATR_MA_LEN        = 50
 VOL_SMA_LEN       = 20
 VOL_SPIKE_RATIO   = 1.5            # stricter vol filter (sweep: +8pp CAGR, lower DD, higher PF)
+
+# V8: tuned indicator periods (sweep: +15pp CAGR, PF 5.54→7.29, same DD)
+RSI_PERIOD_1H     = 21             # 14→21: slower RSI filters 1H noise
+ATR_PERIOD_1H     = 20             # 14→20: wider volatility window, fewer false regime triggers
+RSI_PERIOD_4H     = 14             # 4H stays at 14 (confirmation only)
 
 Side = Literal["LONG", "SHORT"]
 
@@ -163,18 +169,18 @@ def build_signals(df_15m: pd.DataFrame) -> pd.DataFrame:
     df_4h = resample(df15, "4h")
     df_d  = resample(df15, "1D")
 
-    # 1H indicators
-    df_1h["rsi"] = rsi(df_1h["close"])
+    # 1H indicators — V8: RSI(21), ATR(20)
+    df_1h["rsi"] = rsi(df_1h["close"], RSI_PERIOD_1H)
     df_1h["macd_line"], df_1h["macd_signal"] = macd_lines(df_1h["close"])
-    df_1h["atr"] = atr_calc(df_1h)
+    df_1h["atr"] = atr_calc(df_1h, ATR_PERIOD_1H)
     df_1h["atr_ma"] = df_1h["atr"].rolling(ATR_MA_LEN).mean()
     df_1h["high_vol"] = df_1h["atr"] > df_1h["atr_ma"]
     df_1h["vol_sma"] = df_1h["volume"].rolling(VOL_SMA_LEN).mean()
     df_1h["vol_ok"]  = df_1h["volume"] > VOL_SPIKE_RATIO * df_1h["vol_sma"]
     df_1h = detect_engulfing(df_1h)
 
-    # 4H confirm
-    df_4h["rsi"] = rsi(df_4h["close"])
+    # 4H confirm (stays at RSI 14 — confirmation only)
+    df_4h["rsi"] = rsi(df_4h["close"], RSI_PERIOD_4H)
     df_4h["confirm"] = np.where(df_4h["rsi"] > 50, 1,
                        np.where(df_4h["rsi"] < 50, -1, 0))
 
