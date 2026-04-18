@@ -164,14 +164,20 @@ def run():
 
                 # LONG: BB confluence + RSI oversold + volume
                 if price <= bb_lo and near_h4_lo and rsi_v < RSI_OVERSOLD and vol_ok:
-                    entry_price = price; tp = h4_mid; sl = h4_lo - atr
-                    if abs(entry_price - sl) / entry_price > 0.003:
+                    entry_price = price
+                    tp = h4_mid
+                    raw_sl = h4_lo - atr
+                    sl = min(raw_sl, entry_price * 0.995)  # SL must be BELOW entry (at least -0.5%)
+                    if sl < entry_price and tp > entry_price and (entry_price - sl) / entry_price > 0.003:
                         pos = 1; entry_bar = i; n_long += 1
 
                 # SHORT: BB confluence + RSI overbought + volume
                 elif price >= bb_up and near_h4_up and rsi_v > RSI_OVERBOUGHT and vol_ok:
-                    entry_price = price; tp = h4_mid; sl = h4_up + atr
-                    if abs(entry_price - sl) / entry_price > 0.003:
+                    entry_price = price
+                    tp = h4_mid
+                    raw_sl = h4_up + atr
+                    sl = max(raw_sl, entry_price * 1.005)  # SL must be ABOVE entry (at least +0.5%)
+                    if sl > entry_price and tp < entry_price and (sl - entry_price) / entry_price > 0.003:
                         pos = -1; entry_bar = i; n_short += 1
 
         # DD tracking (all in decimal, not %)

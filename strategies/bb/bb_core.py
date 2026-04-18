@@ -163,11 +163,18 @@ def evaluate_signal(row: pd.Series) -> BBSignalState:
     if s.long_ok and not s.short_ok:
         s.side = "LONG"
         s.tp_price = float(h4_mid)
-        s.sl_price = float(h4_lo - s.atr)
+        raw_sl = float(h4_lo - s.atr)
+        s.sl_price = min(raw_sl, price * 0.995)  # SL must be BELOW entry
+        # Validate: SL below entry, TP above entry
+        if s.sl_price >= price or s.tp_price <= price:
+            s.side = None; s.long_ok = False
     elif s.short_ok and not s.long_ok:
         s.side = "SHORT"
         s.tp_price = float(h4_mid)
-        s.sl_price = float(h4_up + s.atr)
+        raw_sl = float(h4_up + s.atr)
+        s.sl_price = max(raw_sl, price * 1.005)  # SL must be ABOVE entry
+        if s.sl_price <= price or s.tp_price >= price:
+            s.side = None; s.short_ok = False
 
     s.raw = {
         "rsi": float(rsi_v) if not pd.isna(rsi_v) else None,
