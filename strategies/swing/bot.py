@@ -24,8 +24,9 @@ import requests
 import pandas as pd
 import numpy as np
 
-BOT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, BOT_DIR)
+STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
+BOT_DIR = os.path.dirname(os.path.dirname(STRATEGY_DIR))  # project root (../../)
+sys.path.insert(0, STRATEGY_DIR)  # for core import
 
 from core import (
     LEVERAGE as STRAT_LEV, RISK_PCT,
