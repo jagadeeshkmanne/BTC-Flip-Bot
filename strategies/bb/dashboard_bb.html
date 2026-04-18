@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BB Confluence V2</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0a0e13;color:#e6edf3;font-family:-apple-system,sans-serif;font-size:14px}
+.pos{color:#3fb950}.neg{color:#f85149}
+
+.hero{display:grid;grid-template-columns:auto 1fr auto;gap:24px;padding:14px 24px;background:#11161d;border-bottom:1px solid #1f262e;align-items:center}
+.hero .brand{font-size:14px;font-weight:700}
+.hero .brand .v{color:#79c0ff;font-size:11px;margin-left:6px;padding:1px 6px;background:#0e3a5c;border-radius:3px}
+.hero .live-price{display:flex;align-items:baseline;gap:8px}
+.hero .live-price .sym{font-size:12px;color:#7d8590;font-weight:600}
+.hero .live-price .px{font-size:22px;font-weight:700}
+.hero .stats{display:flex;gap:20px;justify-self:end}
+.hero .stat{display:flex;flex-direction:column;align-items:flex-end;line-height:1.2}
+.hero .stat .l{font-size:10px;color:#7d8590;text-transform:uppercase;font-weight:600}
+.hero .stat .v{font-size:14px;font-weight:600;margin-top:2px}
+.badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700;text-transform:uppercase}
+.b-flat{background:#1f262e;color:#9ca3af}
+.b-long{background:#0e3a1c;color:#3fb950}
+.b-short{background:#4a1d1d;color:#f85149}
+.b-halted{background:#4a1d1d;color:#f85149}
+
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:14px;padding:14px}
+@media(max-width:1200px){.grid{grid-template-columns:1fr}}
+.panel{background:#11161d;border:1px solid #1f262e;border-radius:8px;overflow:hidden}
+.panel-hdr{padding:10px 14px;border-bottom:1px solid #1f262e;display:flex;justify-content:space-between}
+.panel-hdr h2{margin:0;font-size:11px;color:#7d8590;font-weight:700;text-transform:uppercase}
+.panel-body{padding:14px}
+#priceChart{width:100%;height:460px;background:#0a0e13}
+.right-stack{display:flex;flex-direction:column;gap:14px;position:sticky;top:14px}
+
+.cond-section{margin-bottom:16px}
+.cond-section .title{font-size:11px;font-weight:700;color:#7d8590;text-transform:uppercase;margin-bottom:8px;display:flex;justify-content:space-between}
+.cond-section .count{font-size:12px}
+.cond-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a1f26;font-size:13px}
+.cond-row .label{color:#9ca3af}
+.cond-row .val{font-weight:600;font-size:12px}
+.met{color:#3fb950}.unmet{color:#6e7681}
+
+.pos-card{background:#0e1419;border:1px solid #1f262e;border-radius:6px;padding:12px;margin-top:8px}
+.pos-card .row{display:flex;justify-content:space-between;padding:3px 0;font-size:13px}
+.pos-card .row .k{color:#7d8590}
+
+.trades-table{width:100%;border-collapse:collapse;font-size:12px}
+.trades-table th{text-align:left;color:#7d8590;font-size:10px;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid #1f262e}
+.trades-table td{padding:6px 8px;border-bottom:1px solid #1a1f26}
+.switch-link{font-size:11px;color:#79c0ff;text-decoration:underline;cursor:pointer}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="brand">BB Confluence <span class="v">V2</span></div>
+  <div class="live-price">
+    <span class="sym">BTCUSDT</span>
+    <span class="px" id="livePrice">—</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><span class="l">Balance</span><span class="v" id="balance">—</span></div>
+    <div class="stat"><span class="l">DD</span><span class="v neg" id="dd">—</span></div>
+    <div class="stat"><span class="l">State</span><span class="v" id="stateLabel">—</span></div>
+    <div class="stat"><span class="l">Strategy</span>
+      <span class="v"><a href="/dashboard.html?env=testnet" class="switch-link">Switch to Swing</a></span>
+    </div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="left-col">
+    <div class="panel">
+      <div class="panel-hdr"><h2>BTC/USDT 1H</h2><div class="right" id="chartTime">—</div></div>
+      <div id="priceChart"></div>
+    </div>
+    <!-- Position card (when in trade) -->
+    <div class="panel" id="posPanel" style="display:none;margin-top:14px">
+      <div class="panel-hdr"><h2>Live Position</h2></div>
+      <div class="panel-body" id="posBody"></div>
+    </div>
+    <!-- Recent trades -->
+    <div class="panel" style="margin-top:14px">
+      <div class="panel-hdr"><h2>Recent Trades</h2></div>
+      <div class="panel-body">
+        <table class="trades-table">
+          <thead><tr><th>Side</th><th>Entry</th><th>Exit</th><th>Reason</th><th>PnL</th><th>Time</th></tr></thead>
+          <tbody id="tradesBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="right-stack">
+    <!-- BB conditions -->
+    <div class="panel">
+      <div class="panel-hdr"><h2>BB Setup Status</h2></div>
+      <div class="panel-body">
+        <div class="cond-section" id="longSection">
+          <div class="title">LONG <span class="count" id="longCount">0/4</span></div>
+          <div id="longConds"></div>
+        </div>
+        <div class="cond-section" id="shortSection">
+          <div class="title">SHORT <span class="count" id="shortCount">0/4</span></div>
+          <div id="shortConds"></div>
+        </div>
+      </div>
+    </div>
+    <!-- Raw indicators -->
+    <div class="panel">
+      <div class="panel-hdr"><h2>Live Indicators</h2></div>
+      <div class="panel-body" id="indicators">—</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const env = params.get('env') || 'testnet';
+
+// Chart
+const chart = LightweightCharts.createChart(document.getElementById('priceChart'), {
+  layout:{background:{type:'solid',color:'#0a0e13'},textColor:'#e6edf3'},
+  grid:{vertLines:{color:'#1a1f26'},horzLines:{color:'#1a1f26'}},
+  timeScale:{timeVisible:true,secondsVisible:false},
+  rightPriceScale:{borderColor:'#1f262e'},
+});
+const candleSeries = chart.addCandlestickSeries({
+  upColor:'#3fb950',downColor:'#f85149',borderUpColor:'#3fb950',borderDownColor:'#f85149',
+  wickUpColor:'#3fb950',wickDownColor:'#f85149',
+});
+
+// WebSocket for live price
+let ws;
+function connectWS(){
+  ws = new WebSocket('wss://fstream.binance.com/ws/btcusdt@kline_1h');
+  ws.onmessage = e => {
+    const k = JSON.parse(e.data).k;
+    if(!k) return;
+    const bar = {time:Math.floor(k.t/1000),open:+k.o,high:+k.h,low:+k.l,close:+k.c};
+    candleSeries.update(bar);
+    document.getElementById('livePrice').textContent = '$' + (+k.c).toLocaleString(undefined,{maximumFractionDigits:0});
+  };
+  ws.onclose = () => setTimeout(connectWS, 3000);
+}
+connectWS();
+
+function renderConds(containerId, conds) {
+  const el = document.getElementById(containerId);
+  el.innerHTML = '';
+  let met = 0; let total = 0;
+  for (const [label, ok] of Object.entries(conds)) {
+    total++;
+    if (ok) met++;
+    const val = ok ? 'MET' : '—';
+    const cls = ok ? 'met' : 'unmet';
+    el.innerHTML += `<div class="cond-row"><span class="label">${label}</span><span class="val ${cls}">${val}</span></div>`;
+  }
+  return `${met}/${total}`;
+}
+
+function renderIndicators(raw) {
+  if (!raw) return '—';
+  let html = '';
+  const rows = [
+    ['RSI(14)', raw.rsi != null ? raw.rsi.toFixed(1) : '—', raw.rsi < 30 ? 'pos' : raw.rsi > 70 ? 'neg' : ''],
+    ['1H BB Lower', raw.bb_lo != null ? '$'+raw.bb_lo.toFixed(0) : '—', ''],
+    ['1H BB Mid', raw.bb_mid != null ? '$'+raw.bb_mid.toFixed(0) : '—', ''],
+    ['1H BB Upper', raw.bb_up != null ? '$'+raw.bb_up.toFixed(0) : '—', ''],
+    ['4H BB Lower', raw.h4_bb_lo != null ? '$'+raw.h4_bb_lo.toFixed(0) : '—', ''],
+    ['4H BB Mid', raw.h4_bb_mid != null ? '$'+raw.h4_bb_mid.toFixed(0) : '—', ''],
+    ['4H BB Upper', raw.h4_bb_up != null ? '$'+raw.h4_bb_up.toFixed(0) : '—', ''],
+    ['ATR', raw.atr != null ? raw.atr.toFixed(0) : '—', ''],
+    ['Vol/SMA', raw.vol_sma > 0 ? (raw.volume/raw.vol_sma).toFixed(2)+'x' : '—', ''],
+  ];
+  for (const [k,v,cls] of rows) {
+    html += `<div class="cond-row"><span class="label">${k}</span><span class="val ${cls}">${v}</span></div>`;
+  }
+  return html;
+}
+
+async function poll() {
+  try {
+    const r = await fetch(`/api/status?env=${env}`);
+    const d = await r.json();
+    if (!d || d.error) return;
+
+    document.getElementById('balance').textContent = '$' + d.balance?.toLocaleString(undefined,{maximumFractionDigits:0}) || '—';
+    document.getElementById('dd').textContent = (d.drawdown_pct?.toFixed(1) || '0') + '%';
+
+    // State
+    const stEl = document.getElementById('stateLabel');
+    if (d.halted) { stEl.innerHTML = '<span class="badge b-halted">HALTED</span>'; }
+    else if (d.state === 'IN_POSITION') {
+      const side = d.position?.side || '?';
+      const cls = side === 'LONG' ? 'b-long' : 'b-short';
+      stEl.innerHTML = `<span class="badge ${cls}">${side}</span>`;
+    } else {
+      stEl.innerHTML = '<span class="badge b-flat">FLAT</span>';
+    }
+
+    // Conditions
+    if (d.long_conditions) {
+      document.getElementById('longCount').textContent = renderConds('longConds', d.long_conditions);
+    }
+    if (d.short_conditions) {
+      document.getElementById('shortCount').textContent = renderConds('shortConds', d.short_conditions);
+    }
+
+    // Indicators
+    if (d.raw_indicators) {
+      document.getElementById('indicators').innerHTML = renderIndicators(d.raw_indicators);
+    }
+
+    // Position
+    const pp = document.getElementById('posPanel');
+    if (d.position && d.state === 'IN_POSITION') {
+      pp.style.display = '';
+      const p = d.position;
+      const pnl = p.side === 'LONG' ? ((d.price - p.entry_price)/p.entry_price*100) : ((p.entry_price - d.price)/p.entry_price*100);
+      const held = d.held_hours?.toFixed(1) || '?';
+      document.getElementById('posBody').innerHTML = `
+        <div class="pos-card">
+          <div class="row"><span class="k">Side</span><span class="${p.side==='LONG'?'pos':'neg'}">${p.side}</span></div>
+          <div class="row"><span class="k">Entry</span><span>$${p.entry_price?.toLocaleString()}</span></div>
+          <div class="row"><span class="k">SL</span><span class="neg">$${p.sl_price?.toLocaleString()}</span></div>
+          <div class="row"><span class="k">TP</span><span class="pos">$${p.tp_price?.toLocaleString()}</span></div>
+          <div class="row"><span class="k">Held</span><span>${held}h / ${d.max_hold_hours || 24}h</span></div>
+          <div class="row"><span class="k">PnL</span><span class="${pnl>=0?'pos':'neg'}">${pnl>=0?'+':''}${pnl.toFixed(2)}%</span></div>
+        </div>`;
+    } else {
+      pp.style.display = 'none';
+    }
+
+    document.getElementById('chartTime').textContent = d.updated_at ? new Date(d.updated_at).toLocaleTimeString() : '—';
+
+  } catch(e) { console.error('poll err', e); }
+}
+
+// Trades
+async function loadTrades() {
+  try {
+    const r = await fetch(`/api/trades?env=${env}`);
+    const trades = await r.json();
+    const tb = document.getElementById('tradesBody');
+    tb.innerHTML = '';
+    const recent = (trades || []).slice(-20).reverse();
+    for (const t of recent) {
+      const cls = t.pnl_pct > 0 ? 'pos' : 'neg';
+      const time = t.exit_time ? new Date(t.exit_time).toLocaleDateString() : '—';
+      tb.innerHTML += `<tr>
+        <td class="${t.side==='LONG'?'pos':'neg'}">${t.side}</td>
+        <td>$${t.entry?.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+        <td>$${t.exit?.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+        <td>${t.reason || '—'}</td>
+        <td class="${cls}">${t.pnl_pct?.toFixed(1)}%</td>
+        <td>${time}</td>
+      </tr>`;
+    }
+  } catch(e) {}
+}
+
+poll(); setInterval(poll, 5000);
+loadTrades(); setInterval(loadTrades, 30000);
+</script>
+</body>
+</html>
