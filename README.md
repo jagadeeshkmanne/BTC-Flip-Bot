@@ -1,143 +1,98 @@
-# BTC Flip Bot — Strategy V5
+# BTC Flip Bot
 
-Multi-timeframe candlestick flip bot for Binance Futures. Trades BTCUSDT perp on 1H execution
-with Daily + 4H trend filters. Runs on GCP free tier (~$0/month).
+Two trading strategies for BTC perpetual futures on Binance. Runs on GCP free tier.
 
-**Honest 5yr backtest** ($10K start, taker fees + slippage, 2× lev):
+## Strategies
+
+### BB Confluence V2 (ACTIVE)
+Mean reversion: buy at 4H+1H Bollinger Band confluence with RSI oversold + volume spike.
 
 | Metric | Value |
 |---|---|
-| Final | **$241,102** (+2,311%) |
-| CAGR | **+89.1%** |
-| Max drawdown | **-19.5%** |
-| Profit factor | **5.50** |
-| Calmar | **4.57** (best risk-adjusted) |
-| Win rate | 37.2% |
-| Trades | 43 (~9/yr) |
-| Years positive | **6 of 6** |
+| Backtest (2020-2026) | $5K → $24M |
+| CAGR | +285% |
+| Max DD | -15.7% |
+| PF | 2.48 |
+| Trades | 886 (~141/yr) |
+| Win rate | 66.5% |
 
-At $5K start (2× lev): $5K → **$120,551**.
-At 3× leverage: $5K → **$275,092** (+123% CAGR / -27.6% DD).
+Entry: 1H BB lower + near 4H BB lower + RSI < 30 + vol > 1.3x SMA
+TP: 4H BB mid | SL: 4H BB band ± ATR | Max hold: 24h
 
----
+### Swing V8 (INACTIVE)
+Trend-following: MTF engulfing + SL-flip + pyramiding.
 
-## Strategy Logic
-
-### Entry — all conditions must align
-
-| Timeframe | Condition |
+| Metric | Value |
 |---|---|
-| **Daily** | Close > EMA(50) → LONG bias only · Close < EMA(50) → SHORT bias only |
-| **4H** | RSI(14) > 50 confirms LONG · RSI < 50 confirms SHORT |
-| **1H (entry)** | RSI(14) in pullback zone (long > 45, short < 55) |
-| | MACD(12,26,9): line vs signal must agree |
-| | Bullish/Bearish engulfing (any-size, body > 1.0× prev body) |
-| | ATR(14) > rolling 50-bar mean (volatility regime) |
-| | Volume > 1.5× SMA(20) (strong participation) |
-
-### Exit
-
-- **Stop loss** — pattern-based (low/high of entry candle ± 0.1% buffer, capped at 2.5% from entry).
-  Placed as `STOP_MARKET` on Binance immediately after entry → fires intrabar even if bot is offline.
-- **Partial TP** — at +5R favorable, lock 30% of position, leave 70% running on original SL.
-- **Opposite signal** — when reverse setup fires, exit position. **Do NOT open opposite** (V4 fix
-  prevents giving back profits to bounces).
-- **No fixed TP** — let runners run.
-
-### Risk management
-
-- **Same-direction cooldown after SL** — 36 hours (V5 sweep optimum)
-- **Drawdown circuit breaker** — halt all trading 7 days after −25% peak-to-trough drawdown
-- **Position sizing** — risk 1% of equity per trade (sized off SL distance × leverage)
-- **Leverage** — 2× (configurable in `config/{env}.json`)
+| Backtest (2021-2026) | $5K → $572K |
+| CAGR | +158% |
+| Max DD | -20.6% |
+| PF | 7.29 |
+| Trades | 62 (~12/yr) |
 
 ---
 
 ## Files
 
 ```
-bot.py            — V5 live bot (one tick per 1H bar close)
-core.py           — Strategy V5 logic (signals + condition state for dashboard)
-strategy_v5.py    — Standalone V5 backtest (regenerates report HTML)
-server.py         — HTTP server (dashboard + API + auth for /settings)
-dashboard.html    — Live UI (BTC chart with EMA50, setup status, position panel)
-settings.html     — Password-protected config (API keys, email, passwords)
-config/           — testnet.json, production.json
-scripts/          — start.sh, stop.sh, status.sh, self_heal.sh, gcp_*.sh
-data/             — runtime state per env (gitignored except cache/)
+Root (live bot files — GCP runs these):
+  bot_bb.py        — BB live bot (ACTIVE)
+  bb_core.py       — BB strategy logic
+  bot.py           — Swing live bot (inactive)
+  core.py          — Swing strategy logic
+  server.py        — HTTP server (dashboards + API)
+  dashboard_bb.html — BB dashboard
+  dashboard.html   — Swing dashboard
+  settings.html    — Password-protected settings
+  config/          — testnet.json, production.json
+  data/            — state, status, logs per env
+  scripts/         — start.sh, stop.sh, self_heal.sh
+
+strategies/ (backtests + Pine scripts):
+  bb/              — BB backtest + Pine V2 + dashboard
+  swing/           — Swing backtest + Pine V3 + dashboard + publish docs
 ```
 
 ---
 
-## Deploy
+## Deploy (GCP)
 
-### Update workflow (local → GCP via scp)
+### Push code
 ```bash
-gcloud compute scp bot.py core.py dashboard.html server.py strategy_v5.py \
+gcloud compute scp bot_bb.py bb_core.py bot.py core.py server.py \
+  dashboard_bb.html dashboard.html settings.html \
   btc-bot-eu:~/BTC-Flip-Bot/ --zone=europe-west1-b
-gcloud compute ssh btc-bot-eu --zone=europe-west1-b --command='sudo systemctl restart btc-bot-server'
+gcloud compute ssh btc-bot-eu --zone=europe-west1-b \
+  --command='sudo systemctl restart btc-bot-server'
 ```
 
-The systemd timer triggers the bot every hour on the hour — no restart needed unless logic changed.
-
-### Local testing
+### Switch strategies
 ```bash
-python3 bot.py --env testnet --dry      # dry run, no orders placed
-python3 strategy_v5.py                  # regenerate backtest + report_v5.html
+# Switch to BB:
+sudo systemctl stop btc-bot-testnet.timer
+sudo systemctl start btc-bot-bb.timer
+
+# Switch to Swing:
+sudo systemctl stop btc-bot-bb.timer
+sudo systemctl start btc-bot-testnet.timer
+```
+
+### Check status
+```bash
+sudo systemctl list-timers --all | grep btc
+tail -20 ~/BTC-Flip-Bot/data/testnet/bot.log
 ```
 
 ---
 
-## Dashboard
+## Dashboards
 
-- URL: `http://VM-IP:8888/dashboard.html?env=testnet`
-- Public (no password) — read-only
-- `/settings.html` is password-protected (set on first visit)
-- Live BTC/USDT 1H candlestick chart with EMA(50) overlay (Binance WebSocket)
-- Setup Status panel: every entry condition shown with met/pending state
-- Position panel (when in trade): entry, SL distance, partial TP progress, live PnL
-- Equity curve + recent trades table
-
-## Email alerts
-
-Bot sends Gmail SMTP alerts on:
-- Trade open
-- Trade close (SL / EXIT-OPP)
-- Partial TP fired
-- DD halt triggered
-
-Configure in `.env`:
-```
-BOT_EMAIL=you@gmail.com
-BOT_EMAIL_PASS=app-password   # Gmail App Password, not your real pw
-BOT_EMAIL_TO=alerts@example.com
-```
-
----
-
-## Strategy validation summary
-
-Every V5 parameter was sweep-tested:
-
-| Parameter | Tested values | Optimum |
-|---|---|---|
-| Same-direction cooldown after SL | 0, 4, 8, 12, 16, 20, 24, **36**, 48, 72, 168h | **36h** |
-| SL cap (% from entry) | 1.5%, 2.0%, **2.5%**, 3.5%, 5.0%, 7.5% | **2.5%** (pattern-based) |
-| Partial TP trigger | 1.5R, 2R, 2.5R, 3R, 4R, **5R**, 6R, 8R | **5R** (lock 30%) — best Calmar w/ vol 1.5× |
-| Volume spike ratio | 1.0×, 1.2×, **1.5×**, 2.0×, 2.5× | **1.5×** (stricter = higher PF + lower DD) |
-| Engulfing body size multiplier | **1.0×**, 1.2×, 1.5× | **1.0×** (any-size engulfing) |
-| Cooldown approach | time, fresh-signal reset, 4H RSI cycle | **time-based** |
-| Flip-open after opposite signal | enabled / disabled | **disabled** (V4 fix) |
-| Volume filter (vol > 1.2× SMA20) | on / off | **on** (off doubles trades but kills CAGR) |
-| Leverage | 1×, **2×**, 3×, 4×, 5× | **2×** default (3× viable, see deploy) |
-
-Post-mortem audit on the 5yr backtest:
-- **94% of SL hits were correct** — price continued adverse direction within 24h
-- Only 5.9% reversed within 24h (the SL was "wrong" in those rare cases)
-- 56% of winners exited at right time, 44% could have held marginally longer
+- BB: `http://VM-IP:8888/dashboard_bb.html?env=testnet`
+- Swing: `http://VM-IP:8888/dashboard.html?env=testnet`
+- Settings: `http://VM-IP:8888/settings.html` (password-protected)
 
 ---
 
 ## License
 
-Personal use. No warranty. Backtest results don't guarantee live performance — start on testnet.
+Personal use. No warranty. Backtest results don't guarantee live performance.
