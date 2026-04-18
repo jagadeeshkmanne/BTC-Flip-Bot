@@ -11,3 +11,4 @@ botenv/
 
 # Generated backtest results (re-run scripts to regenerate)
 *_results.json
+.claude/
