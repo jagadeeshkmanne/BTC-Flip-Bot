@@ -239,10 +239,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def _is_public(self, path):
-        """Public pages: dashboard + its data files. No auth needed."""
-        if path in ('/', '/dashboard.html'):
+        """Public pages: dashboards + data files + API. No auth needed."""
+        if path in ('/', '/dashboard.html', '/dashboard_grid.html', '/dashboard_bb.html'):
             return True
-        if path.startswith('/data/'):
+        if path.startswith('/data/') or path.startswith('/api/'):
             return True
         return False
 
@@ -258,7 +258,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # Redirect root to dashboard
         if path == '/':
             self.send_response(302)
-            self.send_header('Location', '/dashboard.html?env=testnet')
+            self.send_header('Location', '/dashboard_grid.html?env=testnet')
             self.end_headers()
             return
 
