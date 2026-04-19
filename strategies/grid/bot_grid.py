@@ -384,13 +384,36 @@ def main():
 
             state["grid"] = None
         else:
-            # Calculate unrealized PnL
-            unreal = 0
-            for g_idx in range(len(levels)):
-                if filled[g_idx]:
-                    if side == "LONG": unreal += (price - levels[g_idx]) / levels[g_idx]
-                    else: unreal += (levels[g_idx] - price) / levels[g_idx]
-            unreal_pct = unreal * LEV / N_GRIDS * 100
+            # Get REAL position data from exchange
+            exch_position = None
+            if not ARGS.dry:
+                exch_pos = client.positions(PAIR)
+                if exch_pos:
+                    ep = exch_pos[0]
+                    exch_position = {
+                        "qty": abs(float(ep["positionAmt"])),
+                        "entry_price": float(ep["entryPrice"]),
+                        "break_even": float(ep.get("breakEvenPrice", ep["entryPrice"])),
+                        "unrealized_pnl_usd": float(ep["unrealizedProfit"]),
+                        "margin": float(ep.get("isolatedWallet", ep["positionInitialMargin"])),
+                        "notional": float(ep["notional"]),
+                        "leverage": int(ep["leverage"]),
+                    }
+                    pnl_pct = exch_position["unrealized_pnl_usd"] / exch_position["margin"] * 100 if exch_position["margin"] > 0 else 0
+                    exch_position["unrealized_pnl_pct"] = pnl_pct
+
+                # Get open orders
+                open_ords = client.open_orders(PAIR)
+                open_orders_list = []
+                for o in open_ords:
+                    open_orders_list.append({
+                        "side": o["side"],
+                        "type": o["type"],
+                        "price": float(o["price"]),
+                        "qty": float(o["origQty"]),
+                    })
+            else:
+                open_orders_list = []
 
             status.update({
                 "grid_levels": levels, "grid_filled": filled,
@@ -398,7 +421,8 @@ def main():
                 "held_hours": held_hours,
                 "session_pnl": grid.get("session_pnl", 0),
                 "fills_completed": grid.get("fills_completed", 0),
-                "unrealized_pnl": unreal_pct,
+                "position": exch_position,
+                "open_orders": open_orders_list,
             })
 
         for lvl, f in zip(levels, filled):

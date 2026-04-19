@@ -110,12 +110,24 @@ body{margin:0;background:#0a0e13;color:#e6edf3;font-family:-apple-system,sans-se
       </div>
     </div>
 
+    <!-- Open Position (from exchange) -->
+    <div class="panel" id="posPanel" style="display:none">
+      <div class="panel-hdr"><h2>Open Position</h2></div>
+      <div class="panel-body" id="posBody"></div>
+    </div>
+
     <!-- Active Grid -->
     <div class="panel" id="gridPanel">
       <div class="panel-hdr"><h2>Grid Levels</h2><span id="gridSideTag"></span></div>
       <div class="panel-body" id="gridBody">
         <div style="color:#7d8590;font-size:12px;text-align:center;padding:20px 0">No active grid</div>
       </div>
+    </div>
+
+    <!-- Open Orders -->
+    <div class="panel" id="ordersPanel" style="display:none">
+      <div class="panel-hdr"><h2>Open Orders</h2><span id="orderCount" style="font-size:11px;color:#7d8590"></span></div>
+      <div class="panel-body" id="ordersBody"></div>
     </div>
 
     <!-- Entry Conditions -->
@@ -333,6 +345,47 @@ async function poll() {
       document.getElementById('upnl2').textContent = '$0';
     }
 
+    // Position from exchange
+    const pp = document.getElementById('posPanel');
+    if (d.position) {
+      pp.style.display = '';
+      const pos = d.position;
+      const pnlCls = pos.unrealized_pnl_usd >= 0 ? 'pos' : 'neg';
+      document.getElementById('posBody').innerHTML = `
+        <div class="cond"><span class="ck">Side</span><span class="cv ${d.grid_side==='LONG'?'pos':'neg'}">${d.grid_side||'--'}</span></div>
+        <div class="cond"><span class="ck">Size</span><span>${pos.qty} BTC</span></div>
+        <div class="cond"><span class="ck">Entry Price</span><span>$${pos.entry_price.toLocaleString(undefined,{maximumFractionDigits:2})}</span></div>
+        <div class="cond"><span class="ck">Break Even</span><span>$${pos.break_even.toLocaleString(undefined,{maximumFractionDigits:2})}</span></div>
+        <div class="cond"><span class="ck">Margin</span><span>$${pos.margin.toLocaleString(undefined,{maximumFractionDigits:2})}</span></div>
+        <div class="cond"><span class="ck">Notional</span><span>$${pos.notional.toLocaleString(undefined,{maximumFractionDigits:2})}</span></div>
+        <div class="cond"><span class="ck">Leverage</span><span>${pos.leverage}x</span></div>
+        <div class="cond"><span class="ck">Unrealized PnL</span><span class="${pnlCls}" style="font-weight:700">$${pos.unrealized_pnl_usd.toFixed(2)} (${pos.unrealized_pnl_pct>=0?'+':''}${pos.unrealized_pnl_pct.toFixed(2)}%)</span></div>
+      `;
+      // Update header unrealized
+      document.getElementById('unrealPnl').textContent = '$' + pos.unrealized_pnl_usd.toFixed(2);
+      document.getElementById('unrealPnl').className = 'mv ' + pnlCls;
+      document.getElementById('upnl2').innerHTML = '$' + pos.unrealized_pnl_usd.toFixed(2) + '<br><span style="font-size:11px">' + (pos.unrealized_pnl_pct>=0?'+':'') + pos.unrealized_pnl_pct.toFixed(2) + '%</span>';
+      document.getElementById('upnl2').className = 'pbv ' + pnlCls;
+    } else {
+      pp.style.display = 'none';
+    }
+
+    // Open orders
+    const op = document.getElementById('ordersPanel');
+    if (d.open_orders && d.open_orders.length > 0) {
+      op.style.display = '';
+      document.getElementById('orderCount').textContent = d.open_orders.length + ' orders';
+      let ohtml = '';
+      d.open_orders.sort((a,b) => b.price - a.price);
+      d.open_orders.forEach(o => {
+        const cls = o.side === 'BUY' ? 'pos' : 'neg';
+        ohtml += `<div class="cond"><span class="ck ${cls}">${o.side} ${o.type}</span><span>$${o.price.toLocaleString(undefined,{maximumFractionDigits:2})} × ${o.qty}</span></div>`;
+      });
+      document.getElementById('ordersBody').innerHTML = ohtml;
+    } else {
+      op.style.display = 'none';
+    }
+
     // Conditions
     if (d.conditions) {
       const cb = document.getElementById('condBox');
@@ -344,7 +397,7 @@ async function poll() {
     }
 
     document.getElementById('updTime').textContent = d.updated_at ? new Date(d.updated_at).toLocaleTimeString() : '--';
-  } catch(e) {}
+  } catch(e) { console.error('poll err',e); }
 }
 
 async function loadTrades() {
