@@ -162,23 +162,56 @@ const candles = chart.addCandlestickSeries({
 
 // Grid lines on chart
 let gridLines = [];
-function drawGridLines(levels, filled, side) {
+function drawGridLines(levels, filled, side, basePrice) {
   // Remove old lines
   gridLines.forEach(l => candles.removePriceLine(l));
   gridLines = [];
   if (!levels) return;
+
+  // Entry price line
+  if (basePrice) {
+    gridLines.push(candles.createPriceLine({
+      price: basePrice,
+      color: '#79c0ff',
+      lineWidth: 2,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: 'ENTRY',
+    }));
+  }
+
+  // Grid levels
   levels.forEach((px, i) => {
     const isFilled = filled ? filled[i] : false;
-    const line = candles.createPriceLine({
+    const tpPx = side === 'LONG' ? px * 1.02 : px * 0.98;
+    // Grid buy/sell level
+    gridLines.push(candles.createPriceLine({
       price: px,
-      color: isFilled ? '#f0b429' : '#2d333b',
+      color: isFilled ? '#f0b429' : 'rgba(240,180,41,0.3)',
       lineWidth: isFilled ? 2 : 1,
-      lineStyle: isFilled ? 0 : 2, // solid if filled, dashed if not
+      lineStyle: isFilled ? 0 : 2,
       axisLabelVisible: true,
-      title: isFilled ? (side === 'LONG' ? 'BUY' : 'SELL') : '',
-    });
-    gridLines.push(line);
+      title: isFilled ? (side === 'LONG' ? 'BUY '+( i+1) : 'SELL '+(i+1)) : 'L'+(i+1),
+    }));
+    // TP level for filled grids
+    if (isFilled) {
+      gridLines.push(candles.createPriceLine({
+        price: tpPx,
+        color: '#3fb950',
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: 'TP '+(i+1),
+      }));
+    }
   });
+
+  // Auto-fit chart to show grid range
+  const allPrices = [...levels];
+  if (basePrice) allPrices.push(basePrice);
+  const minP = Math.min(...allPrices) * 0.99;
+  const maxP = Math.max(...allPrices) * 1.02;
+  chart.priceScale('right').applyOptions({autoScale: true});
 }
 
 // EMA200 line
@@ -246,21 +279,27 @@ async function poll() {
       tag.className = 'tag ' + (side === 'LONG' ? 'tag-long' : 'tag-short');
 
       // Draw grid lines on chart
-      drawGridLines(d.grid_levels, d.grid_filled, side);
+      drawGridLines(d.grid_levels, d.grid_filled, side, d.grid_base);
 
       // Grid panel
-      document.getElementById('gridSideTag').innerHTML = `<span class="tag ${side==='LONG'?'tag-long':'tag-short'}">${side}</span>`;
+      document.getElementById('gridSideTag').innerHTML = `<span class="tag ${side==='LONG'?'tag-long':'tag-short'}">${side}</span> <span style="font-size:11px;color:#7d8590">${d.fills_completed||0} fills | ${d.held_hours?d.held_hours.toFixed(1):'0'}h held</span>`;
       const gb = document.getElementById('gridBody');
       if (d.grid_levels) {
-        let html = '';
+        let html = `<div style="font-size:11px;color:#7d8590;margin-bottom:8px">Entry: $${(d.grid_base||0).toLocaleString(undefined,{maximumFractionDigits:0})} | Session PnL: <span class="${(d.session_pnl||0)>=0?'pos':'neg'}">${(d.session_pnl||0)>=0?'+':''}${(d.session_pnl||0).toFixed(2)}%</span></div>`;
         const levels = [...d.grid_levels].reverse();
         const filled = d.grid_filled ? [...d.grid_filled].reverse() : [];
         levels.forEach((px, i) => {
           const f = filled[i] || false;
-          html += `<div class="grid-level">
+          const tpPx = side === 'LONG' ? px * 1.02 : px * 0.98;
+          const pnlFromHere = side === 'LONG' ? ((price - px) / px * 100).toFixed(1) : ((px - price) / px * 100).toFixed(1);
+          html += `<div class="grid-level" style="background:${f?'rgba(240,180,41,0.08)':'transparent'}">
             <span class="grid-dot ${f?'filled':'empty'}"></span>
-            <span class="gpx">$${px.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-            <span class="gst ${f?'warn':''}">${f?(side==='LONG'?'BOUGHT':'SOLD'):'waiting'}</span>
+            <span class="gpx" style="flex:1">$${px.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+            ${f ? `<span style="font-size:10px;color:#7d8590">TP $${tpPx.toLocaleString(undefined,{maximumFractionDigits:0})}</span>` : ''}
+            <span style="font-size:10px;width:50px;text-align:right" class="${f?(+pnlFromHere>=0?'pos':'neg'):''}">
+              ${f ? pnlFromHere+'%' : ''}
+            </span>
+            <span class="gst ${f?'warn':''}" style="width:60px;text-align:right">${f?(side==='LONG'?'BOUGHT':'SOLD'):'waiting'}</span>
           </div>`;
         });
         gb.innerHTML = html;
@@ -269,18 +308,21 @@ async function poll() {
       // Unrealized PnL
       if (d.grid_levels && d.grid_filled) {
         let unreal = 0;
+        let nFilled = 0;
         d.grid_levels.forEach((px, i) => {
           if (d.grid_filled[i]) {
+            nFilled++;
             if (side === 'LONG') unreal += (price - px) / px;
             else unreal += (px - price) / px;
           }
         });
-        unreal = unreal * 2 / d.grid_levels.length * 100; // leverage * alloc
+        const unrealPct = unreal * 2 / d.grid_levels.length * 100;
+        const unrealUsd = unrealPct / 100 * bal;
         const uel = document.getElementById('unrealPnl');
-        uel.textContent = (unreal >= 0 ? '+' : '') + unreal.toFixed(2) + '%';
-        uel.className = 'mv ' + (unreal >= 0 ? 'pos' : 'neg');
-        document.getElementById('upnl2').textContent = (unreal >= 0 ? '+' : '') + unreal.toFixed(2) + '%';
-        document.getElementById('upnl2').className = 'pbv ' + (unreal >= 0 ? 'pos' : 'neg');
+        uel.textContent = (unrealPct >= 0 ? '+' : '') + unrealPct.toFixed(2) + '% ($' + unrealUsd.toFixed(0) + ')';
+        uel.className = 'mv ' + (unrealPct >= 0 ? 'pos' : 'neg');
+        document.getElementById('upnl2').innerHTML = (unrealPct >= 0 ? '+' : '') + unrealPct.toFixed(2) + '%<br><span style="font-size:11px">$' + unrealUsd.toFixed(0) + '</span>';
+        document.getElementById('upnl2').className = 'pbv ' + (unrealPct >= 0 ? 'pos' : 'neg');
       }
     } else {
       tag.textContent = 'FLAT';
