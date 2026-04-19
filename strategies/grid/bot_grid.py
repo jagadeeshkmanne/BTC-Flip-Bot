@@ -2,10 +2,11 @@
 """
 bot_grid.py — Directional Grid Bot (one-shot per 1H candle close).
 
-Long grid in uptrend (EMA200) + Short grid in downtrend.
-5 grid levels, 10% range, 2% TP per grid, 15% SL.
-
-Backtest: $5K → $831K | +126% CAGR | -25.3% DD | PF 2.64 | 240 trades/yr
+Manages actual limit orders on Binance:
+- Places limit BUY orders at each grid level (long grid)
+- When a buy fills, places limit SELL at +2% (TP)
+- When TP fills, re-places the buy (grid recycles)
+- On stop: cancels all orders, market-closes positions
 
 Run:
   python3 strategies/grid/bot_grid.py --env testnet
@@ -26,7 +27,7 @@ sys.path.insert(0, STRATEGY_DIR)
 from grid_core import (
     LEVERAGE, N_GRIDS, GRID_RANGE_PCT, TP_PER_GRID_PCT, GRID_SL_PCT,
     MAX_HOLD_BARS, RSI_LONG_TRIGGER, RSI_SHORT_TRIGGER, RSI_LONG_EXIT, RSI_SHORT_EXIT,
-    build_signals, evaluate_signal, create_grid, GridState,
+    build_signals, evaluate_signal,
 )
 
 # ─── env / config ───
@@ -48,8 +49,7 @@ ARGS, _ = ap.parse_known_args()
 ENV = ARGS.env
 
 CFG_PATH = os.path.join(BOT_DIR, "config", f"{ENV}.json")
-with open(CFG_PATH) as f:
-    CFG = json.load(f)
+with open(CFG_PATH) as f: CFG = json.load(f)
 
 API_KEY    = os.environ.get(CFG["api_key_env"], "")
 API_SECRET = os.environ.get(CFG["api_secret_env"], "")
@@ -74,7 +74,6 @@ if os.path.exists(DISABLED_FLAG):
 if not API_KEY or not API_SECRET:
     log.error(f"Missing API keys"); sys.exit(1)
 
-# ─── Email ───
 EMAIL_FROM = os.environ.get("BOT_EMAIL", "")
 EMAIL_PASS = os.environ.get("BOT_EMAIL_PASS", "")
 EMAIL_TO   = os.environ.get("BOT_EMAIL_TO", "")
@@ -91,15 +90,18 @@ def send_email(subject, body):
             s.login(EMAIL_FROM, EMAIL_PASS); s.send_message(msg)
     except: pass
 
+
 # ─── Binance Client ───
 class BinanceClient:
     def __init__(self, key, secret, base_url):
         self.key=key; self.secret=secret; self.base=base_url
         self.s=requests.Session(); self.s.headers.update({"X-MBX-APIKEY":key})
+
     def _sign(self, p):
         q="&".join(f"{k}={v}" for k,v in p.items())
         p["signature"]=hmac.new(self.secret.encode(),q.encode(),hashlib.sha256).hexdigest()
         return p
+
     def _req(self, method, path, params=None, signed=False, retries=3):
         params=params or {}
         if signed: params["timestamp"]=int(time.time()*1000); params["recvWindow"]=5000; params=self._sign(params)
@@ -113,6 +115,7 @@ class BinanceClient:
                 return None
             except Exception as e: log.warning(f"  err {a+1}: {e}"); time.sleep(2)
         return None
+
     def klines(self, symbol, interval="15m", limit=1500):
         data=self._req("GET","/fapi/v1/klines",{"symbol":symbol,"interval":interval,"limit":limit})
         if not data: return None
@@ -120,27 +123,58 @@ class BinanceClient:
         df=df.astype({"open":float,"high":float,"low":float,"close":float,"volume":float})
         df["timestamp"]=pd.to_datetime(df["open_time"],unit="ms")
         return df[["timestamp","open","high","low","close","volume"]]
+
     def account(self): return self._req("GET","/fapi/v2/account",signed=True)
+
     def positions(self, symbol):
         acc=self.account()
         if not acc: return []
         return [p for p in acc.get("positions",[]) if p["symbol"]==symbol and float(p["positionAmt"])!=0]
-    def set_leverage(self, symbol, lev): return self._req("POST","/fapi/v1/leverage",{"symbol":symbol,"leverage":lev},signed=True)
+
+    def set_leverage(self, symbol, lev):
+        return self._req("POST","/fapi/v1/leverage",{"symbol":symbol,"leverage":lev},signed=True)
+
     def market_order(self, symbol, side, qty, reduce_only=False):
         p={"symbol":symbol,"side":side,"type":"MARKET","quantity":f"{qty}"}
         if reduce_only: p["reduceOnly"]="true"
         return self._req("POST","/fapi/v1/order",p,signed=True)
-    def cancel_all(self, symbol): self._req("DELETE","/fapi/v1/allOpenOrders",{"symbol":symbol},signed=True)
+
+    def limit_order(self, symbol, side, qty, price):
+        """Place a limit order."""
+        p={"symbol":symbol,"side":side,"type":"LIMIT","quantity":f"{qty}",
+           "price":f"{price:.2f}","timeInForce":"GTC"}
+        return self._req("POST","/fapi/v1/order",p,signed=True)
+
+    def stop_market(self, symbol, side, stop_price, close_position=True):
+        p={"symbol":symbol,"side":side,"type":"STOP_MARKET",
+           "stopPrice":f"{stop_price:.2f}","workingType":"MARK_PRICE",
+           "closePosition":"true" if close_position else "false"}
+        return self._req("POST","/fapi/v1/order",p,signed=True)
+
+    def take_profit_market(self, symbol, side, stop_price, close_position=True):
+        p={"symbol":symbol,"side":side,"type":"TAKE_PROFIT_MARKET",
+           "stopPrice":f"{stop_price:.2f}","workingType":"MARK_PRICE",
+           "closePosition":"true" if close_position else "false"}
+        return self._req("POST","/fapi/v1/order",p,signed=True)
+
+    def cancel_all(self, symbol):
+        self._req("DELETE","/fapi/v1/allOpenOrders",{"symbol":symbol},signed=True)
+
+    def open_orders(self, symbol):
+        return self._req("GET","/fapi/v1/openOrders",{"symbol":symbol},signed=True) or []
+
     def exchange_info(self, symbol):
         data=self._req("GET","/fapi/v1/exchangeInfo")
         if not data: return None
         for s in data["symbols"]:
             if s["symbol"]==symbol:
-                step=qty_min=0
+                step=qty_min=price_step=0
                 for f in s["filters"]:
                     if f["filterType"]=="LOT_SIZE": step=float(f["stepSize"]); qty_min=float(f["minQty"])
-                return {"step":step,"min_qty":qty_min}
+                    if f["filterType"]=="PRICE_FILTER": price_step=float(f["tickSize"])
+                return {"step":step,"min_qty":qty_min,"price_step":price_step}
         return None
+
 
 # ─── State ───
 def load_state():
@@ -150,7 +184,7 @@ def load_state():
     except: return default_state()
 
 def default_state():
-    return {"grid":None, "trade_log":[], "peak_equity":0.0}
+    return {"grid":None, "trade_log":[], "total_realized_pnl":0.0, "total_grids":0, "total_wins":0}
 
 def save_state(s):
     with open(STATE_FILE,"w") as f: json.dump(s,f,indent=2,default=str)
@@ -158,6 +192,10 @@ def save_state(s):
 def round_qty(q, step):
     if step==0: return q
     return round(q-(q%step),8)
+
+def round_price(p, step):
+    if step==0: return round(p,2)
+    return round(round(p/step)*step, 8)
 
 def _clean(v):
     if isinstance(v,dict): return {k:_clean(x) for k,x in v.items()}
@@ -189,7 +227,7 @@ def main():
     df_1h = build_signals(df_15m)
     if len(df_1h) < 50: log.error("Not enough 1H bars"); return
 
-    last = df_1h.iloc[-2]  # last closed 1H bar
+    last = df_1h.iloc[-2]
     sig = evaluate_signal(last)
     price = sig.price
 
@@ -198,91 +236,278 @@ def main():
     balance = float(acc["totalWalletBalance"])
     log.info(f"  Balance ${balance:,.2f}  Price ${price:,.2f}  RSI={sig.rsi_value:.1f}  Trend={'UP' if sig.trend==1 else 'DOWN' if sig.trend==-1 else 'FLAT'}")
 
-    grid_state = state.get("grid")
+    grid = state.get("grid")
+    now_ts = int(time.time())
 
     status = {
         "env":ENV, "pair":PAIR, "price":price, "balance":balance,
         "leverage":LEV, "raw_indicators":sig.raw,
-        "grid_active": grid_state is not None,
-        "grid_side": grid_state.get("side") if grid_state else None,
+        "grid_active": grid is not None,
+        "grid_side": grid.get("side") if grid else None,
         "conditions": sig.conditions,
+        "total_realized_pnl": state.get("total_realized_pnl", 0),
+        "total_grids": state.get("total_grids", 0),
+        "total_wins": state.get("total_wins", 0),
     }
 
-    if grid_state:
-        # Grid is active — log status
-        side = grid_state["side"]
-        levels = grid_state["grid_levels"]
-        filled = grid_state["grid_filled"]
+    if grid:
+        side = grid["side"]
+        levels = grid["grid_levels"]
+        filled = grid["grid_filled"]
+        tp_prices = grid.get("tp_prices", [])
         n_filled = sum(filled)
-        log.info(f"  GRID {side} active | {n_filled}/{len(levels)} levels filled | base=${grid_state['base_price']:,.0f}")
+        start_ts = grid.get("start_ts", now_ts)
+        held_hours = (now_ts - start_ts) / 3600
+        grid_pnl = grid.get("session_pnl", 0)
 
-        # Check stop conditions
+        log.info(f"  GRID {side} | {n_filled}/{len(levels)} filled | held {held_hours:.1f}h | session PnL {grid_pnl:+.2f}%")
+
+        # ── Check if any grid level filled (by checking exchange position) ──
+        if not ARGS.dry:
+            exch_pos = client.positions(PAIR)
+            exch_qty = 0
+            if exch_pos:
+                exch_qty = abs(float(exch_pos[0]["positionAmt"]))
+
+            # Check open orders to see which are still pending
+            open_ords = client.open_orders(PAIR)
+            pending_buy_prices = set()
+            pending_sell_prices = set()
+            for o in open_ords:
+                op = float(o["price"])
+                if o["side"] == "BUY": pending_buy_prices.add(round(op, 2))
+                else: pending_sell_prices.add(round(op, 2))
+
+            # Reconcile: if a buy order is gone but we expected it, it filled
+            qty_per = grid.get("qty_per_grid", 0)
+            for g_idx in range(len(levels)):
+                lvl_price = round(levels[g_idx], 2)
+                if side == "LONG":
+                    if not filled[g_idx] and lvl_price not in pending_buy_prices and g_idx < len(levels)-1:
+                        # Buy order was placed but is gone → it filled
+                        if price <= levels[g_idx] * 1.01:  # price is near or below this level
+                            filled[g_idx] = True
+                            grid["grid_filled"] = filled
+                            log.info(f"    Level {g_idx+1} FILLED at ${levels[g_idx]:,.0f}")
+                            # Place TP sell order
+                            tp_px = round_price(levels[g_idx] * (1 + TP_PER_GRID_PCT), info["price_step"])
+                            resp = client.limit_order(PAIR, "SELL", qty_per, tp_px)
+                            if resp:
+                                log.info(f"    TP sell placed at ${tp_px:,.0f}")
+                    # Check if TP sell filled (level was filled, now unfilled because TP hit)
+                    if filled[g_idx] and g_idx < len(levels)-1:
+                        tp_px = round(levels[g_idx] * (1 + TP_PER_GRID_PCT), 2)
+                        if tp_px not in pending_sell_prices and price >= tp_px * 0.999:
+                            # TP sell was placed but is gone → it filled (profit!)
+                            pnl = TP_PER_GRID_PCT * LEV / N_GRIDS * 100
+                            grid["session_pnl"] = grid.get("session_pnl", 0) + pnl
+                            state["total_realized_pnl"] = state.get("total_realized_pnl", 0) + pnl
+                            filled[g_idx] = False
+                            grid["grid_filled"] = filled
+                            grid["fills_completed"] = grid.get("fills_completed", 0) + 1
+                            log.info(f"    Level {g_idx+1} TP HIT! +{pnl:.2f}% profit")
+                            # Re-place buy order (grid recycles)
+                            buy_px = round_price(levels[g_idx], info["price_step"])
+                            client.limit_order(PAIR, "BUY", qty_per, buy_px)
+                            log.info(f"    Re-placed buy at ${buy_px:,.0f}")
+                else:  # SHORT grid
+                    if not filled[g_idx] and lvl_price not in pending_sell_prices and g_idx > 0:
+                        if price >= levels[g_idx] * 0.99:
+                            filled[g_idx] = True
+                            grid["grid_filled"] = filled
+                            log.info(f"    Level {g_idx+1} FILLED (short) at ${levels[g_idx]:,.0f}")
+                            tp_px = round_price(levels[g_idx] * (1 - TP_PER_GRID_PCT), info["price_step"])
+                            resp = client.limit_order(PAIR, "BUY", qty_per, tp_px)
+                            if resp:
+                                log.info(f"    TP buy placed at ${tp_px:,.0f}")
+                    if filled[g_idx] and g_idx > 0:
+                        tp_px = round(levels[g_idx] * (1 - TP_PER_GRID_PCT), 2)
+                        if tp_px not in pending_buy_prices and price <= tp_px * 1.001:
+                            pnl = TP_PER_GRID_PCT * LEV / N_GRIDS * 100
+                            grid["session_pnl"] = grid.get("session_pnl", 0) + pnl
+                            state["total_realized_pnl"] = state.get("total_realized_pnl", 0) + pnl
+                            filled[g_idx] = False
+                            grid["grid_filled"] = filled
+                            grid["fills_completed"] = grid.get("fills_completed", 0) + 1
+                            log.info(f"    Level {g_idx+1} TP HIT (short)! +{pnl:.2f}%")
+                            sell_px = round_price(levels[g_idx], info["price_step"])
+                            client.limit_order(PAIR, "SELL", qty_per, sell_px)
+
+        # ── Stop conditions ──
         should_stop = False; stop_reason = ""
-        if side == "LONG" and sig.rsi_value > RSI_LONG_EXIT:
-            should_stop = True; stop_reason = "RSI>70"
-        elif side == "SHORT" and sig.rsi_value < RSI_SHORT_EXIT:
-            should_stop = True; stop_reason = "RSI<30"
-        elif side == "LONG" and sig.trend != 1:
-            should_stop = True; stop_reason = "TREND_FLIP"
-        elif side == "SHORT" and sig.trend != -1:
-            should_stop = True; stop_reason = "TREND_FLIP"
-        elif side == "LONG" and price < grid_state["base_price"] * (1 - GRID_SL_PCT):
-            should_stop = True; stop_reason = "SL"
-        elif side == "SHORT" and price > grid_state["base_price"] * (1 + GRID_SL_PCT):
-            should_stop = True; stop_reason = "SL"
+        if side == "LONG" and sig.rsi_value > RSI_LONG_EXIT: should_stop=True; stop_reason="RSI>70"
+        elif side == "SHORT" and sig.rsi_value < RSI_SHORT_EXIT: should_stop=True; stop_reason="RSI<30"
+        elif side == "LONG" and sig.trend != 1: should_stop=True; stop_reason="TREND_FLIP"
+        elif side == "SHORT" and sig.trend != -1: should_stop=True; stop_reason="TREND_FLIP"
+        elif side == "LONG" and price < grid["base_price"]*(1-GRID_SL_PCT): should_stop=True; stop_reason="SL_15%"
+        elif side == "SHORT" and price > grid["base_price"]*(1+GRID_SL_PCT): should_stop=True; stop_reason="SL_15%"
+        elif held_hours > MAX_HOLD_BARS: should_stop=True; stop_reason="MAX_HOLD"
 
         if should_stop:
             log.info(f"  GRID STOP: {stop_reason}")
             if not ARGS.dry:
-                # Close all positions
+                client.cancel_all(PAIR)
                 exch_pos = client.positions(PAIR)
+                close_pnl = 0
                 if exch_pos:
                     for p in exch_pos:
                         qty = abs(float(p["positionAmt"]))
+                        entry_px = float(p["entryPrice"])
                         close_side = "SELL" if float(p["positionAmt"]) > 0 else "BUY"
-                        client.market_order(PAIR, close_side, qty, reduce_only=True)
-                client.cancel_all(PAIR)
+                        resp = client.market_order(PAIR, close_side, qty, reduce_only=True)
+                        if resp:
+                            fill = float(resp.get("avgPrice", price)) or price
+                            if side == "LONG": pnl_pct = (fill - entry_px) / entry_px * LEV * 100
+                            else: pnl_pct = (entry_px - fill) / entry_px * LEV * 100
+                            close_pnl += pnl_pct
+
+                total_session_pnl = grid.get("session_pnl", 0) + close_pnl
+                is_win = total_session_pnl > 0
+                state["total_realized_pnl"] = state.get("total_realized_pnl", 0) + close_pnl
+                state["total_grids"] = state.get("total_grids", 0) + 1
+                if is_win: state["total_wins"] = state.get("total_wins", 0) + 1
+
+                state["trade_log"].append({
+                    "side": side, "entry": grid["base_price"], "exit": price,
+                    "pnl_pct": total_session_pnl, "reason": stop_reason,
+                    "fills": grid.get("fills_completed", 0),
+                    "duration_h": held_hours,
+                    "entry_time": grid.get("start_time"),
+                    "exit_time": datetime.now(timezone.utc).isoformat(),
+                })
+                state["trade_log"] = state["trade_log"][-100:]
+                log.info(f"  Grid closed: {stop_reason} | session PnL {total_session_pnl:+.2f}% | fills: {grid.get('fills_completed',0)}")
+                send_email(f"Grid {side} closed: {stop_reason} ({total_session_pnl:+.1f}%)",
+                    f"Side: {side}\nEntry: ${grid['base_price']:,.0f}\nExit: ${price:,.0f}\n"
+                    f"Reason: {stop_reason}\nSession PnL: {total_session_pnl:+.2f}%\n"
+                    f"TP fills: {grid.get('fills_completed',0)}\nHeld: {held_hours:.1f}h\nBalance: ${balance:,.2f}")
+
             state["grid"] = None
-            send_email(f"Grid {side} closed: {stop_reason}", f"Price: ${price:,.2f}\nReason: {stop_reason}\nBalance: ${balance:,.2f}")
         else:
-            status["grid_levels"] = levels
-            status["grid_filled"] = filled
+            # Calculate unrealized PnL
+            unreal = 0
+            for g_idx in range(len(levels)):
+                if filled[g_idx]:
+                    if side == "LONG": unreal += (price - levels[g_idx]) / levels[g_idx]
+                    else: unreal += (levels[g_idx] - price) / levels[g_idx]
+            unreal_pct = unreal * LEV / N_GRIDS * 100
+
+            status.update({
+                "grid_levels": levels, "grid_filled": filled,
+                "grid_base": grid["base_price"],
+                "held_hours": held_hours,
+                "session_pnl": grid.get("session_pnl", 0),
+                "fills_completed": grid.get("fills_completed", 0),
+                "unrealized_pnl": unreal_pct,
+            })
+
+        for lvl, f in zip(levels, filled):
+            log.info(f"    ${lvl:>10,.0f}  {'FILLED' if f else 'waiting'}")
+
     else:
-        # No grid — check if we should start one
+        # ── No grid — check entry ──
         log.info(f"  NO GRID — checking conditions")
         for k, v in sig.conditions.items():
             log.info(f"    {k}: {'YES' if v else 'no'}")
 
         if sig.should_start and not ARGS.dry:
-            grid = create_grid(sig.side, price)
-            log.info(f"  STARTING {sig.side} GRID at ${price:,.0f}")
-            log.info(f"    Levels: {[f'${l:,.0f}' for l in grid.grid_levels]}")
+            side = sig.side
+            log.info(f"  STARTING {side} GRID at ${price:,.0f}")
 
-            # Place initial order
             client.set_leverage(PAIR, LEV)
-            qty_per_grid = (balance * LEV) / price / N_GRIDS
-            qty = round_qty(qty_per_grid, info["step"])
-            if qty >= info["min_qty"]:
-                side_api = "BUY" if sig.side == "LONG" else "SELL"
-                resp = client.market_order(PAIR, side_api, qty)
+            client.cancel_all(PAIR)
+
+            qty_per = round_qty((balance * LEV) / price / N_GRIDS, info["step"])
+            if qty_per < info["min_qty"]:
+                log.warning(f"  qty {qty_per} below min {info['min_qty']}"); return
+
+            # Create grid levels
+            if side == "LONG":
+                grid_low = price * (1 - GRID_RANGE_PCT)
+                spacing = (price - grid_low) / N_GRIDS
+                levels = [round_price(grid_low + spacing * j, info["price_step"]) for j in range(N_GRIDS)]
+                filled = [False] * N_GRIDS
+
+                # Buy at current price (top level)
+                resp = client.market_order(PAIR, "BUY", qty_per)
                 if resp:
-                    state["grid"] = {
-                        "side": sig.side,
-                        "base_price": price,
-                        "grid_levels": grid.grid_levels,
-                        "grid_filled": grid.grid_filled,
-                        "start_time": datetime.now(timezone.utc).isoformat(),
-                        "qty_per_grid": qty,
-                    }
-                    send_email(f"Grid {sig.side} started at ${price:,.0f}",
-                        f"Side: {sig.side}\nPrice: ${price:,.2f}\nLevels: {len(grid.grid_levels)}\n"
-                        f"Range: {GRID_RANGE_PCT*100:.0f}%\nTP/grid: {TP_PER_GRID_PCT*100:.0f}%\nBalance: ${balance:,.2f}")
+                    filled[-1] = True
+                    fill_price = float(resp.get("avgPrice", price)) or price
+                    log.info(f"    Entry BUY filled at ${fill_price:,.0f}")
+
+                    # Place limit buy orders at lower levels
+                    for g_idx in range(N_GRIDS - 1):
+                        buy_px = round_price(levels[g_idx], info["price_step"])
+                        r = client.limit_order(PAIR, "BUY", qty_per, buy_px)
+                        if r: log.info(f"    Limit BUY at ${buy_px:,.0f}")
+
+                    # Place TP sell for the entry level
+                    tp_px = round_price(fill_price * (1 + TP_PER_GRID_PCT), info["price_step"])
+                    client.limit_order(PAIR, "SELL", qty_per, tp_px)
+                    log.info(f"    TP SELL at ${tp_px:,.0f}")
+
+                    # Place SL
+                    sl_px = round_price(price * (1 - GRID_SL_PCT), info["price_step"])
+                    client.stop_market(PAIR, "SELL", sl_px, close_position=True)
+                    log.info(f"    SL at ${sl_px:,.0f}")
+
+            else:  # SHORT
+                grid_high = price * (1 + GRID_RANGE_PCT)
+                spacing = (grid_high - price) / N_GRIDS
+                levels = [round_price(price + spacing * j, info["price_step"]) for j in range(N_GRIDS)]
+                filled = [False] * N_GRIDS
+
+                resp = client.market_order(PAIR, "SELL", qty_per)
+                if resp:
+                    filled[0] = True
+                    fill_price = float(resp.get("avgPrice", price)) or price
+                    log.info(f"    Entry SELL filled at ${fill_price:,.0f}")
+
+                    for g_idx in range(1, N_GRIDS):
+                        sell_px = round_price(levels[g_idx], info["price_step"])
+                        r = client.limit_order(PAIR, "SELL", qty_per, sell_px)
+                        if r: log.info(f"    Limit SELL at ${sell_px:,.0f}")
+
+                    tp_px = round_price(fill_price * (1 - TP_PER_GRID_PCT), info["price_step"])
+                    client.limit_order(PAIR, "BUY", qty_per, tp_px)
+                    log.info(f"    TP BUY at ${tp_px:,.0f}")
+
+                    sl_px = round_price(price * (1 + GRID_SL_PCT), info["price_step"])
+                    client.stop_market(PAIR, "BUY", sl_px, close_position=True)
+                    log.info(f"    SL at ${sl_px:,.0f}")
+
+            state["grid"] = {
+                "side": side, "base_price": price,
+                "grid_levels": levels, "grid_filled": filled,
+                "qty_per_grid": qty_per,
+                "start_ts": now_ts,
+                "start_time": datetime.now(timezone.utc).isoformat(),
+                "session_pnl": 0, "fills_completed": 0,
+            }
+            send_email(f"Grid {side} started at ${price:,.0f}",
+                f"Side: {side}\nPrice: ${price:,.2f}\nLevels: {N_GRIDS}\n"
+                f"Range: {GRID_RANGE_PCT*100:.0f}%\nTP/grid: {TP_PER_GRID_PCT*100:.0f}%\n"
+                f"Levels: {[f'${l:,.0f}' for l in levels]}\nBalance: ${balance:,.2f}")
+
         elif sig.should_start and ARGS.dry:
-            log.info(f"  [DRY] Would start {sig.side} grid at ${price:,.0f}")
+            side = sig.side
+            if side == "LONG":
+                grid_low = price * (1 - GRID_RANGE_PCT)
+                spacing = (price - grid_low) / N_GRIDS
+                levels = [grid_low + spacing * j for j in range(N_GRIDS)]
+            else:
+                grid_high = price * (1 + GRID_RANGE_PCT)
+                spacing = (grid_high - price) / N_GRIDS
+                levels = [price + spacing * j for j in range(N_GRIDS)]
+            log.info(f"  [DRY] Would start {side} grid at ${price:,.0f}")
+            for l in levels: log.info(f"    ${l:,.0f}")
 
         status["state"] = "FLAT"
-        status["long_conditions"] = {k:v for k,v in sig.conditions.items() if "Uptrend" in k or "oversold" in k}
-        status["short_conditions"] = {k:v for k,v in sig.conditions.items() if "Downtrend" in k or "overbought" in k}
+        # Show how far RSI is from trigger
+        if sig.trend == 1:
+            status["rsi_distance"] = sig.rsi_value - RSI_LONG_TRIGGER
+        elif sig.trend == -1:
+            status["rsi_distance"] = RSI_SHORT_TRIGGER - sig.rsi_value
 
     save_state(state)
     write_status(status)
