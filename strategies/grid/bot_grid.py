@@ -433,6 +433,7 @@ def main():
                 if resp:
                     filled[-1] = True
                     fill_price = float(resp.get("avgPrice", price)) or price
+                    levels[-1] = fill_price  # update top level to actual fill price
                     log.info(f"    Entry BUY filled at ${fill_price:,.0f}")
 
                     # Place limit buy orders at lower levels
@@ -461,6 +462,7 @@ def main():
                 if resp:
                     filled[0] = True
                     fill_price = float(resp.get("avgPrice", price)) or price
+                    levels[0] = fill_price  # update bottom level to actual fill price
                     log.info(f"    Entry SELL filled at ${fill_price:,.0f}")
 
                     for g_idx in range(1, N_GRIDS):
