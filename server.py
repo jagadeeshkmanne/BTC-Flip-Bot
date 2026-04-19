@@ -239,10 +239,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def _is_public(self, path):
-        """Public pages: dashboards + data files + API. No auth needed."""
+        """Public pages: dashboards + data files. No auth needed."""
         if path in ('/', '/dashboard.html', '/dashboard_grid.html', '/dashboard_bb.html'):
             return True
-        if path.startswith('/data/') or path.startswith('/api/'):
+        if path.startswith('/data/'):
             return True
         return False
 
@@ -262,11 +262,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Dashboard + state.json are public (read-only data)
-        if self._is_public(path):
-            return super().do_GET()
-
-        # ── Public V5 dashboard endpoints (no auth) ──
+        # ── Public API endpoints (no auth) ──
         if path == '/api/status':
             env = parse_qs(parsed.query).get('env', ['testnet'])[0]
             status_file = os.path.join(BOT_DIR, 'data', env, 'status.json')
@@ -289,6 +285,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     return self._json_response([])
             return self._json_response([])
+
+        # Dashboard + static files are public (read-only)
+        if self._is_public(path):
+            return super().do_GET()
 
         # Everything else requires auth
         if not self._require_auth():

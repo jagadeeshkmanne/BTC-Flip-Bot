@@ -184,7 +184,20 @@ function drawGridLines(levels, filled, side) {
 // EMA200 line
 const emaLine = chart.addLineSeries({color:'rgba(255,255,255,0.2)',lineWidth:1,priceLineVisible:false});
 
-// WebSocket
+// Load historical candles from Binance
+async function loadHistory(){
+  try {
+    const r = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=500');
+    const data = await r.json();
+    const bars = data.map(k => ({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+    candles.setData(bars);
+    if(bars.length) document.getElementById('livePrice').textContent = '$'+bars[bars.length-1].close.toLocaleString(undefined,{maximumFractionDigits:0});
+    chart.timeScale().fitContent();
+  } catch(e){ console.error('history err',e); }
+}
+loadHistory();
+
+// WebSocket for live updates
 let ws;
 function connectWS(){
   ws = new WebSocket('wss://fstream.binance.com/ws/btcusdt@kline_1h');
