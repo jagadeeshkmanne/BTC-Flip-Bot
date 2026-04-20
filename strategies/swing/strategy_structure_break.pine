@@ -10,7 +10,7 @@
 //   - Pivot-based structure: HH+HL pivots for longs, LH+LL for shorts
 //   - Close must break latest pivot (breakout confirmation)
 //   - SL: 5-bar swing ± 0.1% buffer, capped at 2.5%
-//   - TP ladder: TP1 50%@3R (SL→BE+0.5%), TP2 25%@4R, Runner 25% ATR-trail
+//   - TP ladder: TP1 50%@3R (SL→BE+0.75%), TP2 25%@4R, Runner 25% ATR-trail
 //   - DD-adaptive risk: ddFactor = max(0.5, 1 + drawdownPct)
 //   - Hard DD halt: 15% → halt 7 days
 //   - Same-bar flip on opposite signal
@@ -51,7 +51,7 @@ tp1R         = input.float(3.0,  "TP1 R-multiple", minval=1, maxval=10, step=0.5
 tp1Frac      = input.float(0.50, "TP1 close fraction", minval=0.1, maxval=0.9, step=0.05, group=grpSL)
 tp2R         = input.float(4.0,  "TP2 R-multiple", minval=2, maxval=15, step=0.5, group=grpSL)
 tp2Frac      = input.float(0.25, "TP2 close fraction", minval=0.05, maxval=0.5, step=0.05, group=grpSL)
-beBufPct     = input.float(0.5,  "BE buffer after TP1 (%)", minval=0.0, maxval=1, step=0.05, group=grpSL) / 100
+beBufPct     = input.float(0.75, "BE buffer after TP1 (%)", minval=0.0, maxval=2, step=0.05, group=grpSL) / 100
 trailAtrMult = input.float(2.5,  "Runner trail (× ATR)", minval=1, maxval=6, step=0.5, group=grpSL)
 
 // ─── Entry ───

@@ -8,7 +8,7 @@ Architecture:
   Pivot-based structure (HH+HL longs, LL+LH shorts) + close breaks latest pivot
 
   SL: 5-bar swing low/high + 0.1% buffer, capped at 2.5%
-  TP ladder: TP1 50% @ 3R -> SL to BE+0.5%; TP2 25% @ 4R; runner 25% with 2.5x ATR trail
+  TP ladder: TP1 50% @ 3R -> SL to BE+0.75%; TP2 25% @ 4R; runner 25% with 2.5x ATR trail
   DD-adaptive risk: effective risk = base_risk * max(0.5, 1 + drawdownPct)
   Hard DD halt: 15% -> halt 7 days
 
@@ -41,7 +41,7 @@ TP1_R             = 3.0         # TP1 at +3R (banks 50% further out than 2R defa
 TP1_FRAC          = 0.50
 TP2_R             = 4.0
 TP2_FRAC          = 0.25
-BE_BUF_PCT        = 0.005       # BE move after TP1 = entry + 0.5%
+BE_BUF_PCT        = 0.0075      # BE move after TP1 = entry + 0.75%
 TRAIL_ATR_MULT    = 2.5
 
 # DD management
