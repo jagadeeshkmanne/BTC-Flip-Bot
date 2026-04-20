@@ -10,16 +10,18 @@
 //   - Pivot-based structure: HH+HL pivots for longs, LH+LL for shorts
 //   - Close must break latest pivot (breakout confirmation)
 //   - SL: 5-bar swing ± 0.1% buffer, capped at 2.5%
-//   - TP ladder: TP1 50%@2R (SL→BE), TP2 25%@4R, Runner 25% ATR-trail
+//   - TP ladder: TP1 50%@3R (SL→BE+0.5%), TP2 25%@4R, Runner 25% ATR-trail
 //   - DD-adaptive risk: ddFactor = max(0.5, 1 + drawdownPct)
 //   - Hard DD halt: 15% → halt 7 days
 //   - Same-bar flip on opposite signal
 //
-// TradingView test (Sep 2019 → Apr 2026, 6.6y, 3% risk, 2× lev, pivotLen=3):
-//   +673% | 42% DD | PF 2.43 | 47 trades | 57% WR | Calmar ~0.85
+// TradingView test (Sep 2019 → Apr 2026, 6.6y, 3% risk, 2× lev):
+//   +817% | 34% DD | PF 2.79 | 45 trades | Calmar ~1.17
 //
-// pivotLen=3 is the optimum. pivotLen=2 adds trades but destroys edge
-// (tested: +573% → +54%). 7 trades/year is the strategy's natural cadence.
+// Config locked after iteration:
+//   - pivotLen=3 (2 destroys edge)
+//   - TP1=3R (vs 2R adds avg R per winner)
+//   - BE buffer 0.5% (vs 0.1% locks more profit at BE stop)
 // ─────────────────────────────────────────────────────────────────────
 
 leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5)
@@ -45,11 +47,11 @@ grpSL        = "🛑 SL / TP Ladder"
 slMaxPct     = input.float(2.5,  "SL max (%)", minval=0.5, maxval=5, step=0.1, group=grpSL) / 100
 slBufPct     = input.float(0.1,  "SL buffer (%)", minval=0.0, maxval=1, step=0.05, group=grpSL) / 100
 slSwingLen   = input.int(5,      "Swing lookback", minval=2, maxval=20, group=grpSL)
-tp1R         = input.float(2.0,  "TP1 R-multiple", minval=1, maxval=10, step=0.5, group=grpSL)
+tp1R         = input.float(3.0,  "TP1 R-multiple", minval=1, maxval=10, step=0.5, group=grpSL)
 tp1Frac      = input.float(0.50, "TP1 close fraction", minval=0.1, maxval=0.9, step=0.05, group=grpSL)
 tp2R         = input.float(4.0,  "TP2 R-multiple", minval=2, maxval=15, step=0.5, group=grpSL)
 tp2Frac      = input.float(0.25, "TP2 close fraction", minval=0.05, maxval=0.5, step=0.05, group=grpSL)
-beBufPct     = input.float(0.1,  "BE buffer after TP1 (%)", minval=0.0, maxval=1, step=0.05, group=grpSL) / 100
+beBufPct     = input.float(0.5,  "BE buffer after TP1 (%)", minval=0.0, maxval=1, step=0.05, group=grpSL) / 100
 trailAtrMult = input.float(2.5,  "Runner trail (× ATR)", minval=1, maxval=6, step=0.5, group=grpSL)
 
 // ─── Entry ───

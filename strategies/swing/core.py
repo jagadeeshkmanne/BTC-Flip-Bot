@@ -8,12 +8,12 @@ Architecture:
   Pivot-based structure (HH+HL longs, LL+LH shorts) + close breaks latest pivot
 
   SL: 5-bar swing low/high + 0.1% buffer, capped at 2.5%
-  TP ladder: TP1 50% @ 2R -> SL to BE; TP2 25% @ 4R; runner 25% with 2.5x ATR trail
+  TP ladder: TP1 50% @ 3R -> SL to BE+0.5%; TP2 25% @ 4R; runner 25% with 2.5x ATR trail
   DD-adaptive risk: effective risk = base_risk * max(0.5, 1 + drawdownPct)
   Hard DD halt: 15% -> halt 7 days
 
 Backtest (TradingView, 1D BTCUSDT, Sep 2019 -> Apr 2026, 2x lev, 3% risk):
-  +673% abs | 42% DD | PF 2.43 | 47 trades | 57% WR | Calmar ~0.85
+  +817% abs | 34% DD | PF 2.79 | 45 trades | Calmar ~1.17
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -36,12 +36,12 @@ SL_SWING_LEN      = 5
 SL_BUFFER_PCT     = 0.001
 SL_MAX_PCT        = 0.025
 
-# Take profit ladder (V7)
-TP1_R             = 2.0
+# Take profit ladder
+TP1_R             = 3.0         # TP1 at +3R (banks 50% further out than 2R default)
 TP1_FRAC          = 0.50
 TP2_R             = 4.0
-TP2_FRAC          = 0.25        # 25% of ORIGINAL entry qty
-BE_BUF_PCT        = 0.001
+TP2_FRAC          = 0.25
+BE_BUF_PCT        = 0.005       # BE move after TP1 = entry + 0.5%
 TRAIL_ATR_MULT    = 2.5
 
 # DD management
