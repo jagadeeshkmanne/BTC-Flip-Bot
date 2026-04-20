@@ -1,97 +1,60 @@
 #!/bin/bash
-# ─── BTC Bot Self-Healer ───
-# Runs every 5 minutes via cron. Checks all services and auto-restarts if unhealthy.
-# Install: crontab -e → */5 * * * * /home/$USER/BTC-Flip-Bot/scripts/self_heal.sh >> /home/$USER/BTC-Flip-Bot/data/heal.log 2>&1
+# self_heal.sh — Runs every 10 minutes via cron
+# Checks: (1) dashboard server alive, (2) bot cron fired recently
+# Restarts the dashboard server if down; logs an alert if bot is stale
 
-LOG="/home/$USER/BTC-Flip-Bot/data/heal.log"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-HEALED=0
+set -u
+BOT_DIR="/home/jags/BTC-Flip-Bot"
+LOG_FILE="$BOT_DIR/data/self_heal.log"
+DATA_DIR="$BOT_DIR/data/testnet"
+SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
-# ─── 1. Check Dashboard Server (should always be running and responding) ───
-SERVER_ACTIVE=$(systemctl is-active btc-bot-server 2>/dev/null)
+ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+log() { echo "$(ts) $*" >> "$LOG_FILE"; }
 
-if [ "$SERVER_ACTIVE" != "active" ]; then
-    echo "$TIMESTAMP [HEAL] Dashboard server is $SERVER_ACTIVE — restarting..."
-    sudo systemctl restart btc-bot-server
+# ── Check 1: Dashboard server responding ──────────────────────────
+SERVER_OK=0
+if curl -s -o /dev/null -w "%{http_code}" -m 5 http://localhost:8888/dashboard.html 2>/dev/null | grep -q "^200$"; then
+    SERVER_OK=1
+fi
+
+if [ "$SERVER_OK" -ne 1 ]; then
+    log "Server DOWN — attempting restart"
+    # Kill any stuck server processes
+    pkill -f "$BOT_DIR/server.py" 2>/dev/null
+    sleep 2
+    # Start fresh
+    cd "$BOT_DIR" || { log "ERR: cannot cd to $BOT_DIR"; exit 1; }
+    nohup /usr/bin/python3 "$BOT_DIR/server.py" > "$BOT_DIR/data/server.log" 2>&1 &
+    echo $! > "$SERVER_PID_FILE"
+    disown
     sleep 3
-    HEALED=1
-fi
-
-# Even if systemd says active, check if it actually responds
-if [ "$SERVER_ACTIVE" = "active" ]; then
-    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://localhost:8888/dashboard.html 2>/dev/null)
-    if [ "$HTTP_CODE" != "200" ]; then
-        echo "$TIMESTAMP [HEAL] Dashboard server frozen (HTTP $HTTP_CODE) — restarting..."
-        sudo systemctl restart btc-bot-server
-        sleep 3
-        HEALED=1
-    fi
-fi
-
-# ─── 2. Check Testnet Timer (should be active and waiting) ───
-TESTNET_TIMER=$(systemctl is-active btc-bot-testnet.timer 2>/dev/null)
-
-if [ "$TESTNET_TIMER" != "active" ]; then
-    echo "$TIMESTAMP [HEAL] Testnet timer is $TESTNET_TIMER — restarting..."
-    sudo systemctl restart btc-bot-testnet.timer
-    HEALED=1
-fi
-
-# ─── 3. Check Production Timer (should be active and waiting) ───
-PROD_TIMER=$(systemctl is-active btc-bot-production.timer 2>/dev/null)
-
-if [ "$PROD_TIMER" != "active" ]; then
-    echo "$TIMESTAMP [HEAL] Production timer is $PROD_TIMER — restarting..."
-    sudo systemctl restart btc-bot-production.timer
-    HEALED=1
-fi
-
-# ─── 4. Check if bot ran recently (within last 20 min for 15m interval) ───
-TESTNET_LOG="/home/$USER/BTC-Flip-Bot/data/testnet/bot.log"
-if [ -f "$TESTNET_LOG" ]; then
-    LAST_MOD=$(stat -c %Y "$TESTNET_LOG" 2>/dev/null || stat -f %m "$TESTNET_LOG" 2>/dev/null)
-    NOW=$(date +%s)
-    AGE=$(( NOW - LAST_MOD ))
-    # If log hasn't been updated in 25 minutes, timer might be stuck
-    if [ "$AGE" -gt 1500 ]; then
-        echo "$TIMESTAMP [HEAL] Testnet bot hasn't run in ${AGE}s — restarting timer..."
-        sudo systemctl restart btc-bot-testnet.timer
-        HEALED=1
-    fi
-fi
-
-# ─── 5. Check memory (e2-micro can run out) ───
-MEM_AVAIL=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null)
-if [ -n "$MEM_AVAIL" ] && [ "$MEM_AVAIL" -lt 51200 ]; then
-    # Less than 50MB available — critical
-    echo "$TIMESTAMP [HEAL] Low memory (${MEM_AVAIL}kB free) — clearing caches..."
-    sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
-    HEALED=1
-fi
-
-# ─── 6. Check swap is active (required for e2-micro) ───
-SWAP_TOTAL=$(awk '/SwapTotal/ {print $2}' /proc/meminfo 2>/dev/null)
-if [ -n "$SWAP_TOTAL" ] && [ "$SWAP_TOTAL" -lt 1024 ]; then
-    echo "$TIMESTAMP [HEAL] No swap detected — enabling..."
-    if [ -f /swapfile ]; then
-        sudo swapon /swapfile 2>/dev/null
+    # Verify
+    if curl -s -o /dev/null -w "%{http_code}" -m 5 http://localhost:8888/dashboard.html 2>/dev/null | grep -q "^200$"; then
+        log "Server restart OK (pid $(cat $SERVER_PID_FILE 2>/dev/null))"
     else
-        sudo fallocate -l 512M /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab > /dev/null
+        log "Server restart FAILED"
     fi
-    HEALED=1
 fi
 
-# ─── Summary ───
-if [ "$HEALED" -eq 1 ]; then
-    echo "$TIMESTAMP [HEAL] Self-healing actions completed."
-else
-    # Only log every hour to keep log file small (minute 0 or 5)
-    MINUTE=$(date '+%M')
-    if [ "$MINUTE" = "00" ] || [ "$MINUTE" = "05" ]; then
-        echo "$TIMESTAMP [OK] All services healthy."
+# ── Check 2: Bot cron fired in last 15 min ────────────────────────
+BOT_LOG="$BOT_DIR/data/swing_cron.log"
+if [ -f "$BOT_LOG" ]; then
+    LAST_MOD=$(stat -c %Y "$BOT_LOG" 2>/dev/null || stat -f %m "$BOT_LOG" 2>/dev/null)
+    NOW=$(date +%s)
+    AGE=$((NOW - LAST_MOD))
+    if [ "$AGE" -gt 900 ]; then  # 15 min
+        log "WARN: bot cron log stale ($((AGE/60)) min old) — check crontab"
     fi
 fi
+
+# ── Check 3: Position sanity ──────────────────────────────────────
+# If state.json has a position but the bot hasn't ran recently, flag it
+if [ -f "$DATA_DIR/state.json" ] && [ -f "$BOT_LOG" ]; then
+    HAS_POS=$(grep -c '"side":' "$DATA_DIR/state.json" 2>/dev/null || echo 0)
+    if [ "$HAS_POS" -gt 0 ] && [ "${AGE:-0}" -gt 900 ]; then
+        log "ALERT: open position but bot stale >15min"
+    fi
+fi
+
+exit 0

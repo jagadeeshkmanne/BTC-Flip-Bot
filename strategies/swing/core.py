@@ -1,388 +1,285 @@
 """
-core.py — Strategy V8 logic (live bot).
+core.py — V7 Structure Break (4H Pivots + DD-Adaptive Risk)
 
-V8 spec ($5K → $572K, +158% CAGR, PF 7.29, -20.6% DD, 62 trades, Calmar 7.68):
-  Architecture:
-    Daily : EMA50 trend filter
-    4H    : RSI(14) confirmation
-    1H    : execution + entry stack:
-              - RSI(21) > 45 long  /  < 55 short    ← V8: 14→21
-              - MACD(12,26,9) line vs signal
-              - Bullish/Bearish engulfing (body > 1.0× prev body)
-              - ATR(20) > rolling-50-mean            ← V8: 14→20
-              - Volume(1H) > 1.5× rolling-20-mean
+Architecture:
+  4H execution timeframe
+  Daily EMA50 bias filter (close > EMA50 = bull)
+  4H RSI confirmation (> 50 bull / < 50 bear)
+  Pivot-based structure (HH+HL longs, LL+LH shorts) + close breaks latest pivot
 
-  Entry:  Daily bias + 4H confirm + 1H entry stack ALL agree
-  SL:     pattern-based — min(low_entry, low_prior) - 0.1%, capped at 2.5% from entry
-  Partial TP at +6R: lock 15% of position, move SL to BE+0.1%
-  Exit:   Opposite signal closes position (NO flip-open — V4 fix)
-  SL-Flip: on SL hit → flip opposite with 1.5% cap SL, 24h time-stop
-  Pyramiding: add 50% at +3R, move SL to entry+0.5R
-  Cooldown: 24h after SL hit (same direction)
-  Risk mgmt: DD halt for 7 days after −25% peak-to-trough drawdown
-  Leverage: 2× (configurable)
+  SL: 5-bar swing low/high + 0.1% buffer, capped at 2.5%
+  TP ladder: TP1 50% @ 2R -> SL to BE; TP2 25% @ 4R; runner 25% with 2.5x ATR trail
+  DD-adaptive risk: effective risk = base_risk * max(0.5, 1 + drawdownPct)
+  Hard DD halt: 15% -> halt 7 days (42 x 4H bars)
+
+Backtest (TradingView, 4H BTCUSDT, Jan 2021 -> Apr 2026, 2x lev):
+  At 3% risk: +279.4% abs | 37.76% DD | PF 1.66 | Calmar 0.76
+  At 1% risk: +78.1%  abs | 14.96% DD | PF 1.90 | Calmar 0.77
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Optional, Literal, Dict, List, Any
+from typing import Optional, Literal, Dict, Any, Tuple
 import pandas as pd
 import numpy as np
 
-# ─── Strategy constants ───
+# ----------------------------------------------------------------
+# Strategy Constants
+# ----------------------------------------------------------------
+
 LEVERAGE          = 2.0
-RISK_PCT          = 0.01           # 1% of equity per trade (used for size calc)
+RISK_PCT          = 0.03        # 3% matches the 279% backtest default
+
+# Pivot structure
+PIVOT_LEN         = 3           # left=right=3 bars
 
 # Stop loss
-SL_BUFFER_PCT     = 0.001          # 0.1% padding below pattern low
-SL_MAX_PCT        = 0.025          # cap pattern SL at 2.5%
+SL_SWING_LEN      = 5
+SL_BUFFER_PCT     = 0.001
+SL_MAX_PCT        = 0.025
 
-# Partial TP
-USE_PARTIAL_TP    = True
-PARTIAL_TP_R      = 6.0            # lock partial at +6R (sweep: 15%@6R = peak +11pp CAGR vs 30%@5R)
-PARTIAL_TP_FRAC   = 0.15           # take only 15% off — let 85% runner capture fat-tail upside
-PARTIAL_BE_BUF    = 0.001          # after partial TP fires, move SL to entry ± 0.1%
-                                   # (kills runner-giveback — Trade 15 pattern)
+# Take profit ladder (V7)
+TP1_R             = 2.0
+TP1_FRAC          = 0.50
+TP2_R             = 4.0
+TP2_FRAC          = 0.25        # 25% of ORIGINAL entry qty
+BE_BUF_PCT        = 0.001
+TRAIL_ATR_MULT    = 2.5
+
+# DD management
+DD_HALT_PCT       = 0.15
+DD_HALT_BARS      = 42          # 42 x 4H = 7 days
+USE_ADAPTIVE_RISK = True
+RISK_FLOOR        = 0.5         # min risk multiplier at deep DD
 
 # Cooldown
-SAME_DIR_CD_BARS  = 24             # 24h same-dir cooldown (v6+flip: matches 36h performance with +4 trades)
-COOLDOWN_BARS     = 2              # 2h generic post-exit cooldown (any direction) — matches v5 backtest
+GENERIC_CD_BARS   = 3           # 3 x 4H = 12h after any exit
 
-# DD circuit breaker
-DD_HALT_PCT       = 0.25
-DD_HALT_BARS      = 168            # 7 days × 24h
+# RSI
+RSI_PERIOD        = 14
+RSI_LONG_MIN      = 50
+RSI_SHORT_MAX     = 50
 
-# ─── V7 Pyramiding ───
-USE_PYRAMID       = True
-PYRAMID_R         = 3.0            # add 50% at +3R favorable
-PYRAMID_FRAC      = 0.50
-PYRAMID_SL_R      = 0.5            # move SL to entry + 0.5R on pyramid (locks small profit)
-
-# ─── V6 SL-Flip (backtest: +$131K over v5 baseline, same DD) ───
-USE_SL_FLIP       = True           # on SL hit, flip to opposite direction
-FLIP_WAIT_BARS    = 1              # wait 1h after SL before flipping (avoids whipsaw)
-FLIP_SL_CAP       = 0.015          # 1.5% max SL for flip (tighter than 2.5%)
-FLIP_SR_LOOKBACK  = 10             # bars to scan for swing high/low
-FLIP_TIME_STOP    = 24             # exit flip after 24h if still open
-
-# Entry filter thresholds
-RSI_LONG_MIN      = 45
-RSI_SHORT_MAX     = 55
-ENGULF_BODY_MULT  = 1.0            # any-size engulfing (sweep: +2 trades, +3 pp CAGR, same DD)
-ATR_MA_LEN        = 50
-VOL_SMA_LEN       = 20
-VOL_SPIKE_RATIO   = 1.5            # stricter vol filter (sweep: +8pp CAGR, lower DD, higher PF)
-
-# V8: tuned indicator periods (sweep: +15pp CAGR, PF 5.54→7.29, same DD)
-RSI_PERIOD_1H     = 21             # 14→21: slower RSI filters 1H noise
-ATR_PERIOD_1H     = 20             # 14→20: wider volatility window, fewer false regime triggers
-RSI_PERIOD_4H     = 14             # 4H stays at 14 (confirmation only)
+# ATR (for trailing stop)
+ATR_PERIOD        = 14
 
 Side = Literal["LONG", "SHORT"]
 
 
-# ─── Indicators ───
+# ----------------------------------------------------------------
+# Indicators
+# ----------------------------------------------------------------
+
 def ema(s: pd.Series, n: int) -> pd.Series:
     return s.ewm(span=n, adjust=False).mean()
 
-def rsi(s: pd.Series, n: int = 14) -> pd.Series:
+
+def rsi_series(s: pd.Series, n: int = 14) -> pd.Series:
     d = s.diff()
     g = d.clip(lower=0).rolling(n).mean()
     l = -d.clip(upper=0).rolling(n).mean()
     return 100 - (100 / (1 + g / l.replace(0, np.nan)))
 
-def macd_lines(s: pd.Series, f: int = 12, sl: int = 26, sg: int = 9):
-    ef = s.ewm(span=f, adjust=False).mean()
-    es = s.ewm(span=sl, adjust=False).mean()
-    line = ef - es
-    sig = line.ewm(span=sg, adjust=False).mean()
-    return line, sig
 
-def atr_calc(df: pd.DataFrame, n: int = 14) -> pd.Series:
+def atr_series(df: pd.DataFrame, n: int = ATR_PERIOD) -> pd.Series:
     hl = df["high"] - df["low"]
     hc = (df["high"] - df["close"].shift()).abs()
-    lc = (df["low"]  - df["close"].shift()).abs()
+    lc = (df["low"] - df["close"].shift()).abs()
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
     return tr.rolling(n).mean()
 
 
-# ─── Resamplers ───
-def resample(df_15m: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """Resample 15m DF to higher TF. Index must be timestamp."""
-    if "timestamp" in df_15m.columns:
-        d = df_15m.set_index("timestamp")
-    else:
-        d = df_15m
-    out = d.resample(rule).agg({
-        "open": "first", "high": "max", "low": "min",
-        "close": "last", "volume": "sum"
-    }).dropna()
+def resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    d = df.set_index("timestamp") if "timestamp" in df.columns else df
+    out = d.resample(rule).agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    ).dropna()
     return out.reset_index()
 
 
-# ─── Engulfing detection ───
-def detect_engulfing(df: pd.DataFrame) -> pd.DataFrame:
-    """Add bull_eng / bear_eng columns to df."""
-    df = df.copy()
-    body = (df["close"] - df["open"]).abs()
-    pbody = body.shift(1)
-    df["bull_eng"] = (
-        (df["close"].shift(1) < df["open"].shift(1))
-        & (df["close"] > df["open"])
-        & (df["close"] >= df["open"].shift(1))
-        & (df["open"]  <= df["close"].shift(1))
-        & (body > pbody * ENGULF_BODY_MULT)
-    )
-    df["bear_eng"] = (
-        (df["close"].shift(1) > df["open"].shift(1))
-        & (df["close"] < df["open"])
-        & (df["open"]  >= df["close"].shift(1))
-        & (df["close"] <= df["open"].shift(1))
-        & (body > pbody * ENGULF_BODY_MULT)
-    )
+def compute_pivots(df: pd.DataFrame, pivot_len: int = PIVOT_LEN
+                   ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """Last two confirmed pivot highs and lows. Strict comparison.
+    Pivots need `pivot_len` bars after to confirm, so no repaint.
+    Returns (phLast, phPrev, plLast, plPrev). None if not enough pivots yet.
+    """
+    highs = df["high"].values
+    lows = df["low"].values
+    n = len(highs)
+
+    ph_vals = []
+    pl_vals = []
+
+    for i in range(pivot_len, n - pivot_len):
+        is_ph = True
+        is_pl = True
+        for j in range(i - pivot_len, i + pivot_len + 1):
+            if j == i:
+                continue
+            if highs[j] >= highs[i]:
+                is_ph = False
+            if lows[j] <= lows[i]:
+                is_pl = False
+            if not is_ph and not is_pl:
+                break
+        if is_ph:
+            ph_vals.append(float(highs[i]))
+        if is_pl:
+            pl_vals.append(float(lows[i]))
+
+    ph_last = ph_vals[-1] if len(ph_vals) >= 1 else None
+    ph_prev = ph_vals[-2] if len(ph_vals) >= 2 else None
+    pl_last = pl_vals[-1] if len(pl_vals) >= 1 else None
+    pl_prev = pl_vals[-2] if len(pl_vals) >= 2 else None
+    return ph_last, ph_prev, pl_last, pl_prev
+
+
+# ----------------------------------------------------------------
+# Signal building
+# ----------------------------------------------------------------
+
+def build_signals(df_4h: pd.DataFrame) -> pd.DataFrame:
+    """Add RSI, ATR, swing SL levels to 4H dataframe."""
+    df = df_4h.copy()
+    df["rsi"] = rsi_series(df["close"], RSI_PERIOD)
+    df["atr"] = atr_series(df, ATR_PERIOD)
+    df["swing_low"] = df["low"].rolling(SL_SWING_LEN).min()
+    df["swing_high"] = df["high"].rolling(SL_SWING_LEN).max()
     return df
 
 
-# ─── HTF mapping ───
-def map_htf_to_1h(htf_df: pd.DataFrame, htf_rule: str,
-                  base_ts: pd.DatetimeIndex, value_col: str) -> np.ndarray:
-    """Causal asof mapping: HTF value stamped at HTF close-time."""
-    htf_df = htf_df.copy()
-    htf_df["close_time"] = htf_df["timestamp"] + pd.Timedelta(htf_rule)
-    s = pd.Series(htf_df[value_col].values, index=htf_df["close_time"].values)
-    s = s[~s.index.duplicated(keep="last")]
-    return s.reindex(s.index.union(base_ts)).sort_index().ffill().reindex(base_ts).fillna(0).values
-
-
-# ─── Build all indicators on 1H, plus HTF biases ───
-def build_signals(df_15m: pd.DataFrame) -> pd.DataFrame:
-    """
-    Returns 1H df with all indicators + bias columns:
-      ema50_d, bias_d (+1/-1/0)
-      rsi_4h, confirm_4h (+1/-1/0)
-      rsi, macd_line, macd_signal, atr, atr_ma, high_vol, vol_sma, vol_ok
-      bull_eng, bear_eng
-    """
-    df15 = df_15m.copy()
-    if "timestamp" in df15.columns:
-        df15["timestamp"] = pd.to_datetime(df15["timestamp"]).dt.tz_localize(None) if df15["timestamp"].dt.tz is not None else pd.to_datetime(df15["timestamp"])
-    df_1h = resample(df15, "1h")
-    df_4h = resample(df15, "4h")
-    df_d  = resample(df15, "1D")
-
-    # 1H indicators — V8: RSI(21), ATR(20)
-    df_1h["rsi"] = rsi(df_1h["close"], RSI_PERIOD_1H)
-    df_1h["macd_line"], df_1h["macd_signal"] = macd_lines(df_1h["close"])
-    df_1h["atr"] = atr_calc(df_1h, ATR_PERIOD_1H)
-    df_1h["atr_ma"] = df_1h["atr"].rolling(ATR_MA_LEN).mean()
-    df_1h["high_vol"] = df_1h["atr"] > df_1h["atr_ma"]
-    df_1h["vol_sma"] = df_1h["volume"].rolling(VOL_SMA_LEN).mean()
-    df_1h["vol_ok"]  = df_1h["volume"] > VOL_SPIKE_RATIO * df_1h["vol_sma"]
-    df_1h = detect_engulfing(df_1h)
-
-    # 4H confirm (stays at RSI 14 — confirmation only)
-    df_4h["rsi"] = rsi(df_4h["close"], RSI_PERIOD_4H)
-    df_4h["confirm"] = np.where(df_4h["rsi"] > 50, 1,
-                       np.where(df_4h["rsi"] < 50, -1, 0))
-
-    # Daily bias
+def build_htf(df_4h: pd.DataFrame) -> np.ndarray:
+    """Daily EMA50 bias mapped to 4H index. Returns array of {-1, 0, 1}."""
+    ts = df_4h["timestamp"]
+    df_d = resample(df_4h.set_index("timestamp").reset_index(), "1D")
     df_d["ema50"] = ema(df_d["close"], 50)
     df_d["bias"] = np.where(df_d["close"] > df_d["ema50"], 1,
-                    np.where(df_d["close"] < df_d["ema50"], -1, 0))
-
-    base_ts = pd.DatetimeIndex(df_1h["timestamp"])
-    df_1h["bias_d"]     = map_htf_to_1h(df_d,  "1D", base_ts, "bias").astype(int)
-    df_1h["confirm_4h"] = map_htf_to_1h(df_4h, "4h", base_ts, "confirm").astype(int)
-    return df_1h
+                   np.where(df_d["close"] < df_d["ema50"], -1, 0))
+    bias_d = df_d.set_index("timestamp")["bias"].reindex(ts).ffill().values
+    return bias_d
 
 
-# ─── Signal evaluation with condition state (for dashboard) ───
+# ----------------------------------------------------------------
+# Signal evaluation
+# ----------------------------------------------------------------
+
 @dataclass
 class SignalState:
-    side: Optional[Side] = None        # final entry signal: "LONG" / "SHORT" / None
+    side: Optional[Side] = None
     price: float = 0.0
-    atr: float = 0.0
-    # Per-condition status (True/False) for dashboard
-    conditions_long: Dict[str, bool] = field(default_factory=dict)
-    conditions_short: Dict[str, bool] = field(default_factory=dict)
-    long_ok: bool = False
-    short_ok: bool = False
-    raw: Dict[str, Any] = field(default_factory=dict)  # raw indicator values
+    conditions: Dict[str, bool] = field(default_factory=dict)
+    raw: Dict[str, Any] = field(default_factory=dict)
 
 
-def evaluate_signal(row: pd.Series) -> SignalState:
-    """Evaluate the V5 entry stack on a single 1H row + return condition state."""
+def evaluate_signal(df_4h: pd.DataFrame, last_idx: int, bias_d: int) -> SignalState:
+    """Evaluate V7 entry stack on the last CLOSED 4H bar."""
     s = SignalState()
+    row = df_4h.iloc[last_idx]
     s.price = float(row["close"])
-    s.atr   = float(row.get("atr", 0.0)) if not pd.isna(row.get("atr", np.nan)) else 0.0
 
-    daily_bull = row["bias_d"] == 1
-    daily_bear = row["bias_d"] == -1
-    h4_bull    = row["confirm_4h"] == 1
-    h4_bear    = row["confirm_4h"] == -1
-    rsi_v      = row["rsi"]
-    macd_bull  = row["macd_line"] > row["macd_signal"]
-    macd_bear  = row["macd_line"] < row["macd_signal"]
-    eng_bull   = bool(row["bull_eng"])
-    eng_bear   = bool(row["bear_eng"])
-    vol_ok     = bool(row["vol_ok"])
-    high_vol   = bool(row["high_vol"])
+    # Use bars up to and including last_idx for pivot computation.
+    # Pivots require `pivot_len` bars AFTER to confirm, so the most recent
+    # confirmable pivot is at (last_idx - pivot_len).
+    df_to_bar = df_4h.iloc[:last_idx + 1]
+    ph_last, ph_prev, pl_last, pl_prev = compute_pivots(df_to_bar, PIVOT_LEN)
 
-    s.conditions_long = {
-        "Daily EMA50 trend (bullish)": daily_bull,
-        "4H RSI > 50":                 h4_bull,
-        f"1H RSI > {RSI_LONG_MIN}":   bool(rsi_v > RSI_LONG_MIN) if not pd.isna(rsi_v) else False,
-        "1H MACD > signal":            bool(macd_bull),
-        "1H Bullish engulfing":        eng_bull,
-        "1H ATR > MA(50)":             high_vol,
-        f"1H Vol > {VOL_SPIKE_RATIO}×SMA20":  vol_ok,
-    }
-    s.conditions_short = {
-        "Daily EMA50 trend (bearish)": daily_bear,
-        "4H RSI < 50":                 h4_bear,
-        f"1H RSI < {RSI_SHORT_MAX}":   bool(rsi_v < RSI_SHORT_MAX) if not pd.isna(rsi_v) else False,
-        "1H MACD < signal":            bool(macd_bear),
-        "1H Bearish engulfing":        eng_bear,
-        "1H ATR > MA(50)":             high_vol,
-        f"1H Vol > {VOL_SPIKE_RATIO}×SMA20":  vol_ok,
-    }
-    s.long_ok  = all(s.conditions_long.values())
-    s.short_ok = all(s.conditions_short.values())
-    if s.long_ok and not s.short_ok:
+    hh_ok = (ph_last is not None) and (ph_prev is not None) and (ph_last > ph_prev)
+    hl_ok = (pl_last is not None) and (pl_prev is not None) and (pl_last > pl_prev)
+    lh_ok = (ph_last is not None) and (ph_prev is not None) and (ph_last < ph_prev)
+    ll_ok = (pl_last is not None) and (pl_prev is not None) and (pl_last < pl_prev)
+
+    bull_struct = hh_ok and hl_ok
+    bear_struct = lh_ok and ll_ok
+    break_up = (ph_last is not None) and (s.price > ph_last)
+    break_dn = (pl_last is not None) and (s.price < pl_last)
+
+    daily_bull = bias_d == 1
+    daily_bear = bias_d == -1
+
+    rsi_v = row["rsi"]
+    rsi_ok_l = (not pd.isna(rsi_v)) and rsi_v > RSI_LONG_MIN
+    rsi_ok_s = (not pd.isna(rsi_v)) and rsi_v < RSI_SHORT_MAX
+
+    long_ok = daily_bull and rsi_ok_l and bull_struct and break_up
+    short_ok = daily_bear and rsi_ok_s and bear_struct and break_dn
+
+    if long_ok:
         s.side = "LONG"
-    elif s.short_ok and not s.long_ok:
+    elif short_ok:
         s.side = "SHORT"
+
+    s.conditions = {
+        "Daily EMA50 Bull": bool(daily_bull),
+        "Daily EMA50 Bear": bool(daily_bear),
+        "4H RSI >50": bool(rsi_ok_l),
+        "4H RSI <50": bool(rsi_ok_s),
+        "HH + HL (pivots)": bool(bull_struct),
+        "LH + LL (pivots)": bool(bear_struct),
+        "Break above pivot high": bool(break_up),
+        "Break below pivot low": bool(break_dn),
+    }
     s.raw = {
-        "rsi_1h": float(rsi_v) if not pd.isna(rsi_v) else None,
-        "macd_line": float(row["macd_line"]),
-        "macd_signal": float(row["macd_signal"]),
-        "atr_1h": s.atr,
-        "atr_ma": float(row["atr_ma"]) if not pd.isna(row["atr_ma"]) else None,
-        "vol_sma": float(row["vol_sma"]) if not pd.isna(row["vol_sma"]) else None,
-        "volume": float(row["volume"]),
-        "bias_d": int(row["bias_d"]),
-        "confirm_4h": int(row["confirm_4h"]),
+        "rsi_4h": float(rsi_v) if not pd.isna(rsi_v) else None,
+        "bias_d": int(bias_d) if not pd.isna(bias_d) else 0,
+        "ph_last": ph_last,
+        "ph_prev": ph_prev,
+        "pl_last": pl_last,
+        "pl_prev": pl_prev,
+        "atr": float(row["atr"]) if not pd.isna(row["atr"]) else None,
+        "price": s.price,
     }
     return s
 
 
-# ─── Position dataclass ───
+# ----------------------------------------------------------------
+# Position + SL/TP helpers
+# ----------------------------------------------------------------
+
 @dataclass
 class Position:
     side: Side
     entry_price: float
     entry_time: str
     qty: float
+    orig_qty: float
     sl_price: float
-    pos_atr: float                     # ATR at entry (for partial TP R-distance)
-    partial_taken: bool = False
-    entry_reason: str = "v5_entry"
-    is_flip: bool = False              # V6: True if this position is a flip from prior SL
+    init_sl_dist: float
+    tp1_done: bool = False
+    tp2_done: bool = False
+    entry_bar: int = 0
 
 
-def calc_pattern_sl(side: Side, entry_price: float,
-                    bar_low: float, bar_high: float,
-                    prev_low: float, prev_high: float) -> float:
-    """V5 pattern-based SL — capped at SL_MAX_PCT from entry."""
+def calc_sl(side: Side, price: float, swing_low: float, swing_high: float) -> float:
     if side == "LONG":
-        pat = min(bar_low, prev_low)
-        raw_sl = pat * (1 - SL_BUFFER_PCT)
-        cap_sl = entry_price * (1 - SL_MAX_PCT)
-        return max(raw_sl, cap_sl)   # tighter (closer to entry) of the two
+        raw = swing_low * (1 - SL_BUFFER_PCT)
+        cap = price * (1 - SL_MAX_PCT)
+        return max(raw, cap)
     else:
-        pat = max(bar_high, prev_high)
-        raw_sl = pat * (1 + SL_BUFFER_PCT)
-        cap_sl = entry_price * (1 + SL_MAX_PCT)
-        return min(raw_sl, cap_sl)
+        raw = swing_high * (1 + SL_BUFFER_PCT)
+        cap = price * (1 + SL_MAX_PCT)
+        return min(raw, cap)
 
 
-def calc_flip_sl(side: Side, ref_price: float,
-                 recent_highs: pd.Series, recent_lows: pd.Series) -> float:
-    """V6 flip SL — tighter of swing-based or FLIP_SL_CAP from reference price.
-
-    Args:
-        side: direction of the FLIP position ("LONG" or "SHORT")
-        ref_price: the SL price that just broke (used as reference for % cap)
-        recent_highs/lows: last FLIP_SR_LOOKBACK bars of high/low series
+def calc_qty(equity: float, price: float, sl_price: float, drawdown_pct: float = 0.0) -> float:
+    """Risk-based sizing with DD-adaptive scaling.
+    drawdown_pct is negative (e.g., -0.10 for 10% DD) or 0.
     """
-    if side == "SHORT":
-        swing_high = float(recent_highs.max())
-        swing_sl = swing_high * (1 + SL_BUFFER_PCT)
-        cap_sl   = ref_price * (1 + FLIP_SL_CAP)
-        return min(swing_sl, cap_sl)       # tighter for short = lower SL
+    sl_dist = abs(price - sl_price)
+    if sl_dist <= 0 or price <= 0:
+        return 0.0
+    dd_factor = max(RISK_FLOOR, 1 + drawdown_pct) if USE_ADAPTIVE_RISK else 1.0
+    risk_amount = equity * 0.95 * RISK_PCT * dd_factor
+    qty_risk = risk_amount / sl_dist
+    qty_cap = (equity * 0.95 * LEVERAGE) / price
+    return min(qty_risk, qty_cap)
+
+
+def compute_trail_stop(side: Side, price: float, atr: float, current_stop: float) -> float:
+    """Trailing stop after TP2 (runner phase). Only ratchets in favor."""
+    if atr is None or atr <= 0 or pd.isna(atr):
+        return current_stop
+    if side == "LONG":
+        new_stop = price - TRAIL_ATR_MULT * atr
+        return max(current_stop, new_stop)
     else:
-        swing_low = float(recent_lows.min())
-        swing_sl = swing_low * (1 - SL_BUFFER_PCT)
-        cap_sl   = ref_price * (1 - FLIP_SL_CAP)
-        return max(swing_sl, cap_sl)       # tighter for long = higher SL
-
-
-def position_size(equity: float, entry_price: float, sl_price: float,
-                  leverage: float = LEVERAGE, risk_pct: float = RISK_PCT) -> float:
-    """Notional sizing: qty = (equity × leverage) / price — deploys leverage× notional.
-    Matches Python v6 backtest (pnl = price_move × leverage × equity) and Pine Script.
-    At 2× leverage, SL hit = 5% equity loss (2.5% price × 2×).
-    sl_price arg kept for API compat but not used for sizing anymore."""
-    if entry_price <= 0: return 0.0
-    return (equity * leverage) / entry_price
-
-
-# ─── Position management — exit decision with condition state ───
-@dataclass
-class ExitState:
-    should_exit: bool = False
-    reason: Optional[str] = None
-    exit_price: float = 0.0
-    partial_tp_hit: bool = False
-    # For dashboard
-    sl_distance_pct: float = 0.0       # current % from price to SL (negative = closer to stop)
-    partial_tp_distance_pct: float = 0.0
-    favorable_r: float = 0.0           # how many R favorable (for partial TP)
-    opposite_signal_active: bool = False
-
-
-def evaluate_exit(pos: Position, row: pd.Series, signal: SignalState) -> ExitState:
-    """Evaluate exit conditions for an open position. Returns state for both
-    actual exit decision and dashboard display."""
-    state = ExitState()
-    price = float(row["close"])
-    high  = float(row["high"])
-    low   = float(row["low"])
-
-    # SL check (intrabar)
-    if pos.side == "LONG":
-        if low <= pos.sl_price:
-            state.should_exit = True
-            state.reason = "SL"
-            state.exit_price = pos.sl_price
-        state.sl_distance_pct = (price - pos.sl_price) / price * 100   # positive = above stop
-    else:
-        if high >= pos.sl_price:
-            state.should_exit = True
-            state.reason = "SL"
-            state.exit_price = pos.sl_price
-        state.sl_distance_pct = (pos.sl_price - price) / price * 100   # positive = below stop
-
-    # Partial TP check (only if not already taken)
-    if USE_PARTIAL_TP and not pos.partial_taken and not state.should_exit:
-        sl_dist = abs(pos.entry_price - pos.sl_price)
-        favorable = (price - pos.entry_price) if pos.side == "LONG" else (pos.entry_price - price)
-        state.favorable_r = favorable / sl_dist if sl_dist > 0 else 0.0
-        state.partial_tp_distance_pct = (PARTIAL_TP_R - state.favorable_r) * (sl_dist / price * 100)
-        if favorable >= PARTIAL_TP_R * sl_dist:
-            state.partial_tp_hit = True
-
-    # Opposite signal (would close position — V4 logic: exit only, no flip-open)
-    if pos.side == "LONG" and signal.short_ok:
-        state.opposite_signal_active = True
-        if not state.should_exit:
-            state.should_exit = True
-            state.reason = "EXIT-OPP"
-            state.exit_price = price
-    elif pos.side == "SHORT" and signal.long_ok:
-        state.opposite_signal_active = True
-        if not state.should_exit:
-            state.should_exit = True
-            state.reason = "EXIT-OPP"
-            state.exit_price = price
-
-    return state
+        new_stop = price + TRAIL_ATR_MULT * atr
+        return min(current_stop, new_stop)

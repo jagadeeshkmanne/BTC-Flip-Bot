@@ -242,7 +242,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         """Public pages: dashboards + data files. No auth needed."""
         if path in ('/', '/dashboard.html', '/dashboard_grid.html', '/dashboard_bb.html'):
             return True
-        if path.startswith('/data/'):
+        if path.startswith('/data/') or path.startswith('/api/bot/'):
             return True
         return False
 
@@ -258,7 +258,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # Redirect root to dashboard
         if path == '/':
             self.send_response(302)
-            self.send_header('Location', '/dashboard_grid.html?env=testnet')
+            self.send_header('Location', '/dashboard.html')
             self.end_headers()
             return
 
@@ -285,6 +285,30 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     return self._json_response([])
             return self._json_response([])
+
+        # ── Bot API (public, no auth) ──
+        if path == '/api/bot/state':
+            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'state.json')
+            if os.path.exists(sf):
+                try:
+                    with open(sf) as f: return self._json_response(json.load(f))
+                except: pass
+            return self._json_response({"position": None, "stats": {"total": 0, "wins": 0, "pnl": 0}})
+
+        if path == '/api/bot/status':
+            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'status.json')
+            if os.path.exists(sf):
+                try:
+                    with open(sf) as f: return self._json_response(json.load(f))
+                except: pass
+            return self._json_response({})
+
+        if path == '/api/bot/log':
+            lf = os.path.join(BOT_DIR, 'data', 'testnet', 'bot.log')
+            lines = []
+            if os.path.exists(lf):
+                with open(lf) as f: lines = f.readlines()[-100:]
+            return self._json_response({"lines": [l.strip() for l in lines]})
 
         # Dashboard + static files are public (read-only)
         if self._is_public(path):
@@ -388,5 +412,4 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
 
 print("Starting server on http://localhost:8888")
 print("Dashboard:  http://localhost:8888/dashboard.html")
-print("Settings:   http://localhost:8888/settings.html")
-http.server.HTTPServer(('', 8888), BotHandler).serve_forever()
+http.server.ThreadingHTTPServer(('', 8888), BotHandler).serve_forever()

@@ -1,45 +1,36 @@
 #!/usr/bin/env python3
 """
-bot.py — Strategy V5 live bot (one-shot per 1H candle close).
+bot.py — Swing Strategy V7 live bot (4H Pivots + DD-Adaptive Risk).
 
-V5 spec (5yr backtest: $10K → $241K, +89% CAGR, PF 5.50, -19.5% DD, Calmar 4.57):
-  Entry  : Daily EMA50 + 4H RSI + 1H stack (RSI/MACD/engulf/ATR/vol 1.5×) ALL agree
-  SL     : pattern-based — min(low_entry, low_prior) − 0.1%, capped at 2.5%
-  Partial TP: lock 30% at +5R favorable, leave 70% on original SL
-  Exit   : opposite signal closes (NO flip-open — V4 fix)
-  Cooldown: 36h after SL hit (same direction)
-  DD halt : 7 days after −25% peak-to-trough drawdown
-  Leverage: 2× (configurable in config/{env}.json)
+Runs every 5 min via cron. Fetches 4H candles, computes pivot structure,
+manages position (entry + TP ladder + software SL via live price).
 
-Run:
-  python3 bot.py --env testnet
-  python3 bot.py --env testnet --dry      # log signals only
+Architecture:
+  core.py  — V7 strategy logic (pivots, TP ladder, DD-adaptive risk)
+  bot.py   — exchange I/O + position state + intra-cron SL check via live price
 """
 from __future__ import annotations
-import os, sys, json, time, hmac, hashlib, logging, argparse, smtplib, ssl
-from datetime import datetime, timezone, timedelta
-from email.message import EmailMessage
-from pathlib import Path
+import os, sys, json, time, hmac, hashlib, logging, argparse
+from datetime import datetime, timezone
 import requests
 import pandas as pd
 import numpy as np
 
 STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
-BOT_DIR = os.path.dirname(os.path.dirname(STRATEGY_DIR))  # project root (../../)
-sys.path.insert(0, STRATEGY_DIR)  # for core import
+BOT_DIR = os.path.dirname(os.path.dirname(STRATEGY_DIR))
+sys.path.insert(0, STRATEGY_DIR)
 
 from core import (
-    LEVERAGE as STRAT_LEV, RISK_PCT,
-    SAME_DIR_CD_BARS, COOLDOWN_BARS, DD_HALT_PCT, DD_HALT_BARS,
-    USE_PARTIAL_TP, PARTIAL_TP_R, PARTIAL_TP_FRAC, PARTIAL_BE_BUF,
-    USE_SL_FLIP, FLIP_WAIT_BARS, FLIP_SL_CAP, FLIP_SR_LOOKBACK, FLIP_TIME_STOP,
-    USE_PYRAMID, PYRAMID_R, PYRAMID_FRAC, PYRAMID_SL_R,
-    build_signals, evaluate_signal, evaluate_exit,
-    calc_pattern_sl, calc_flip_sl, position_size, Position,
+    LEVERAGE, RISK_PCT, SL_SWING_LEN, SL_BUFFER_PCT, SL_MAX_PCT,
+    TP1_R, TP1_FRAC, TP2_R, TP2_FRAC, BE_BUF_PCT, TRAIL_ATR_MULT,
+    GENERIC_CD_BARS, DD_HALT_PCT, DD_HALT_BARS,
+    USE_ADAPTIVE_RISK, RISK_FLOOR,
+    build_signals, build_htf, evaluate_signal,
+    calc_sl, calc_qty, compute_trail_stop,
 )
 
 
-# ─── env / config ───
+# ─── Config ───
 def load_dotenv(path):
     if not os.path.exists(path): return
     with open(path) as f:
@@ -53,72 +44,37 @@ load_dotenv(os.path.join(BOT_DIR, ".env"))
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--env", default="testnet", choices=["testnet", "production"])
-ap.add_argument("--dry", action="store_true", help="Log signals only, place no orders")
+ap.add_argument("--dry", action="store_true", help="Log signals only")
 ARGS, _ = ap.parse_known_args()
 ENV = ARGS.env
 
-CFG_PATH = os.path.join(BOT_DIR, "config", f"{ENV}.json")
-with open(CFG_PATH) as f:
-    CFG = json.load(f)
+PAIR = "BTCUSDT"
+LEV = int(LEVERAGE)
+if ENV == "testnet":
+    API_KEY = os.environ.get("TESTNET_API_KEY", "")
+    API_SECRET = os.environ.get("TESTNET_API_SECRET", "")
+    BASE_URL = "https://testnet.binancefuture.com"
+else:
+    API_KEY = os.environ.get("PRODUCTION_API_KEY", "")
+    API_SECRET = os.environ.get("PRODUCTION_API_SECRET", "")
+    BASE_URL = "https://fapi.binance.com"
 
-API_KEY    = os.environ.get(CFG["api_key_env"], "")
-API_SECRET = os.environ.get(CFG["api_secret_env"], "")
-BASE_URL   = CFG["base_url"]
-PAIR       = CFG["pair"]
-LEV        = int(CFG.get("leverage", STRAT_LEV))
-LEV_CEILING = LEV * 2 if USE_PYRAMID else LEV  # 4× ceiling for pyramid margin room
-
-DATA_DIR     = os.path.join(BOT_DIR, "data", ENV)
-STATE_FILE   = os.path.join(DATA_DIR, "state.json")
-STATUS_FILE  = os.path.join(DATA_DIR, "status.json")    # for dashboard
-TRADES_LOG   = os.path.join(DATA_DIR, "trades.log")
-LOG_FILE     = os.path.join(DATA_DIR, "bot.log")
-DISABLED_FLAG = os.path.join(DATA_DIR, ".disabled")
+DATA_DIR = os.path.join(BOT_DIR, "data", ENV)
+STATE_FILE = os.path.join(DATA_DIR, "state.json")
+STATUS_FILE = os.path.join(DATA_DIR, "status.json")
+LOG_FILE = os.path.join(DATA_DIR, "bot.log")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)],
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)])
 log = logging.getLogger("bot")
 
-if os.path.exists(DISABLED_FLAG):
-    log.info(f"[{ENV}] Bot DISABLED. Remove {DISABLED_FLAG} to enable.")
-    sys.exit(0)
-
 if not API_KEY or not API_SECRET:
-    log.error(f"Missing API keys ({CFG['api_key_env']}, {CFG['api_secret_env']})")
+    log.error(f"Missing API keys for {ENV}")
     sys.exit(1)
 
 
-# ─── Email alerts ───
-EMAIL_FROM = os.environ.get("BOT_EMAIL", "")
-EMAIL_PASS = os.environ.get("BOT_EMAIL_PASS", "")
-EMAIL_TO   = os.environ.get("BOT_EMAIL_TO", "")
-
-def send_email(subject, body):
-    """Send alert email. Silent on failure (don't break bot)."""
-    if not (EMAIL_FROM and EMAIL_PASS and EMAIL_TO):
-        log.info(f"  (email skipped — config missing)")
-        return
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = f"[{ENV.upper()}] {subject}"
-        msg["From"]    = EMAIL_FROM
-        msg["To"]      = EMAIL_TO
-        msg.set_content(body)
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=15) as s:
-            s.login(EMAIL_FROM, EMAIL_PASS)
-            s.send_message(msg)
-        log.info(f"  ✉ alert sent: {subject}")
-    except Exception as e:
-        log.warning(f"  email send failed: {e}")
-
-
-# ─── Binance Futures Client ───
+# ─── Binance Client ───
 class BinanceClient:
     def __init__(self, key, secret, base_url):
         self.key = key; self.secret = secret; self.base = base_url
@@ -131,36 +87,30 @@ class BinanceClient:
         params["signature"] = sig
         return params
 
-    def _req(self, method, path, params=None, signed=False, retries=3):
+    def _req(self, method, path, params=None, signed=False):
         params = params or {}
         if signed:
             params["timestamp"] = int(time.time() * 1000)
             params["recvWindow"] = 5000
             params = self._sign(params)
         url = self.base + path
-        for attempt in range(retries):
+        for attempt in range(3):
             try:
                 r = self.s.request(method, url, params=params, timeout=10)
                 if r.status_code == 200: return r.json()
                 log.warning(f"  HTTP {r.status_code}: {r.text[:200]}")
-                if r.status_code in (418, 429):
-                    time.sleep(5 * (attempt + 1)); continue
+                if r.status_code in (418, 429): time.sleep(5); continue
                 return None
             except Exception as e:
-                log.warning(f"  Request err {attempt+1}: {e}")
-                time.sleep(2)
+                log.warning(f"  Request err: {e}"); time.sleep(2)
         return None
 
-    def klines(self, symbol, interval="15m", limit=1500):
-        data = self._req("GET", "/fapi/v1/klines",
-                         {"symbol": symbol, "interval": interval, "limit": limit})
+    def klines(self, symbol, interval="4h", limit=500):
+        data = self._req("GET", "/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": limit})
         if not data: return None
-        df = pd.DataFrame(data, columns=[
-            "open_time","open","high","low","close","volume","close_time",
-            "qav","trades","tbbav","tbqav","ignore"
-        ])
+        df = pd.DataFrame(data, columns=["ot","open","high","low","close","volume","ct","qav","trades","tbbav","tbqav","ig"])
         df = df.astype({"open":float,"high":float,"low":float,"close":float,"volume":float})
-        df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms")
+        df["timestamp"] = pd.to_datetime(df["ot"], unit="ms")
         return df[["timestamp","open","high","low","close","volume"]]
 
     def account(self):
@@ -169,25 +119,19 @@ class BinanceClient:
     def positions(self, symbol):
         acc = self.account()
         if not acc: return []
-        return [p for p in acc.get("positions", [])
-                if p["symbol"] == symbol and float(p["positionAmt"]) != 0]
+        return [p for p in acc.get("positions", []) if p["symbol"] == symbol and float(p["positionAmt"]) != 0]
 
     def set_leverage(self, symbol, lev):
-        return self._req("POST", "/fapi/v1/leverage",
-                         {"symbol": symbol, "leverage": lev}, signed=True)
+        return self._req("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": lev}, signed=True)
 
     def market_order(self, symbol, side, qty, reduce_only=False):
         params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": f"{qty}"}
         if reduce_only: params["reduceOnly"] = "true"
         return self._req("POST", "/fapi/v1/order", params, signed=True)
 
-    def stop_market(self, symbol, side, stop_price, close_position=True):
-        params = {
-            "symbol": symbol, "side": side, "type": "STOP_MARKET",
-            "stopPrice": f"{stop_price:.2f}", "workingType": "MARK_PRICE",
-            "closePosition": "true" if close_position else "false",
-        }
-        return self._req("POST", "/fapi/v1/order", params, signed=True)
+    def live_price(self, symbol):
+        r = self._req("GET", "/fapi/v1/ticker/price", {"symbol": symbol})
+        return float(r["price"]) if r else None
 
     def cancel_all(self, symbol):
         self._req("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol}, signed=True)
@@ -197,429 +141,298 @@ class BinanceClient:
         if not data: return None
         for s in data["symbols"]:
             if s["symbol"] == symbol:
-                step = qty_min = price_step = 0
+                step = qty_min = 0
                 for f in s["filters"]:
                     if f["filterType"] == "LOT_SIZE":
                         step = float(f["stepSize"]); qty_min = float(f["minQty"])
-                    if f["filterType"] == "PRICE_FILTER":
-                        price_step = float(f["tickSize"])
-                return {"step": step, "min_qty": qty_min, "price_step": price_step}
+                return {"step": step, "min_qty": qty_min}
         return None
 
 
 # ─── State ───
 def load_state():
-    if not os.path.exists(STATE_FILE):
-        return default_state()
-    try:
-        with open(STATE_FILE) as f: return json.load(f)
-    except Exception:
-        return default_state()
-
-def default_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f: return json.load(f)
+        except: pass
     return {
-        "position": None,                # dict if open, None if flat
-        "last_long_sl_time":  0,         # epoch seconds
-        "last_short_sl_time": 0,
-        "last_exit_time":     0,         # generic post-exit cooldown (any reason, any side)
-        "halt_until_time":    0,         # epoch seconds (DD halt)
-        "peak_equity":        0.0,
-        "weekly_start":       None,
-        "trade_log":          [],        # last 100 trades
-        # V6 SL-flip state
-        "pending_flip": None,            # {"side": "LONG"/"SHORT", "sl_time": epoch, "ref_price": float}
+        "position": None,
+        "last_exit_time": 0,
+        "halt_until_time": 0,
+        "peak_equity": 0.0,
+        "trade_log": [],
+        "stats": {"total": 0, "wins": 0, "pnl": 0.0},
     }
 
 def save_state(s):
-    with open(STATE_FILE, "w") as f:
-        json.dump(s, f, indent=2, default=str)
+    with open(STATE_FILE, "w") as f: json.dump(s, f, indent=2, default=str)
 
+def write_status(payload):
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        with open(STATUS_FILE, "w") as f: json.dump(payload, f, indent=2, default=str)
+    except: pass
 
 def round_qty(q, step):
     if step == 0: return q
     return round(q - (q % step), 8)
 
 
-# ─── Status JSON for dashboard ───
-def _clean(v):
-    """Convert numpy types to native Python for JSON."""
-    if isinstance(v, dict):  return {k: _clean(x) for k, x in v.items()}
-    if isinstance(v, list):  return [_clean(x) for x in v]
-    if hasattr(v, "item"):   return v.item()      # numpy scalar
-    if isinstance(v, (bool, int, float, str)) or v is None: return v
-    return str(v)
-
-def write_status(payload):
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-    try:
-        with open(STATUS_FILE, "w") as f:
-            json.dump(_clean(payload), f, indent=2)
-    except Exception as e:
-        log.warning(f"  status write failed: {e}")
-
-
 # ─── Main ───
 def main():
-    log.info(f"━━━ V5 bot tick — env={ENV} pair={PAIR} dry={ARGS.dry} ━━━")
+    log.info(f"{'='*50}")
+    log.info(f"Swing Bot V7 — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
     info = client.exchange_info(PAIR)
-    if not info:
-        log.error("No exchange info — abort")
-        return
+    if not info: log.error("No exchange info"); return
 
-    # Fetch enough 15m klines to compute Daily EMA50 and 1H indicators
-    # 96 bars/day × 60 days ≈ 5,760 bars (free with limit=1500 per call, but 1500 is plenty for ~16 days)
-    # Need ~50 daily bars for EMA50 → 4800 bars. We do 1500 (~16 days) for now — acceptable for V5
-    # because Daily EMA stabilizes via warmup. For prod, batch fetch more.
-    df_15m = client.klines(PAIR, interval="15m", limit=1500)
-    if df_15m is None or len(df_15m) < 200:
-        log.error("Not enough klines")
-        return
+    # Fetch 4H klines (500 bars = ~83 days)
+    df_4h_raw = client.klines(PAIR, interval="4h", limit=500)
+    if df_4h_raw is None or len(df_4h_raw) < 100:
+        log.error("Not enough 4H klines"); return
 
-    # Build all signals (1H frame with conditions)
-    df_1h = build_signals(df_15m)
-    if len(df_1h) < 50:
-        log.error("Not enough 1H bars after resample")
-        return
+    df_4h = build_signals(df_4h_raw)
+    bias_d = build_htf(df_4h_raw)
 
-    # V5 parity: evaluate on the last CLOSED 1H bar, not the in-progress one.
-    # Backtest iterates closed bars only; reading iloc[-1] mid-hour saw a half-built
-    # candle (volume ~0, engulfing undefined) and silently blocked entries.
-    if len(df_1h) < 3:
-        log.error("Need ≥3 resampled 1H bars"); return
-    last = df_1h.iloc[-2]                  # last closed 1H bar (signal bar)
-    prev = df_1h.iloc[-3]                  # prior closed 1H bar (for pattern SL)
-    sig  = evaluate_signal(last)
-    price = sig.price
+    # Last CLOSED 4H bar
+    last_idx = len(df_4h) - 2
+    last = df_4h.iloc[last_idx]
+    sig = evaluate_signal(df_4h, last_idx, bias_d[last_idx])
+    close_price = sig.price
 
-    # Account & position state
+    # Live price (for intra-bar SL/TP checks)
+    live_px = client.live_price(PAIR) or close_price
+
+    # Account
     acc = client.account()
-    if not acc:
-        log.error("Account fetch failed"); return
+    if not acc: log.error("Account fetch failed"); return
     balance = float(acc["totalWalletBalance"])
-    log.info(f"  Balance ${balance:,.2f}  Price ${price:,.2f}")
+    log.info(f"  Balance: ${balance:,.2f} | BTC close: ${close_price:,.2f} | live: ${live_px:,.2f}")
 
-    # Update peak equity (for DD halt check)
-    if balance > state.get("peak_equity", 0):
-        state["peak_equity"] = balance
+    # Peak equity + DD
+    if balance > state.get("peak_equity", 0): state["peak_equity"] = balance
     peak = state.get("peak_equity", balance)
-    dd_pct = (balance / peak - 1) * 100 if peak > 0 else 0
+    dd_pct = (balance / peak - 1) if peak > 0 else 0.0  # negative number
     now_ts = int(time.time())
 
-    # DD halt check
-    if dd_pct <= -DD_HALT_PCT * 100 and state.get("halt_until_time", 0) < now_ts:
-        state["halt_until_time"] = now_ts + DD_HALT_BARS * 3600
-        log.warning(f"  ⚠ DD halt fired: dd={dd_pct:+.1f}% — halted for 7 days")
-        send_email(f"⚠ DD HALT FIRED — bot halted 7 days",
-                   f"Drawdown reached {dd_pct:+.2f}%\nBalance: ${balance:,.2f}\n"
-                   f"Peak: ${peak:,.2f}\nResume: {datetime.fromtimestamp(state['halt_until_time'])}")
-        state["peak_equity"] = balance   # reset peak
+    # Hard DD halt
+    if dd_pct <= -DD_HALT_PCT and state.get("halt_until_time", 0) < now_ts:
+        state["halt_until_time"] = now_ts + DD_HALT_BARS * 4 * 3600
+        state["peak_equity"] = balance
+        log.warning(f"  DD HALT: {dd_pct*100:+.1f}% — halted 7 days")
 
     halted = state.get("halt_until_time", 0) > now_ts
-
-    # Reconcile open position with exchange
-    exch_pos = client.positions(PAIR)
     pos_dict = state.get("position")
+
+    # Reconcile with exchange
+    exch_pos = client.positions(PAIR)
     if exch_pos and pos_dict is None:
-        # exchange has position, state doesn't — adopt
         ep = exch_pos[0]
         side = "LONG" if float(ep["positionAmt"]) > 0 else "SHORT"
         entry = float(ep["entryPrice"])
         qty = abs(float(ep["positionAmt"]))
-        sl = entry * (1 - 0.025) if side == "LONG" else entry * (1 + 0.025)  # safe SL
+        sl = entry * (1 - SL_MAX_PCT) if side == "LONG" else entry * (1 + SL_MAX_PCT)
         pos_dict = {
-            "side": side, "entry_price": entry, "entry_time": datetime.now(timezone.utc).isoformat(),
-            "qty": qty, "sl_price": sl, "pos_atr": sig.atr, "partial_taken": False,
+            "side": side, "entry_price": entry,
+            "entry_time": datetime.now(timezone.utc).isoformat(),
+            "qty": qty, "orig_qty": qty,
+            "sl_price": sl, "init_sl_dist": abs(entry - sl),
+            "tp1_done": False, "tp2_done": False,
         }
         state["position"] = pos_dict
-        log.warning(f"  Adopted {side} {qty}@{entry} from exchange")
+        log.warning(f"  Adopted {side} {qty}@{entry}")
+    elif exch_pos and pos_dict is not None:
+        ep = exch_pos[0]
+        ex_qty = abs(float(ep["positionAmt"]))
+        ex_entry = float(ep["entryPrice"])
+        if abs(ex_qty - pos_dict["qty"]) > 1e-6 or abs(ex_entry - pos_dict["entry_price"]) > 0.5:
+            log.warning(f"  DESYNC: state={pos_dict['qty']}@{pos_dict['entry_price']} "
+                        f"vs exch={ex_qty}@{ex_entry} — syncing")
+            pos_dict["qty"] = ex_qty
+            pos_dict["entry_price"] = ex_entry
+            pos_dict["init_sl_dist"] = abs(ex_entry - pos_dict["sl_price"])
+            state["position"] = pos_dict
     elif not exch_pos and pos_dict is not None:
-        log.warning("  State has position but exchange flat — clearing state")
+        log.warning("  Exchange flat, clearing state")
         state["position"] = None
         pos_dict = None
 
-    # Build status payload for dashboard
+    # Log signal state
+    log.info(f"  Signal: {sig.side or 'NONE'}")
+    for k, v in sig.conditions.items():
+        if v: log.info(f"    {k}: Y")
+    log.info(f"  RSI 4H: {sig.raw.get('rsi_4h','?')} | Bias: {sig.raw.get('bias_d','?')}")
+    if sig.raw.get("ph_last"):
+        log.info(f"  Pivot H: {sig.raw['ph_last']:.0f} (prev {sig.raw.get('ph_prev','?')}) | "
+                 f"Pivot L: {sig.raw['pl_last']:.0f} (prev {sig.raw.get('pl_prev','?')})")
+
+    # Status for dashboard
     status = {
-        "env": ENV, "pair": PAIR, "price": price, "balance": balance,
-        "peak_equity": peak, "drawdown_pct": dd_pct, "halted": halted,
-        "halt_until_time": state.get("halt_until_time", 0),
-        "leverage": LEV, "position": pos_dict, "raw_indicators": sig.raw,
+        "env": ENV, "pair": PAIR, "price": close_price, "live_price": live_px,
+        "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
+        "halted": halted, "position": pos_dict,
+        "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
+        "stats": state.get("stats", {}),
+        "strategy": "V7 Structure Break (4H Pivots)",
     }
 
     if pos_dict is None:
-        # ── V6 SL-FLIP: check if a pending flip is ready to execute ──
-        # Respects DD halt + post-exit cooldown (bug fix: flips were bypassing halt)
-        pending = state.get("pending_flip")
-        if USE_SL_FLIP and pending and not ARGS.dry and not halted:
-            # Also respect 2h generic post-exit cooldown
-            generic_cd_remaining = state.get("last_exit_time", 0) + COOLDOWN_BARS*3600 - now_ts
-            if generic_cd_remaining > 0:
-                log.info(f"  🔄 Flip queued but generic cooldown has {generic_cd_remaining//60}min remaining")
-            elapsed_sec = now_ts - pending.get("sl_time", now_ts)
-            if elapsed_sec >= FLIP_WAIT_BARS * 3600 and generic_cd_remaining <= 0:
-                flip_side = pending["side"]
-                ref_price = pending["ref_price"]
-                lb = FLIP_SR_LOOKBACK
-                recent_highs = df_1h["high"].iloc[-lb-2:-1]  # exclude current forming bar
-                recent_lows  = df_1h["low"].iloc[-lb-2:-1]
-                flip_sl = calc_flip_sl(flip_side, ref_price, recent_highs, recent_lows)
-                flip_qty = position_size(balance, price, flip_sl, leverage=LEV, risk_pct=RISK_PCT)
-                flip_qty = round_qty(flip_qty, info["step"])
-                if flip_qty >= info["min_qty"]:
-                    client.set_leverage(PAIR, LEV_CEILING)
-                    side_api = "BUY" if flip_side == "LONG" else "SELL"
-                    ord_resp = client.market_order(PAIR, side_api, flip_qty)
-                    if ord_resp:
-                        fill_price = float(ord_resp.get("avgPrice", price)) or price
-                        sl_side = "SELL" if flip_side == "LONG" else "BUY"
-                        client.stop_market(PAIR, sl_side, flip_sl, close_position=True)
-                        pos_dict = {
-                            "side": flip_side, "entry_price": fill_price,
-                            "entry_time": datetime.now(timezone.utc).isoformat(),
-                            "qty": flip_qty, "sl_price": flip_sl, "pos_atr": sig.atr,
-                            "partial_taken": False, "is_flip": True,
-                            "flip_entry_time": now_ts,
-                        }
-                        state["position"] = pos_dict
-                        state["pending_flip"] = None
-                        sl_pct = abs(flip_sl - fill_price)/fill_price * 100
-                        log.info(f"  🔄 FLIP OPENED {flip_side} {flip_qty}@{fill_price:.2f}  SL={flip_sl:.2f} ({sl_pct:.2f}%)")
-                        status["just_opened"] = True
-                        send_email(f"🔄 FLIP {flip_side} @${fill_price:,.2f}",
-                                   f"FLIP trade after SL break.\nSide: {flip_side}\nEntry: ${fill_price:,.2f}\n"
-                                   f"Qty: {flip_qty}\nSL: ${flip_sl:,.2f} ({sl_pct:.2f}% away)\n"
-                                   f"Ref price (broken SL): ${ref_price:,.2f}\nBalance: ${balance:,.2f}")
-                        save_state(state)
-                        return  # flip opened, don't also check normal entry this tick
-                else:
-                    log.warning(f"  flip qty {flip_qty} below min {info['min_qty']} — canceling pending flip")
-                    state["pending_flip"] = None
+        # ── FLAT: look for entry ──
+        status["state"] = "FLAT"
 
-        # ── Flat: show entry conditions met/pending ──
-        log.info(f"  FLAT — checking entry conditions")
-        log.info(f"    LONG conditions: " + ", ".join(
-            f"{k}={'✓' if v else '✗'}" for k, v in sig.conditions_long.items()))
-        log.info(f"    SHORT conditions: " + ", ".join(
-            f"{k}={'✓' if v else '✗'}" for k, v in sig.conditions_short.items()))
-
-        # Same-direction SL cooldown + generic post-exit cooldown (v5 parity)
-        long_cd_remain  = max(0, state["last_long_sl_time"]  + SAME_DIR_CD_BARS*3600 - now_ts)
-        short_cd_remain = max(0, state["last_short_sl_time"] + SAME_DIR_CD_BARS*3600 - now_ts)
-        post_exit_cd    = max(0, state.get("last_exit_time", 0) + COOLDOWN_BARS*3600 - now_ts)
-        long_cd_remain  = max(long_cd_remain,  post_exit_cd)
-        short_cd_remain = max(short_cd_remain, post_exit_cd)
-
-        status.update({
-            "state": "FLAT",
-            "long_conditions":  sig.conditions_long,
-            "short_conditions": sig.conditions_short,
-            "long_ok":  sig.long_ok,
-            "short_ok": sig.short_ok,
-            "long_cooldown_remaining_sec":  long_cd_remain,
-            "short_cooldown_remaining_sec": short_cd_remain,
-        })
+        cd_block = max(0, state.get("last_exit_time", 0) + GENERIC_CD_BARS * 4 * 3600 - now_ts)
 
         if halted:
-            log.info(f"  HALTED for {(state['halt_until_time']-now_ts)//60} more minutes")
-        elif sig.side == "LONG" and long_cd_remain > 0:
-            log.info(f"  LONG signal but cooldown {long_cd_remain//60}min remaining")
-        elif sig.side == "SHORT" and short_cd_remain > 0:
-            log.info(f"  SHORT signal but cooldown {short_cd_remain//60}min remaining")
+            log.info(f"  HALTED {(state['halt_until_time']-now_ts)//60}min remaining")
+        elif cd_block > 0:
+            log.info(f"  Signal {sig.side or 'NONE'} but cooldown {cd_block//60}min")
         elif sig.side and not ARGS.dry:
-            # Open position
-            sl_price = calc_pattern_sl(
-                sig.side, price,
-                float(last["low"]), float(last["high"]),
-                float(prev["low"]), float(prev["high"]),
-            )
-            qty = position_size(balance, price, sl_price, leverage=LEV, risk_pct=RISK_PCT)
+            swing_low = float(last.get("swing_low", close_price * 0.975))
+            swing_high = float(last.get("swing_high", close_price * 1.025))
+            sl_price = calc_sl(sig.side, close_price, swing_low, swing_high)
+            qty = calc_qty(balance, close_price, sl_price, dd_pct)
             qty = round_qty(qty, info["step"])
             if qty < info["min_qty"]:
-                log.warning(f"  qty {qty} below min {info['min_qty']} — skip")
+                log.warning(f"  qty {qty} below min {info['min_qty']}")
             else:
-                client.set_leverage(PAIR, LEV_CEILING)
+                client.set_leverage(PAIR, LEV * 2)
                 side_api = "BUY" if sig.side == "LONG" else "SELL"
-                ord_resp = client.market_order(PAIR, side_api, qty)
-                if ord_resp:
-                    fill_price = float(ord_resp.get("avgPrice", price)) or price
-                    # Re-place SL on fill price
-                    sl_price = calc_pattern_sl(
-                        sig.side, fill_price,
-                        float(last["low"]), float(last["high"]),
-                        float(prev["low"]), float(prev["high"]),
-                    )
-                    sl_side = "SELL" if sig.side == "LONG" else "BUY"
-                    client.stop_market(PAIR, sl_side, sl_price, close_position=True)
+                resp = client.market_order(PAIR, side_api, qty)
+                if resp:
+                    fill = float(resp.get("avgPrice", close_price)) or close_price
+                    sl_price = calc_sl(sig.side, fill, swing_low, swing_high)
                     pos_dict = {
-                        "side": sig.side, "entry_price": fill_price,
+                        "side": sig.side, "entry_price": fill,
                         "entry_time": datetime.now(timezone.utc).isoformat(),
-                        "qty": qty, "sl_price": sl_price, "pos_atr": sig.atr,
-                        "partial_taken": False,
+                        "qty": qty, "orig_qty": qty,
+                        "sl_price": sl_price, "init_sl_dist": abs(fill - sl_price),
+                        "tp1_done": False, "tp2_done": False,
                     }
                     state["position"] = pos_dict
-                    log.info(f"  ★ OPENED {sig.side} {qty}@{fill_price:.2f}  SL={sl_price:.2f}")
-                    status["just_opened"] = True
-                    sl_pct = abs(sl_price - fill_price)/fill_price * 100
-                    send_email(f"★ OPEN {sig.side} @${fill_price:,.2f}",
-                               f"Side: {sig.side}\nEntry: ${fill_price:,.2f}\n"
-                               f"Qty: {qty}\nSL: ${sl_price:,.2f} ({sl_pct:.2f}% away)\n"
-                               f"Balance: ${balance:,.2f}\nLeverage: {LEV}×")
+                    sl_pct = abs(sl_price - fill)/fill * 100
+                    log.info(f"  OPENED {sig.side} {qty}@{fill:.2f} SL=${sl_price:.2f} ({sl_pct:.1f}%)")
         elif sig.side and ARGS.dry:
-            log.info(f"  [DRY] Would open {sig.side} at ${price:,.2f}")
+            log.info(f"  [DRY] Would open {sig.side} at ${close_price:,.2f}")
+        else:
+            log.info(f"  No signal — waiting")
 
     else:
-        # ── In position: show exit conditions met/pending ──
-        pos = Position(
-            side=pos_dict["side"], entry_price=pos_dict["entry_price"],
-            entry_time=pos_dict["entry_time"], qty=pos_dict["qty"],
-            sl_price=pos_dict["sl_price"], pos_atr=pos_dict.get("pos_atr", sig.atr),
-            partial_taken=pos_dict.get("partial_taken", False),
-            is_flip=pos_dict.get("is_flip", False),
-        )
-        ex = evaluate_exit(pos, last, sig)
+        # ── IN POSITION ──
+        side = pos_dict["side"]
+        entry = pos_dict["entry_price"]
+        qty = pos_dict["qty"]
+        orig_qty = pos_dict.get("orig_qty", qty)
+        sl = pos_dict["sl_price"]
+        init_dist = pos_dict.get("init_sl_dist", abs(entry - sl))
+        tp1_done = pos_dict.get("tp1_done", False)
+        tp2_done = pos_dict.get("tp2_done", False)
 
-        # V6: flip time-stop — force exit if flip held > FLIP_TIME_STOP hours
-        if pos.is_flip and USE_SL_FLIP and not ARGS.dry:
-            flip_entry_ts = pos_dict.get("flip_entry_time", now_ts)
-            held_hours = (now_ts - flip_entry_ts) / 3600
-            if held_hours >= FLIP_TIME_STOP:
-                log.info(f"  ⏱ FLIP time-stop: held {held_hours:.1f}h ≥ {FLIP_TIME_STOP}h — closing")
-                ex.should_exit = True
-                ex.reason = "FLIP-TIME"
-                ex.exit_price = price
+        # Use live price for favorability check
+        fav = (live_px - entry) if side == "LONG" else (entry - live_px)
+        current_r = fav / init_dist if init_dist > 0 else 0
 
-        log.info(f"  IN {pos.side} qty={pos.qty} entry=${pos.entry_price:.2f} "
-                 f"price=${price:.2f} SL=${pos.sl_price:.2f} ({ex.sl_distance_pct:+.2f}% from SL)")
-        log.info(f"    Favorable progress: {ex.favorable_r:.2f}R "
-                 f"(partial TP at +{PARTIAL_TP_R}R, need {PARTIAL_TP_R - ex.favorable_r:+.2f}R)")
-        log.info(f"    Opposite signal: {'✓ PRESENT' if ex.opposite_signal_active else '✗ pending'}")
+        log.info(f"  IN {side} qty={qty} orig={orig_qty} entry=${entry:.2f} SL=${sl:.2f} "
+                 f"live=${live_px:.2f} R={current_r:.1f}")
 
-        status.update({
-            "state": "IN_POSITION",
-            "exit_conditions": {
-                "Stop loss hit":         ex.should_exit and ex.reason == "SL",
-                f"Partial TP at +{PARTIAL_TP_R}R":  ex.partial_tp_hit,
-                "Opposite signal":       ex.opposite_signal_active,
-            },
-            "sl_distance_pct":  ex.sl_distance_pct,
-            "favorable_r":      ex.favorable_r,
-            "partial_tp_distance_pct": ex.partial_tp_distance_pct,
-            "partial_taken":    pos.partial_taken,
-        })
+        status["state"] = "IN_POSITION"
+        status["current_r"] = current_r
 
-        # V7 Pyramid execution: add 50% at +3R
-        if USE_PYRAMID and not pos_dict.get("pyramided", False) and not pos.is_flip and not ARGS.dry:
-            sl_dist = abs(pos.entry_price - pos.sl_price)
-            if sl_dist > 0:
-                favorable = (price - pos.entry_price) if pos.side == "LONG" else (pos.entry_price - price)
-                current_r = favorable / sl_dist
-                if current_r >= PYRAMID_R:
-                    pyramid_qty = round_qty(pos.qty * PYRAMID_FRAC, info["step"])
-                    if pyramid_qty >= info["min_qty"]:
-                        pyr_side = "BUY" if pos.side == "LONG" else "SELL"
-                        pyr_resp = client.market_order(PAIR, pyr_side, pyramid_qty)
-                        if pyr_resp:
-                            pos.qty += pyramid_qty
-                            pos_dict["qty"] = pos.qty
-                            pos_dict["pyramided"] = True
-                            # Move SL to entry + 0.5R
-                            sl_move = PYRAMID_SL_R * sl_dist
-                            pyr_sl = (pos.entry_price + sl_move if pos.side == "LONG"
-                                      else pos.entry_price - sl_move)
-                            client.cancel_all(PAIR)
-                            sl_api_side = "SELL" if pos.side == "LONG" else "BUY"
-                            client.stop_market(PAIR, sl_api_side, pyr_sl, close_position=True)
-                            pos.sl_price = pyr_sl
-                            pos_dict["sl_price"] = pyr_sl
-                            state["position"] = pos_dict
-                            log.info(f"  📐 PYRAMID +{PYRAMID_FRAC*100:.0f}% at +{current_r:.1f}R  added {pyramid_qty}  SL→${pyr_sl:.2f} (+{PYRAMID_SL_R}R)")
-                            send_email(f"📐 PYRAMID +{PYRAMID_FRAC*100:.0f}% · {pos.side} at +{current_r:.1f}R",
-                                       f"Added {pyramid_qty} to {pos.side} position.\n"
-                                       f"Total qty: {pos.qty}\nSL moved to: ${pyr_sl:,.2f} (+{PYRAMID_SL_R}R)\n"
-                                       f"Price: ${price:,.2f}\nBalance: ${balance:,.2f}")
+        # SL check: live price OR previous closed bar
+        live_sl_hit = (live_px <= sl) if side == "LONG" else (live_px >= sl)
+        bar_sl_hit = (float(last["low"]) <= sl) if side == "LONG" else (float(last["high"]) >= sl)
+        sl_hit = live_sl_hit or bar_sl_hit
 
-        # Partial TP execution
-        if USE_PARTIAL_TP and ex.partial_tp_hit and not pos.partial_taken and not ARGS.dry:
-            close_qty = round_qty(pos.qty * PARTIAL_TP_FRAC, info["step"])
-            if close_qty >= info["min_qty"]:
-                close_side = "SELL" if pos.side == "LONG" else "BUY"
-                resp = client.market_order(PAIR, close_side, close_qty, reduce_only=True)
-                if resp:
-                    pos.partial_taken = True
-                    pos.qty -= close_qty
-                    pos_dict["partial_taken"] = True
-                    pos_dict["qty"] = pos.qty
-                    # Move SL to BE + buffer — but NEVER move SL backwards
-                    old_sl = pos.sl_price
-                    be_sl = (pos.entry_price * (1 + PARTIAL_BE_BUF) if pos.side == "LONG"
-                             else pos.entry_price * (1 - PARTIAL_BE_BUF))
-                    # Keep the better SL (pyramid may have set +0.5R already)
-                    if pos.side == "LONG":
-                        new_sl = max(old_sl, be_sl)
-                    else:
-                        new_sl = min(old_sl, be_sl)
-                    client.cancel_all(PAIR)
-                    sl_side = "SELL" if pos.side == "LONG" else "BUY"
-                    client.stop_market(PAIR, sl_side, new_sl, close_position=True)
-                    pos.sl_price = new_sl
-                    pos_dict["sl_price"] = new_sl
-                    state["position"] = pos_dict
-                    log.info(f"  ✦ PARTIAL TP @+{PARTIAL_TP_R}R closed {close_qty} ({PARTIAL_TP_FRAC*100:.0f}%)  → SL moved to BE ${be_sl:.2f}")
-                    status["just_partial"] = True
-                    send_email(f"✦ PARTIAL TP +{PARTIAL_TP_R}R · {pos.side}",
-                               f"Locked {PARTIAL_TP_FRAC*100:.0f}% of position at +{PARTIAL_TP_R}R favorable.\n"
-                               f"Closed qty: {close_qty}\nRemaining: {pos.qty}\n"
-                               f"SL moved to BE: ${be_sl:,.2f} (was ${old_sl:,.2f})\n"
-                               f"Price: ${price:,.2f}\nBalance: ${balance:,.2f}")
+        # Opposite signal exit
+        opp = (sig.side == "SHORT" and side == "LONG") or (sig.side == "LONG" and side == "SHORT")
 
-        # Full exit (SL or opposite signal)
-        if ex.should_exit and not ARGS.dry:
-            client.cancel_all(PAIR)  # cancel SL order
-            close_side = "SELL" if pos.side == "LONG" else "BUY"
-            resp = client.market_order(PAIR, close_side, pos.qty, reduce_only=True)
+        # TP1: close 50% of ORIGINAL qty, move SL to BE+buffer
+        if not tp1_done and not ARGS.dry:
+            tp1_px = entry + TP1_R * init_dist if side == "LONG" else entry - TP1_R * init_dist
+            tp1_hit = (live_px >= tp1_px) if side == "LONG" else (live_px <= tp1_px)
+            if tp1_hit:
+                close_qty = round_qty(orig_qty * TP1_FRAC, info["step"])
+                close_qty = min(close_qty, qty)  # can't close more than we have
+                if close_qty >= info["min_qty"]:
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    resp = client.market_order(PAIR, close_side, close_qty, reduce_only=True)
+                    if resp:
+                        pos_dict["qty"] = qty - close_qty
+                        pos_dict["tp1_done"] = True
+                        be_sl = entry * (1 + BE_BUF_PCT) if side == "LONG" else entry * (1 - BE_BUF_PCT)
+                        new_sl = max(sl, be_sl) if side == "LONG" else min(sl, be_sl)
+                        pos_dict["sl_price"] = new_sl
+                        state["position"] = pos_dict
+                        sl = new_sl
+                        qty = pos_dict["qty"]
+                        tp1_done = True
+                        log.info(f"  TP1 closed {TP1_FRAC*100:.0f}% @ +{current_r:.1f}R → SL moved to BE ${new_sl:.2f}")
+
+        # TP2: close 25% of ORIGINAL qty
+        if tp1_done and not tp2_done and not ARGS.dry:
+            tp2_px = entry + TP2_R * init_dist if side == "LONG" else entry - TP2_R * init_dist
+            tp2_hit = (live_px >= tp2_px) if side == "LONG" else (live_px <= tp2_px)
+            if tp2_hit:
+                close_qty = round_qty(orig_qty * TP2_FRAC, info["step"])
+                close_qty = min(close_qty, qty)
+                if close_qty >= info["min_qty"]:
+                    close_side = "SELL" if side == "LONG" else "BUY"
+                    resp = client.market_order(PAIR, close_side, close_qty, reduce_only=True)
+                    if resp:
+                        pos_dict["qty"] = qty - close_qty
+                        pos_dict["tp2_done"] = True
+                        state["position"] = pos_dict
+                        qty = pos_dict["qty"]
+                        tp2_done = True
+                        log.info(f"  TP2 closed {TP2_FRAC*100:.0f}% @ +{current_r:.1f}R")
+
+        # Runner trailing stop (after TP2)
+        if tp2_done and not ARGS.dry:
+            atr_val = sig.raw.get("atr")
+            new_sl = compute_trail_stop(side, live_px, atr_val, sl)
+            if (side == "LONG" and new_sl > sl) or (side == "SHORT" and new_sl < sl):
+                pos_dict["sl_price"] = new_sl
+                sl = new_sl
+                state["position"] = pos_dict
+                log.info(f"  Trail: SL → ${new_sl:.2f}")
+
+        # Full exit: SL hit or opposite signal
+        should_exit = sl_hit or opp
+        reason = "SL" if sl_hit else ("OPP" if opp else None)
+
+        if should_exit and not ARGS.dry:
+            client.cancel_all(PAIR)
+            close_side = "SELL" if side == "LONG" else "BUY"
+            resp = client.market_order(PAIR, close_side, pos_dict["qty"], reduce_only=True)
             if resp:
-                fill_price = float(resp.get("avgPrice", ex.exit_price)) or ex.exit_price
-                pmp = ((fill_price - pos.entry_price)/pos.entry_price if pos.side == "LONG"
-                       else (pos.entry_price - fill_price)/pos.entry_price)
-                pnl_pct = pmp * LEV * 100
-                trade_record = {
-                    "side": pos.side, "entry": pos.entry_price, "exit": fill_price,
-                    "qty": pos.qty, "reason": ex.reason, "pnl_pct": pnl_pct,
-                    "entry_time": pos.entry_time, "exit_time": datetime.now(timezone.utc).isoformat(),
+                fill = float(resp.get("avgPrice", live_px)) or live_px
+                pmp = (fill - entry)/entry if side == "LONG" else (entry - fill)/entry
+                pnl = pmp * LEV * 100
+
+                state["stats"]["total"] += 1
+                state["stats"]["pnl"] += pnl
+                if pnl > 0: state["stats"]["wins"] += 1
+
+                trade = {
+                    "side": side, "entry": entry, "exit": fill, "reason": reason,
+                    "pnl_pct": pnl, "time": datetime.now(timezone.utc).isoformat(),
+                    "tp1_done": tp1_done, "tp2_done": tp2_done,
                 }
-                state["trade_log"].append(trade_record)
+                state["trade_log"].append(trade)
                 state["trade_log"] = state["trade_log"][-100:]
-                was_flip = pos_dict.get("is_flip", False)
-                if ex.reason == "SL":
-                    if pos.side == "LONG":  state["last_long_sl_time"]  = now_ts
-                    else:                   state["last_short_sl_time"] = now_ts
-                    # V6: queue opposite-direction flip (but NOT if this was already a flip)
-                    if USE_SL_FLIP and not was_flip:
-                        flip_side = "SHORT" if pos.side == "LONG" else "LONG"
-                        state["pending_flip"] = {
-                            "side": flip_side,
-                            "sl_time": now_ts,
-                            "ref_price": float(pos.sl_price),
-                        }
-                        log.info(f"  🔄 Pending FLIP {flip_side} queued (exec in {FLIP_WAIT_BARS}h)")
-                state["last_exit_time"] = now_ts      # generic 2h post-exit cooldown (v5 parity)
+
+                state["last_exit_time"] = now_ts
                 state["position"] = None
-                log.info(f"  ✕ EXIT {pos.side} via {ex.reason} @${fill_price:.2f}  PnL {pnl_pct:+.2f}%")
-                status["just_closed"] = trade_record
-                emoji = "✓" if pnl_pct > 0 else "✕"
-                send_email(f"{emoji} CLOSE {pos.side} {pnl_pct:+.2f}% · {ex.reason}",
-                           f"Side: {pos.side}\nEntry: ${pos.entry_price:,.2f}\n"
-                           f"Exit: ${fill_price:,.2f}\nReason: {ex.reason}\n"
-                           f"PnL: {pnl_pct:+.2f}%\nBalance: ${balance:,.2f}\n"
-                           f"Held: {pos.entry_time} → {trade_record['exit_time']}")
-        elif ex.should_exit and ARGS.dry:
-            log.info(f"  [DRY] Would EXIT {pos.side} via {ex.reason}")
+                log.info(f"  EXIT {side} via {reason} @${fill:.2f} PnL {pnl:+.2f}%")
+                status["just_closed"] = trade
 
     save_state(state)
     write_status(status)
-    log.info("━━━ tick done ━━━")
+    log.info(f"  Stats: {state['stats']['total']} trades | "
+             f"WR {state['stats']['wins']/max(state['stats']['total'],1)*100:.0f}% | "
+             f"PnL {state['stats']['pnl']:+.2f}%")
+    log.info(f"{'='*50}\n")
 
 
 if __name__ == "__main__":
@@ -627,4 +440,3 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         log.exception(f"FATAL: {e}")
-        sys.exit(1)
