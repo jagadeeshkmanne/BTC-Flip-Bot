@@ -1,20 +1,19 @@
 """
-core.py — V7 Structure Break (4H Pivots + DD-Adaptive Risk)
+core.py — Structure Break Strategy (Daily Pivots + DD-Adaptive Risk)
 
 Architecture:
-  4H execution timeframe
-  Daily EMA50 bias filter (close > EMA50 = bull)
-  4H RSI confirmation (> 50 bull / < 50 bear)
+  Daily (1D) execution timeframe
+  Daily EMA50 bias filter (prior-day close > EMA50 = bull, no lookahead)
+  Daily RSI(14) confirmation (> 50 bull / < 50 bear)
   Pivot-based structure (HH+HL longs, LL+LH shorts) + close breaks latest pivot
 
   SL: 5-bar swing low/high + 0.1% buffer, capped at 2.5%
   TP ladder: TP1 50% @ 2R -> SL to BE; TP2 25% @ 4R; runner 25% with 2.5x ATR trail
   DD-adaptive risk: effective risk = base_risk * max(0.5, 1 + drawdownPct)
-  Hard DD halt: 15% -> halt 7 days (42 x 4H bars)
+  Hard DD halt: 15% -> halt 7 days
 
-Backtest (TradingView, 4H BTCUSDT, Jan 2021 -> Apr 2026, 2x lev):
-  At 3% risk: +279.4% abs | 37.76% DD | PF 1.66 | Calmar 0.76
-  At 1% risk: +78.1%  abs | 14.96% DD | PF 1.90 | Calmar 0.77
+Backtest (TradingView, 1D BTCUSDT, Sep 2019 -> Apr 2026, 2x lev, 3% risk):
+  +673% abs | 42% DD | PF 2.43 | 47 trades | 57% WR | Calmar ~0.85
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -47,12 +46,12 @@ TRAIL_ATR_MULT    = 2.5
 
 # DD management
 DD_HALT_PCT       = 0.15
-DD_HALT_BARS      = 42          # 42 x 4H = 7 days
+DD_HALT_BARS      = 7           # 7 daily bars = 7 days
 USE_ADAPTIVE_RISK = True
 RISK_FLOOR        = 0.5         # min risk multiplier at deep DD
 
 # Cooldown
-GENERIC_CD_BARS   = 3           # 3 x 4H = 12h after any exit
+GENERIC_CD_BARS   = 3           # 3 daily bars = 3 days after any exit
 
 # RSI
 RSI_PERIOD        = 14
@@ -142,9 +141,9 @@ def compute_pivots(df: pd.DataFrame, pivot_len: int = PIVOT_LEN
 # Signal building
 # ----------------------------------------------------------------
 
-def build_signals(df_4h: pd.DataFrame) -> pd.DataFrame:
-    """Add RSI, ATR, swing SL levels to 4H dataframe."""
-    df = df_4h.copy()
+def build_signals(df_1d: pd.DataFrame) -> pd.DataFrame:
+    """Add RSI, ATR, swing SL levels to daily dataframe."""
+    df = df_1d.copy()
     df["rsi"] = rsi_series(df["close"], RSI_PERIOD)
     df["atr"] = atr_series(df, ATR_PERIOD)
     df["swing_low"] = df["low"].rolling(SL_SWING_LEN).min()
@@ -152,18 +151,17 @@ def build_signals(df_4h: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_htf(df_4h: pd.DataFrame) -> np.ndarray:
-    """Daily EMA50 bias mapped to 4H index. Uses PRIOR daily bar (no lookahead),
-    matching Pine's request.security(..., close[1])."""
-    ts = df_4h["timestamp"]
-    df_d = resample(df_4h.set_index("timestamp").reset_index(), "1D")
-    df_d["ema50"] = ema(df_d["close"], 50)
-    df_d["bias"] = np.where(df_d["close"] > df_d["ema50"], 1,
-                   np.where(df_d["close"] < df_d["ema50"], -1, 0))
-    # Shift by 1 day to use PRIOR daily close/ema50 — matches Pine's [1] indexing
-    df_d["bias_prev"] = df_d["bias"].shift(1)
-    bias_d = df_d.set_index("timestamp")["bias_prev"].reindex(ts).ffill().values
-    return bias_d
+def build_htf(df_1d: pd.DataFrame) -> np.ndarray:
+    """Daily EMA50 bias. On daily TF this uses PRIOR bar's close/ema50 (no
+    lookahead), matching Pine's request.security("1D", close[1])."""
+    ts = df_1d["timestamp"]
+    # Already daily; no resampling needed. Compute EMA50 and bias on bar.
+    ema50 = ema(df_1d["close"], 50)
+    bias = np.where(df_1d["close"] > ema50, 1,
+            np.where(df_1d["close"] < ema50, -1, 0))
+    # Shift by 1 bar so current bar's filter uses PRIOR day's regime — no lookahead
+    bias_prev = pd.Series(bias, index=ts).shift(1)
+    return bias_prev.values
 
 
 # ----------------------------------------------------------------
@@ -218,15 +216,16 @@ def evaluate_signal(df_4h: pd.DataFrame, last_idx: int, bias_d: int) -> SignalSt
     s.conditions = {
         "Daily EMA50 Bull": bool(daily_bull),
         "Daily EMA50 Bear": bool(daily_bear),
-        "4H RSI >50": bool(rsi_ok_l),
-        "4H RSI <50": bool(rsi_ok_s),
+        "Daily RSI >50": bool(rsi_ok_l),
+        "Daily RSI <50": bool(rsi_ok_s),
         "HH + HL (pivots)": bool(bull_struct),
         "LH + LL (pivots)": bool(bear_struct),
         "Break above pivot high": bool(break_up),
         "Break below pivot low": bool(break_dn),
     }
     s.raw = {
-        "rsi_4h": float(rsi_v) if not pd.isna(rsi_v) else None,
+        "rsi_1d": float(rsi_v) if not pd.isna(rsi_v) else None,
+        "rsi_4h": float(rsi_v) if not pd.isna(rsi_v) else None,  # legacy key for dashboard compat
         "bias_d": int(bias_d) if not pd.isna(bias_d) else 0,
         "ph_last": ph_last,
         "ph_prev": ph_prev,

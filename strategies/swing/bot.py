@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-bot.py — Swing Strategy V7 live bot (4H Pivots + DD-Adaptive Risk).
+bot.py — Structure Break live bot (Daily Pivots + DD-Adaptive Risk).
 
-Runs every 5 min via cron. Fetches 4H candles, computes pivot structure,
+Runs every 5 min via cron. Fetches daily candles, computes pivot structure,
 manages position (entry + TP ladder + software SL via live price).
 
 Architecture:
-  core.py  — V7 strategy logic (pivots, TP ladder, DD-adaptive risk)
-  bot.py   — exchange I/O + position state + intra-cron SL check via live price
+  core.py  — Strategy logic (pivots, TP ladder, DD-adaptive risk)
+  bot.py   — Exchange I/O + position state + intra-cron SL check via live price
+
+Signal evaluation runs at each 5-min tick against the last CLOSED daily bar.
+Live price checks for SL/TP/trail happen every tick (5-min reaction time).
 """
 from __future__ import annotations
 import os, sys, json, time, hmac, hashlib, logging, argparse
@@ -105,7 +108,7 @@ class BinanceClient:
                 log.warning(f"  Request err: {e}"); time.sleep(2)
         return None
 
-    def klines(self, symbol, interval="4h", limit=500):
+    def klines(self, symbol, interval="1d", limit=500):
         data = self._req("GET", "/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": limit})
         if not data: return None
         df = pd.DataFrame(data, columns=["ot","open","high","low","close","volume","ct","qav","trades","tbbav","tbqav","ig"])
@@ -181,25 +184,25 @@ def round_qty(q, step):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"Swing Bot V7 — env={ENV} dry={ARGS.dry}")
+    log.info(f"Structure Break Bot — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
     info = client.exchange_info(PAIR)
     if not info: log.error("No exchange info"); return
 
-    # Fetch 4H klines (500 bars = ~83 days)
-    df_4h_raw = client.klines(PAIR, interval="4h", limit=500)
-    if df_4h_raw is None or len(df_4h_raw) < 100:
-        log.error("Not enough 4H klines"); return
+    # Fetch daily klines (500 bars = ~500 days of history for pivots/EMA50)
+    df_1d_raw = client.klines(PAIR, interval="1d", limit=500)
+    if df_1d_raw is None or len(df_1d_raw) < 100:
+        log.error("Not enough daily klines"); return
 
-    df_4h = build_signals(df_4h_raw)
-    bias_d = build_htf(df_4h_raw)
+    df_1d = build_signals(df_1d_raw)
+    bias_d = build_htf(df_1d_raw)
 
-    # Last CLOSED 4H bar
-    last_idx = len(df_4h) - 2
-    last = df_4h.iloc[last_idx]
-    sig = evaluate_signal(df_4h, last_idx, bias_d[last_idx])
+    # Last CLOSED daily bar
+    last_idx = len(df_1d) - 2
+    last = df_1d.iloc[last_idx]
+    sig = evaluate_signal(df_1d, last_idx, bias_d[last_idx])
     close_price = sig.price
 
     # Live price (for intra-bar SL/TP checks)
@@ -219,7 +222,7 @@ def main():
 
     # Hard DD halt
     if dd_pct <= -DD_HALT_PCT and state.get("halt_until_time", 0) < now_ts:
-        state["halt_until_time"] = now_ts + DD_HALT_BARS * 4 * 3600
+        state["halt_until_time"] = now_ts + DD_HALT_BARS * 24 * 3600
         state["peak_equity"] = balance
         log.warning(f"  DD HALT: {dd_pct*100:+.1f}% — halted 7 days")
 
@@ -263,7 +266,7 @@ def main():
     log.info(f"  Signal: {sig.side or 'NONE'}")
     for k, v in sig.conditions.items():
         if v: log.info(f"    {k}: Y")
-    log.info(f"  RSI 4H: {sig.raw.get('rsi_4h','?')} | Bias: {sig.raw.get('bias_d','?')}")
+    log.info(f"  RSI 1D: {sig.raw.get('rsi_4h','?')} | Bias: {sig.raw.get('bias_d','?')}")
     if sig.raw.get("ph_last"):
         log.info(f"  Pivot H: {sig.raw['ph_last']:.0f} (prev {sig.raw.get('ph_prev','?')}) | "
                  f"Pivot L: {sig.raw['pl_last']:.0f} (prev {sig.raw.get('pl_prev','?')})")
@@ -275,14 +278,14 @@ def main():
         "halted": halted, "position": pos_dict,
         "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "V7 Structure Break (4H Pivots)",
+        "strategy": "Structure Break (Daily Pivots)",
     }
 
     if pos_dict is None:
         # ── FLAT: look for entry ──
         status["state"] = "FLAT"
 
-        cd_block = max(0, state.get("last_exit_time", 0) + GENERIC_CD_BARS * 4 * 3600 - now_ts)
+        cd_block = max(0, state.get("last_exit_time", 0) + GENERIC_CD_BARS * 24 * 3600 - now_ts)
 
         if halted:
             log.info(f"  HALTED {(state['halt_until_time']-now_ts)//60}min remaining")

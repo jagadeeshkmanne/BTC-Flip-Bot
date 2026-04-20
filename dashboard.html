@@ -170,12 +170,13 @@ th:first-child,td:first-child{text-align:left}
     <div class="panel">
       <div class="panel-hdr"><h2>Strategy</h2></div>
       <div class="panel-body" style="font-size:11px;color:#9ca3af;line-height:1.6">
-        <div><b style="color:#e6edf3">Entry:</b> MACD momentum + RSI 40/60 + EMA50 slope + Daily(long)/4H(short)</div>
+        <div><b style="color:#e6edf3">TF:</b> Daily (1D)</div>
+        <div><b style="color:#e6edf3">Entry:</b> Pivot HH+HL (long) / LH+LL (short) + close breaks pivot + Daily EMA50 bias + RSI>50/<50</div>
         <div><b style="color:#e6edf3">SL:</b> 5-bar swing, capped 2.5%</div>
-        <div><b style="color:#e6edf3">TP:</b> 40% at +3R, 15% at +6R, SL→BE</div>
-        <div><b style="color:#e6edf3">Pyramid:</b> +50% at +3R (half-risk)</div>
-        <div><b style="color:#e6edf3">Flip:</b> on SL if momentum+slope</div>
-        <div><b style="color:#e6edf3">Vol:</b> ATR>3% → half risk</div>
+        <div><b style="color:#e6edf3">TP ladder:</b> 50% @ 2R (SL→BE) + 25% @ 4R + 25% runner 2.5×ATR trail</div>
+        <div><b style="color:#e6edf3">DD-adaptive:</b> risk × max(0.5, 1+DD%)</div>
+        <div><b style="color:#e6edf3">Halt:</b> 15% DD → 7 days pause</div>
+        <div><b style="color:#e6edf3">Flip:</b> on opposite signal (same-bar)</div>
       </div>
     </div>
   </div>
@@ -197,16 +198,16 @@ function emaCalc(values, period) {
 
 // Long/Short condition definitions with current value extractors
 function isT(v) { return v === true || v === 'True' || v === 'true'; }
-// V7 Structure Break (4H Pivots)
+// Structure Break (Daily Pivots)
 const LONG_CONDS = [
   {key:'Daily EMA50', need:'BULL',      check: d => isT(d.conditions?.['Daily EMA50 Bull']), val: d => isT(d.conditions?.['Daily EMA50 Bull'])?'BULL':'BEAR'},
-  {key:'4H RSI',      need:'> 50',      check: d => isT(d.conditions?.['4H RSI >50']),      val: d => d.rsi_4h?.toFixed(1)||'--'},
+  {key:'Daily RSI',   need:'> 50',      check: d => isT(d.conditions?.['Daily RSI >50']),    val: d => (d.rsi_1d||d.rsi_4h)?.toFixed(1)||'--'},
   {key:'HH + HL',     need:'YES',       check: d => isT(d.conditions?.['HH + HL (pivots)']), val: d => isT(d.conditions?.['HH + HL (pivots)'])?'YES':'NO'},
   {key:'Break > PivH',need:'YES',       check: d => isT(d.conditions?.['Break above pivot high']), val: d => d.ph_last?('$'+Number(d.ph_last).toFixed(0)):'--'},
 ];
 const SHORT_CONDS = [
   {key:'Daily EMA50', need:'BEAR',      check: d => isT(d.conditions?.['Daily EMA50 Bear']), val: d => isT(d.conditions?.['Daily EMA50 Bear'])?'BEAR':'BULL'},
-  {key:'4H RSI',      need:'< 50',      check: d => isT(d.conditions?.['4H RSI <50']),      val: d => d.rsi_4h?.toFixed(1)||'--'},
+  {key:'Daily RSI',   need:'< 50',      check: d => isT(d.conditions?.['Daily RSI <50']),    val: d => (d.rsi_1d||d.rsi_4h)?.toFixed(1)||'--'},
   {key:'LH + LL',     need:'YES',       check: d => isT(d.conditions?.['LH + LL (pivots)']), val: d => isT(d.conditions?.['LH + LL (pivots)'])?'YES':'NO'},
   {key:'Break < PivL',need:'YES',       check: d => isT(d.conditions?.['Break below pivot low']), val: d => d.pl_last?('$'+Number(d.pl_last).toFixed(0)):'--'},
 ];
