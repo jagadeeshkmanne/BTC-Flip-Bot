@@ -16,7 +16,7 @@
 //   - Same-bar flip on opposite signal
 //
 // TradingView test (Sep 2019 → Apr 2026, 6.6y, 3% risk, 2× lev):
-//   +817% | 34% DD | PF 2.79 | 45 trades | Calmar ~1.17
+//   +821% | 34% DD | PF 2.79 | 45 trades | 55.6% WR | Calmar ~1.17
 //
 // Config locked after iteration:
 //   - pivotLen=3 (2 destroys edge)
