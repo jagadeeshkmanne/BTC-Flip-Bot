@@ -74,18 +74,23 @@ def ema(s: pd.Series, n: int) -> pd.Series:
 
 
 def rsi_series(s: pd.Series, n: int = 14) -> pd.Series:
+    # Wilder's RMA smoothing to match Pine's ta.rsi()
     d = s.diff()
-    g = d.clip(lower=0).rolling(n).mean()
-    l = -d.clip(upper=0).rolling(n).mean()
-    return 100 - (100 / (1 + g / l.replace(0, np.nan)))
+    gain = d.clip(lower=0)
+    loss = -d.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1.0 / n, min_periods=n, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / n, min_periods=n, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
 
 
 def atr_series(df: pd.DataFrame, n: int = ATR_PERIOD) -> pd.Series:
+    # Wilder's RMA to match Pine's ta.atr()
     hl = df["high"] - df["low"]
     hc = (df["high"] - df["close"].shift()).abs()
     lc = (df["low"] - df["close"].shift()).abs()
     tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    return tr.rolling(n).mean()
+    return tr.ewm(alpha=1.0 / n, min_periods=n, adjust=False).mean()
 
 
 def resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
@@ -148,13 +153,16 @@ def build_signals(df_4h: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_htf(df_4h: pd.DataFrame) -> np.ndarray:
-    """Daily EMA50 bias mapped to 4H index. Returns array of {-1, 0, 1}."""
+    """Daily EMA50 bias mapped to 4H index. Uses PRIOR daily bar (no lookahead),
+    matching Pine's request.security(..., close[1])."""
     ts = df_4h["timestamp"]
     df_d = resample(df_4h.set_index("timestamp").reset_index(), "1D")
     df_d["ema50"] = ema(df_d["close"], 50)
     df_d["bias"] = np.where(df_d["close"] > df_d["ema50"], 1,
                    np.where(df_d["close"] < df_d["ema50"], -1, 0))
-    bias_d = df_d.set_index("timestamp")["bias"].reindex(ts).ffill().values
+    # Shift by 1 day to use PRIOR daily close/ema50 — matches Pine's [1] indexing
+    df_d["bias_prev"] = df_d["bias"].shift(1)
+    bias_d = df_d.set_index("timestamp")["bias_prev"].reindex(ts).ffill().values
     return bias_d
 
 
