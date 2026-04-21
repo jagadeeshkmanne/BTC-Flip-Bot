@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """
-bot.py — Structure Break + SL-Flip live bot (Daily Pivots + DD-Adaptive Risk).
+bot.py — Structure Break + SL-Flip live bot (1h Execution + 1d Bias).
 
-Runs every 5 min via cron. Fetches daily candles, computes pivot structure,
-manages position (entry + TP ladder + software SL via live price + SL-flip).
+Runs every 5 min via cron. Fetches 1h candles (execution) + 1d candles
+(bias), computes pivot structure on 1h, manages position (entry + TP
+ladder + software SL via live price + SL-flip).
 
 Architecture:
   core.py  — Strategy logic (pivots, TP ladder, DD-adaptive risk)
   bot.py   — Exchange I/O + position state + intra-cron SL + flip exec
 
-SL-flip rule (added in V2b): when position closes via SL BEFORE TP1 AND
+SL-flip rule (V2b): when position closes via SL BEFORE TP1 AND
 daily EMA50 bias is now on the opposite side, immediately open the
 flipped position. Bias gate prevents ping-ponging in chop.
 
-Signal evaluation runs at each 5-min tick against the last CLOSED daily bar.
-Live price checks for SL/TP/trail happen every tick (5-min reaction time).
+Signal evaluation at each 5-min tick against the last CLOSED 1h bar.
+Bias (EMA50) computed on 1d bars and mapped to 1h (prior day's bias).
+
+PAIR: BNBUSDT (switched from BTCUSDT based on TV 1h 2025 backtest +168%).
+NOTE: validated over 15mo bull only, not full 6y history.
 """
 from __future__ import annotations
 import os, sys, json, time, hmac, hashlib, logging, argparse
@@ -55,7 +59,7 @@ ap.add_argument("--dry", action="store_true", help="Log signals only")
 ARGS, _ = ap.parse_known_args()
 ENV = ARGS.env
 
-PAIR = "BTCUSDT"
+PAIR = "BNBUSDT"
 LEV = int(LEVERAGE)
 if ENV == "testnet":
     API_KEY = os.environ.get("TESTNET_API_KEY", "")
@@ -195,18 +199,30 @@ def main():
     info = client.exchange_info(PAIR)
     if not info: log.error("No exchange info"); return
 
-    # Fetch daily klines (500 bars = ~500 days of history for pivots/EMA50)
-    df_1d_raw = client.klines(PAIR, interval="1d", limit=500)
-    if df_1d_raw is None or len(df_1d_raw) < 100:
-        log.error("Not enough daily klines"); return
+    # Fetch 1h klines for execution (pivots, RSI, swing SL, ATR all on 1h)
+    df_1h_raw = client.klines(PAIR, interval="1h", limit=1500)
+    if df_1h_raw is None or len(df_1h_raw) < 100:
+        log.error("Not enough 1h klines"); return
 
-    df_1d = build_signals(df_1d_raw)
-    bias_d = build_htf(df_1d_raw)
+    # Fetch 1d klines for DAILY EMA50 BIAS (matches Pine's request.security("1D"))
+    df_1d_raw = client.klines(PAIR, interval="1d", limit=100)
+    if df_1d_raw is None or len(df_1d_raw) < 60:
+        log.error("Not enough 1d klines for bias"); return
 
-    # Last CLOSED daily bar
-    last_idx = len(df_1d) - 2
-    last = df_1d.iloc[last_idx]
-    sig = evaluate_signal(df_1d, last_idx, bias_d[last_idx])
+    df_1h = build_signals(df_1h_raw)
+    bias_daily = build_htf(df_1d_raw)  # one bias entry per daily bar
+
+    # Map daily bias to each 1h bar (prior day's bias applies today)
+    df_1d_raw = df_1d_raw.copy()
+    df_1d_raw["date_day"] = pd.to_datetime(df_1d_raw["timestamp"]).dt.normalize()
+    bias_by_day = dict(zip(df_1d_raw["date_day"], bias_daily))
+    df_1h["date_day"] = pd.to_datetime(df_1h["timestamp"]).dt.normalize()
+    df_1h["bias_d"] = df_1h["date_day"].map(bias_by_day).fillna(0).astype(int)
+
+    # Last CLOSED 1h bar
+    last_idx = len(df_1h) - 2
+    last = df_1h.iloc[last_idx]
+    sig = evaluate_signal(df_1h, last_idx, int(last["bias_d"]))
     close_price = sig.price
 
     # Live price (for intra-bar SL/TP checks)
@@ -226,7 +242,7 @@ def main():
 
     # Hard DD halt
     if dd_pct <= -DD_HALT_PCT and state.get("halt_until_time", 0) < now_ts:
-        state["halt_until_time"] = now_ts + DD_HALT_BARS * 24 * 3600
+        state["halt_until_time"] = now_ts + DD_HALT_BARS * 3600  # 1h bar = 3600s
         state["peak_equity"] = balance
         log.warning(f"  DD HALT: {dd_pct*100:+.1f}% — halted 7 days")
 
@@ -289,7 +305,8 @@ def main():
         # ── FLAT: look for entry ──
         status["state"] = "FLAT"
 
-        cd_block = max(0, state.get("last_exit_time", 0) + GENERIC_CD_BARS * 24 * 3600 - now_ts)
+        # 1h bar = 3600s (was 24*3600 for 1d TF)
+        cd_block = max(0, state.get("last_exit_time", 0) + GENERIC_CD_BARS * 3600 - now_ts)
 
         if halted:
             log.info(f"  HALTED {(state['halt_until_time']-now_ts)//60}min remaining")
@@ -438,7 +455,7 @@ def main():
                 # ── SL-FLIP (bias-gated, V2b) ──
                 # Flip ONLY if: SL exit AND TP1 never hit AND daily bias now opposite
                 if reason == "SL" and not tp1_done and not halted:
-                    current_bias = int(bias_d[last_idx]) if not pd.isna(bias_d[last_idx]) else 0
+                    current_bias = int(last["bias_d"]) if not pd.isna(last["bias_d"]) else 0
                     want_flip_short = (side == "LONG"  and current_bias == -1)
                     want_flip_long  = (side == "SHORT" and current_bias ==  1)
 

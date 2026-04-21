@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>BTC Swing Bot</title>
+<title>BNB Swing Bot</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
@@ -65,11 +65,11 @@ th:first-child,td:first-child{text-align:left}
 <body>
 
 <div class="hero">
-  <div class="brand">BTC Swing Bot <span class="v">V12</span>
+  <div class="brand">BNB Swing Bot <span class="v">1h</span>
     <span class="badge b-flat" id="stateBadge">FLAT</span>
   </div>
   <div class="live-price">
-    <span class="sym">BTCUSDT</span>
+    <span class="sym">BNBUSDT</span>
     <span class="px" id="price">--</span>
     <span class="badge b-live" id="wsStatus">live</span>
   </div>
@@ -85,7 +85,7 @@ th:first-child,td:first-child{text-align:left}
   <!-- LEFT -->
   <div>
     <div class="panel">
-      <div class="panel-hdr"><h2>BTC/USDT 1H</h2><span style="color:#7d8590;font-size:10px" id="updated">--</span></div>
+      <div class="panel-hdr"><h2>BNB/USDT 1H</h2><span style="color:#7d8590;font-size:10px" id="updated">--</span></div>
       <div id="priceChart"></div>
     </div>
 
@@ -170,7 +170,7 @@ th:first-child,td:first-child{text-align:left}
     <div class="panel">
       <div class="panel-hdr"><h2>Strategy</h2></div>
       <div class="panel-body" style="font-size:11px;color:#9ca3af;line-height:1.6">
-        <div><b style="color:#e6edf3">TF:</b> Daily (1D)</div>
+        <div><b style="color:#e6edf3">TF:</b> 1h Exec / 1d Bias</div>
         <div><b style="color:#e6edf3">Entry:</b> Pivot HH+HL (long) / LH+LL (short) + close breaks pivot + Daily EMA50 bias + RSI>50/<50</div>
         <div><b style="color:#e6edf3">SL:</b> 5-bar swing, capped 2.5%</div>
         <div><b style="color:#e6edf3">TP ladder:</b> 50% @ 3R (SL→BE+0.75%) + 25% @ 4R + 25% runner 2.5×ATR trail</div>
@@ -224,7 +224,7 @@ function renderConds(el, defs, data) {
 
 async function loadKlines() {
   try {
-    const r = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=500');
+    const r = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BNBUSDT&interval=1h&limit=500');
     const data = await r.json();
     candleData = data.map(k => ({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
     candleSeries.setData(candleData);

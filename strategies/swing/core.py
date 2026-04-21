@@ -1,11 +1,13 @@
 """
-core.py — Structure Break + SL-Flip Strategy (Daily Pivots + DD-Adaptive Risk)
+core.py — Structure Break + SL-Flip Strategy (1h Exec + 1d Bias)
 
 Architecture:
-  Daily (1D) execution timeframe
-  Daily EMA50 bias filter (prior-day close > EMA50 = bull, no lookahead)
-  Daily RSI(14) confirmation (> 50 bull / < 50 bear)
-  Pivot-based structure (HH+HL longs, LL+LH shorts) + close breaks latest pivot
+  1h execution timeframe (bot.py fetches 1h klines and evaluates on last
+  CLOSED 1h bar at each 5-min tick)
+  Daily EMA50 bias filter (1d data fetched separately, prior-day close
+  mapped to each 1h bar — matches Pine's request.security("1D") on 1h chart)
+  RSI(14) on execution TF (1h) confirmation (> 50 bull / < 50 bear)
+  Pivot-based structure on 1h (HH+HL longs, LL+LH shorts) + close breaks latest pivot
 
   SL: 5-bar swing low/high + 0.1% buffer, capped at 2.5%
   TP ladder: TP1 50% @ 3R -> SL to BE+0.75%; TP2 25% @ 4R; runner 25% with 2.5x ATR trail
