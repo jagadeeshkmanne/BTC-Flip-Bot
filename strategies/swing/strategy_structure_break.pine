@@ -1,32 +1,37 @@
 //@version=6
 // ─────────────────────────────────────────────────────────────────────
-// BTC Swing Bot — Structure Break Strategy (Daily)
+// BTC Swing Bot — Structure Break + SL-Flip (Daily)
 //
-// Final strategy after iterating — production on 1D timeframe.
+// Final strategy (promoted from V2b after iteration). Production on 1D.
 //
-// Logic:
+// Core V1 logic:
 //   - Daily EMA50 bias filter (prior-bar close, no lookahead)
 //   - Daily RSI(14) > 50 for longs, < 50 for shorts
-//   - Pivot-based structure: HH+HL pivots for longs, LH+LL for shorts
+//   - Pivot-based structure: HH+HL for longs, LH+LL for shorts
 //   - Close must break latest pivot (breakout confirmation)
 //   - SL: 5-bar swing ± 0.1% buffer, capped at 2.5%
 //   - TP ladder: TP1 50%@3R (SL→BE+0.75%), TP2 25%@4R, Runner 25% ATR-trail
 //   - DD-adaptive risk: ddFactor = max(0.5, 1 + drawdownPct)
 //   - Hard DD halt: 15% → halt 7 days
-//   - Same-bar flip on opposite signal
+//
+// V2b addition — SL-FLIP (bias-gated):
+//   When a breakout fails (SL hits BEFORE TP1), flip to the OPPOSITE side
+//   BUT ONLY if the daily EMA50 bias now supports that direction.
+//   - Long SL → flip short ONLY if daily is bear
+//   - Short SL → flip long ONLY if daily is bull
+//   A failed breakout + bias flip is a stronger reversal signal than
+//   either alone, and gets us in earlier on confirmed reversals.
 //
 // TradingView test (Sep 2019 → Apr 2026, 6.6y, 3% risk, 2× lev):
-//   +821% | 34% DD | PF 2.79 | 45 trades | 55.6% WR | Calmar ~1.17
+//   +1,579% | 30.7% DD | PF 3.31 | 39 trades | 53.9% WR | Calmar ~1.72
 //
-// Config locked after iteration:
-//   - pivotLen=3 (2 destroys edge)
-//   - TP1=3R (vs 2R adds avg R per winner)
-//   - BE buffer 0.5% (vs 0.1% locks more profit at BE stop)
+// vs V1 (no flip): +821% | 34% DD | PF 2.79 | Calmar 1.18
+// Flip nearly doubles net with lower drawdown.
 // ─────────────────────────────────────────────────────────────────────
 
 leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5)
 
-strategy("BTC Swing Bot - Structure Break (Daily)", overlay=true, initial_capital=5000,
+strategy("BTC Swing Bot - Structure Break + SL-Flip (Daily)", overlay=true, initial_capital=5000,
      default_qty_type=strategy.percent_of_equity, default_qty_value=95,
      pyramiding=0, calc_on_order_fills=false, calc_on_every_tick=false,
      process_orders_on_close=true, commission_type=strategy.commission.percent,
@@ -79,7 +84,7 @@ dailyBear  = dailyClose < dailyEma50
 rsi   = ta.rsi(close, rsiPeriod)
 atr14 = ta.atr(14)
 
-// ─── PIVOT STRUCTURE (V5 — unchanged) ───
+// ─── Pivot structure ───
 pivHi = ta.pivothigh(high, pivotLen, pivotLen)
 pivLo = ta.pivotlow(low,  pivotLen, pivotLen)
 
@@ -140,14 +145,11 @@ currentEquity = strategy.equity
 peakEquity   := math.max(peakEquity, currentEquity)
 drawdownPct   = (currentEquity - peakEquity) / peakEquity  // <= 0
 
-// Hard DD halt (separate from adaptive scaling)
 if drawdownPct <= -ddHaltPct and strategy.position_size == 0
     haltUntilBar := bar_index + ddHaltBars
     peakEquity   := currentEquity
 
-// ─── DD-ADAPTIVE RISK ───
-// At 0% DD: ddFactor = 1.0 (full risk)
-// At -10% DD: ddFactor = 0.9, at -30% DD: 0.7, at -50% DD: 0.5 (floor)
+// ─── DD-adaptive risk ───
 ddFactor = useAdaptiveRisk ? math.max(riskFloor, 1 + drawdownPct) : 1.0
 effRisk = riskPct * ddFactor
 
@@ -161,8 +163,7 @@ qtyCap      = (currentEquity * 0.95 * leverageInput) / close
 qtyLong     = math.min(qtyRiskL, qtyCap)
 qtyShort    = math.min(qtyRiskS, qtyCap)
 
-// ─── Entries (no position_size==0 check — Pine's strategy.entry
-//            auto-closes opposite direction and opens new on SAME bar) ───
+// ─── Entries ───
 if canGoLong and strategy.position_size <= 0 and qtyLong > 0
     strategy.entry("L", strategy.long, qty=qtyLong)
     entryRef  := close
@@ -219,21 +220,53 @@ if strategy.position_size < 0 and not na(entryRef)
 
     strategy.exit("xS", from_entry="S", stop=stopRef)
 
-// ─── Opposite signal flip ───
-// strategy.entry auto-closes opposite direction on same bar, so no explicit
-// close_all needed. Entry conditions above (position_size <= 0 for long,
-// >= 0 for short) allow firing while still in an opposite position.
+// ─── SL-flip (bias-gated) ───
+// Track the side we WERE in, so when position closes before TP1 we know
+// which direction to flip to. Flip only fires if daily bias agrees.
+var int  preSide = 0
+var bool preTp1  = false
+if strategy.position_size > 0
+    preSide := 1
+    preTp1  := tp1Done
+else if strategy.position_size < 0
+    preSide := -1
+    preTp1  := tp1Done
+
+failedBreakout = strategy.position_size == 0 and strategy.position_size[1] != 0 and not preTp1
+flipToShort = failedBreakout and preSide == 1  and dailyBear
+flipToLong  = failedBreakout and preSide == -1 and dailyBull
+
+if flipToShort and qtyShort > 0 and not isHalted
+    strategy.entry("FS", strategy.short, qty=qtyShort)
+    entryRef  := close
+    stopRef   := stopShort
+    slDistRef := slDistShort
+    tp1Done   := false
+    tp2Done   := false
+
+if flipToLong and qtyLong > 0 and not isHalted
+    strategy.entry("FL", strategy.long, qty=qtyLong)
+    entryRef  := close
+    stopRef   := stopLong
+    slDistRef := slDistLong
+    tp1Done   := false
+    tp2Done   := false
 
 // ─── Track exits ───
 if strategy.position_size == 0 and strategy.position_size[1] != 0
     lastExitBar := bar_index
-    entryRef := na
+    if not flipToShort and not flipToLong
+        entryRef := na
+    preSide := 0
+    preTp1 := false
 
 // ─── Visuals ───
 plot(showEma50 ? dailyEma50 : na, "Daily EMA50", color=color.new(color.yellow, 40), linewidth=2)
 
 plotshape(longSignal,  "Long",  shape.triangleup,   location.belowbar, color.green, size=size.small)
 plotshape(shortSignal, "Short", shape.triangledown, location.abovebar, color.red,   size=size.small)
+plotshape(flipToLong,  "FlipL", shape.circle,       location.belowbar, color.lime,  size=size.small)
+plotshape(flipToShort, "FlipS", shape.circle,       location.abovebar, color.orange,size=size.small)
 
 if barstate.islast and wrongTf
     var table tfWarn = table.new(position.bottom_center, 1, 1, border_width=2, border_color=color.red)
@@ -246,7 +279,7 @@ bgcolor((not cleanView and isHalted) ? color.new(color.red, 85) : color(na), tit
 // Dashboard
 if barstate.islast and not cleanView
     var table dash = table.new(position.top_right, 2, 12, border_width=1)
-    table.cell(dash, 0, 0, "Structure Break", bgcolor=color.gray, text_color=color.white)
+    table.cell(dash, 0, 0, "Structure Break + Flip", bgcolor=color.gray, text_color=color.white)
     table.cell(dash, 1, 0, str.tostring(leverageInput, "#.#") + "× LEV", bgcolor=color.teal, text_color=color.white)
     table.cell(dash, 0, 1, "Daily EMA50")
     table.cell(dash, 1, 1, dailyBull ? "BULL ✓" : "BEAR", text_color=dailyBull ? color.green : color.red)

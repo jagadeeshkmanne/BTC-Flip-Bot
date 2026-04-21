@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
-bot.py — Structure Break live bot (Daily Pivots + DD-Adaptive Risk).
+bot.py — Structure Break + SL-Flip live bot (Daily Pivots + DD-Adaptive Risk).
 
 Runs every 5 min via cron. Fetches daily candles, computes pivot structure,
-manages position (entry + TP ladder + software SL via live price).
+manages position (entry + TP ladder + software SL via live price + SL-flip).
 
 Architecture:
   core.py  — Strategy logic (pivots, TP ladder, DD-adaptive risk)
-  bot.py   — Exchange I/O + position state + intra-cron SL check via live price
+  bot.py   — Exchange I/O + position state + intra-cron SL + flip exec
+
+SL-flip rule (added in V2b): when position closes via SL BEFORE TP1 AND
+daily EMA50 bias is now on the opposite side, immediately open the
+flipped position. Bias gate prevents ping-ponging in chop.
 
 Signal evaluation runs at each 5-min tick against the last CLOSED daily bar.
 Live price checks for SL/TP/trail happen every tick (5-min reaction time).
@@ -184,7 +188,7 @@ def round_qty(q, step):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"Structure Break Bot — env={ENV} dry={ARGS.dry}")
+    log.info(f"Structure Break + SL-Flip Bot — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
@@ -278,7 +282,7 @@ def main():
         "halted": halted, "position": pos_dict,
         "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "Structure Break (Daily Pivots)",
+        "strategy": "Structure Break + SL-Flip (Daily)",
     }
 
     if pos_dict is None:
@@ -427,8 +431,49 @@ def main():
 
                 state["last_exit_time"] = now_ts
                 state["position"] = None
+                pos_dict = None
                 log.info(f"  EXIT {side} via {reason} @${fill:.2f} PnL {pnl:+.2f}%")
                 status["just_closed"] = trade
+
+                # ── SL-FLIP (bias-gated, V2b) ──
+                # Flip ONLY if: SL exit AND TP1 never hit AND daily bias now opposite
+                if reason == "SL" and not tp1_done and not halted:
+                    current_bias = int(bias_d[last_idx]) if not pd.isna(bias_d[last_idx]) else 0
+                    want_flip_short = (side == "LONG"  and current_bias == -1)
+                    want_flip_long  = (side == "SHORT" and current_bias ==  1)
+
+                    if want_flip_short or want_flip_long:
+                        flip_side = "SHORT" if want_flip_short else "LONG"
+                        swing_low_v  = float(last.get("swing_low",  fill * 0.975))
+                        swing_high_v = float(last.get("swing_high", fill * 1.025))
+                        flip_sl = calc_sl(flip_side, fill, swing_low_v, swing_high_v)
+                        flip_qty = calc_qty(balance, fill, flip_sl, dd_pct)
+                        flip_qty = round_qty(flip_qty, info["step"])
+
+                        if flip_qty < info["min_qty"]:
+                            log.warning(f"  FLIP skipped: qty {flip_qty} below min")
+                        else:
+                            flip_api_side = "SELL" if flip_side == "SHORT" else "BUY"
+                            fresp = client.market_order(PAIR, flip_api_side, flip_qty)
+                            if fresp:
+                                flip_fill = float(fresp.get("avgPrice", fill)) or fill
+                                flip_sl = calc_sl(flip_side, flip_fill, swing_low_v, swing_high_v)
+                                pos_dict = {
+                                    "side": flip_side, "entry_price": flip_fill,
+                                    "entry_time": datetime.now(timezone.utc).isoformat(),
+                                    "qty": flip_qty, "orig_qty": flip_qty,
+                                    "sl_price": flip_sl, "init_sl_dist": abs(flip_fill - flip_sl),
+                                    "tp1_done": False, "tp2_done": False,
+                                    "is_flip": True,
+                                }
+                                state["position"] = pos_dict
+                                state["last_exit_time"] = 0  # flip bypasses cooldown
+                                sl_pct = abs(flip_sl - flip_fill) / flip_fill * 100
+                                log.info(f"  FLIP → {flip_side} {flip_qty}@${flip_fill:.2f} "
+                                         f"SL=${flip_sl:.2f} ({sl_pct:.1f}%) [bias={current_bias}]")
+                                status["flipped_to"] = flip_side
+                    else:
+                        log.info(f"  No flip: bias={current_bias} side={side} (gate failed)")
 
     save_state(state)
     write_status(status)

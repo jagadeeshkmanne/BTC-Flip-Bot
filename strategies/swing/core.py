@@ -1,5 +1,5 @@
 """
-core.py — Structure Break Strategy (Daily Pivots + DD-Adaptive Risk)
+core.py — Structure Break + SL-Flip Strategy (Daily Pivots + DD-Adaptive Risk)
 
 Architecture:
   Daily (1D) execution timeframe
@@ -12,8 +12,12 @@ Architecture:
   DD-adaptive risk: effective risk = base_risk * max(0.5, 1 + drawdownPct)
   Hard DD halt: 15% -> halt 7 days
 
+  SL-FLIP (bias-gated, V2b): when SL hits BEFORE TP1 AND daily bias is
+  now on the opposite side, immediately flip to the other direction with
+  a fresh swing-based SL. Flip execution lives in bot.py.
+
 Backtest (TradingView, 1D BTCUSDT, Sep 2019 -> Apr 2026, 2x lev, 3% risk):
-  +817% abs | 34% DD | PF 2.79 | 45 trades | Calmar ~1.17
+  +1,579% abs | 30.7% DD | PF 3.31 | 39 trades | 53.9% WR | Calmar ~1.72
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
