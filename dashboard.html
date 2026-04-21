@@ -235,7 +235,7 @@ async function loadKlines() {
 }
 
 function startWS() {
-  const ws = new WebSocket('wss://fstream.binance.com/ws/btcusdt@kline_1h');
+  const ws = new WebSocket('wss://fstream.binance.com/ws/bnbusdt@kline_1h');
   ws.onopen = ()=>{$('wsStatus').textContent='live';$('wsStatus').className='badge b-live'};
   ws.onclose = ()=>{$('wsStatus').textContent='...';setTimeout(startWS,3000)};
   ws.onmessage = msg => {
