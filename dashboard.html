@@ -99,13 +99,13 @@ th:first-child,td:first-child{text-align:left}
           <div class="pos-stat"><div class="l">Size</div><div class="v" id="pQty">--</div></div>
         </div>
         <div class="bar-wrap">
-          <div class="lbl"><span>Progress to TP1 (+3R)</span><span id="tpLbl">--</span></div>
+          <div class="lbl"><span>Progress to TP (prev_mid)</span><span id="tpLbl">--</span></div>
           <div class="bar"><div id="tpBar" style="width:0%;background:linear-gradient(90deg,#3fb950,#79c0ff)"></div></div>
         </div>
         <div style="display:flex;gap:10px;font-size:11px;color:#7d8590;margin-top:6px">
-          <span>TP1: <span id="tp1Status">pending</span></span>
-          <span>TP2: <span id="tp2Status">pending</span></span>
-          <span>Pyramid: <span id="pyrStatus">pending</span></span>
+          <span>Legs: <span id="tp1Status">1/2</span></span>
+          <span>BE: <span id="tp2Status">off</span></span>
+          <span>Cycle: <span id="pyrStatus">open</span></span>
         </div>
       </div>
     </div>
@@ -168,15 +168,17 @@ th:first-child,td:first-child{text-align:left}
     </div>
 
     <div class="panel">
-      <div class="panel-hdr"><h2>Strategy</h2></div>
+      <div class="panel-hdr"><h2>Strategy — S/R DCA</h2></div>
       <div class="panel-body" style="font-size:11px;color:#9ca3af;line-height:1.6">
         <div><b style="color:#e6edf3">TF:</b> 5m Exec / 1d Bias + prev-day H/L</div>
-        <div><b style="color:#e6edf3">Entry:</b> Pivot HH+HL (long) / LH+LL (short) + close breaks pivot + Daily EMA50 bias + RSI>50/<50</div>
-        <div><b style="color:#e6edf3">SL:</b> 5-bar swing, capped 2.5%</div>
-        <div><b style="color:#e6edf3">TP ladder:</b> 50% @ 3R (SL→BE+0.75%) + 25% @ 4R + 25% runner 2.5×ATR trail</div>
-        <div><b style="color:#e6edf3">DD-adaptive:</b> risk × max(0.5, 1+DD%)</div>
-        <div><b style="color:#e6edf3">Halt:</b> 15% DD → 7 days pause</div>
-        <div><b style="color:#e6edf3">Flip:</b> on opposite signal (same-bar)</div>
+        <div><b style="color:#e6edf3">Entry:</b> Touch prev-day L (long) / H (short) + daily bias + range/volume/RSI filters</div>
+        <div><b style="color:#e6edf3">DCA:</b> L2 at worst_entry × (1 - 1%) (2 levels total)</div>
+        <div><b style="color:#e6edf3">TP:</b> prior-day midpoint (prev_H + prev_L)/2</div>
+        <div><b style="color:#e6edf3">SL:</b> 2% below worst entry (dynamic)</div>
+        <div><b style="color:#e6edf3">BE stop:</b> +1% favorable → SL ratchets to entry + 0.5%</div>
+        <div><b style="color:#e6edf3">Force flatten:</b> UTC 23:00 (EOD)</div>
+        <div><b style="color:#e6edf3">Cap:</b> 1 cycle per UTC day</div>
+        <div><b style="color:#e6edf3">Risk:</b> 6% total per cycle (2× leverage)</div>
       </div>
     </div>
   </div>
@@ -196,20 +198,21 @@ function emaCalc(values, period) {
   return out;
 }
 
-// Long/Short condition definitions with current value extractors
+// Long/Short condition definitions — S/R DCA Day bot (5m + 1d bias)
 function isT(v) { return v === true || v === 'True' || v === 'true'; }
-// Structure Break (Daily Pivots)
 const LONG_CONDS = [
-  {key:'Daily EMA50', need:'BULL',      check: d => isT(d.conditions?.['Daily EMA50 Bull']), val: d => isT(d.conditions?.['Daily EMA50 Bull'])?'BULL':'BEAR'},
-  {key:'Daily RSI',   need:'> 50',      check: d => isT(d.conditions?.['Daily RSI >50']),    val: d => (d.rsi_1d||d.rsi_4h)?.toFixed(1)||'--'},
-  {key:'HH + HL',     need:'YES',       check: d => isT(d.conditions?.['HH + HL (pivots)']), val: d => isT(d.conditions?.['HH + HL (pivots)'])?'YES':'NO'},
-  {key:'Break > PivH',need:'YES',       check: d => isT(d.conditions?.['Break above pivot high']), val: d => d.ph_last?('$'+Number(d.ph_last).toFixed(0)):'--'},
+  {key:'Daily bias',    need:'BULL',   check: d => isT(d.conditions?.['Daily bias BULL']),    val: d => d.bias_d===1?'BULL':(d.bias_d===-1?'BEAR':'—')},
+  {key:'RSI > 25',      need:'OK',     check: d => isT(d.conditions?.['RSI long ok (>25)']),  val: d => d.rsi?.toFixed(1) || '--'},
+  {key:'Range OK',      need:'1.5–10%',check: d => isT(d.conditions?.['Range OK (1.5–10%)']), val: d => (d.prev_range_pct*100)?.toFixed(2)+'%' || '--'},
+  {key:'Volume ≥ 1.2×', need:'YES',    check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol/d.vol_avg).toFixed(2)+'×' : '--'},
+  {key:'Touch prev_L',  need:'YES',    check: d => isT(d.conditions?.['Touch prev low']),     val: d => d.prev_L ? '$'+Number(d.prev_L).toFixed(0) : '--'},
 ];
 const SHORT_CONDS = [
-  {key:'Daily EMA50', need:'BEAR',      check: d => isT(d.conditions?.['Daily EMA50 Bear']), val: d => isT(d.conditions?.['Daily EMA50 Bear'])?'BEAR':'BULL'},
-  {key:'Daily RSI',   need:'< 50',      check: d => isT(d.conditions?.['Daily RSI <50']),    val: d => (d.rsi_1d||d.rsi_4h)?.toFixed(1)||'--'},
-  {key:'LH + LL',     need:'YES',       check: d => isT(d.conditions?.['LH + LL (pivots)']), val: d => isT(d.conditions?.['LH + LL (pivots)'])?'YES':'NO'},
-  {key:'Break < PivL',need:'YES',       check: d => isT(d.conditions?.['Break below pivot low']), val: d => d.pl_last?('$'+Number(d.pl_last).toFixed(0)):'--'},
+  {key:'Daily bias',    need:'BEAR',   check: d => isT(d.conditions?.['Daily bias BEAR']),    val: d => d.bias_d===-1?'BEAR':(d.bias_d===1?'BULL':'—')},
+  {key:'RSI < 75',      need:'OK',     check: d => isT(d.conditions?.['RSI short ok (<75)']), val: d => d.rsi?.toFixed(1) || '--'},
+  {key:'Range OK',      need:'1.5–10%',check: d => isT(d.conditions?.['Range OK (1.5–10%)']), val: d => (d.prev_range_pct*100)?.toFixed(2)+'%' || '--'},
+  {key:'Volume ≥ 1.2×', need:'YES',    check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol/d.vol_avg).toFixed(2)+'×' : '--'},
+  {key:'Touch prev_H',  need:'YES',    check: d => isT(d.conditions?.['Touch prev high']),    val: d => d.prev_H ? '$'+Number(d.prev_H).toFixed(0) : '--'},
 ];
 
 function renderConds(el, defs, data) {
@@ -274,20 +277,26 @@ async function refresh() {
       $('rpSide').textContent=pos.side;$('rpSide').className='badge '+sc;
       $('pEntry').textContent=fmt$(pos.entry_price);$('rpEntry').textContent=fmt$(pos.entry_price);
       $('pSL').textContent=fmt$(pos.sl_price);$('rpSL').textContent=fmt$(pos.sl_price);
-      $('pQty').textContent=(pos.qty||0).toFixed(4);
-      const px=st.price||pos.entry_price;
-      const pmp=pos.side==='LONG'?(px-pos.entry_price)/pos.entry_price:(pos.entry_price-px)/pos.entry_price;
-      const pnl=pmp*2*100;
+      $('pQty').textContent=(pos.qty_total||pos.qty||0).toFixed(4);
+      const firstEntry=pos.first_entry||pos.entry_price;
+      const px=st.live_price||st.price||firstEntry;
+      const pmp=pos.side==='LONG'?(px-firstEntry)/firstEntry:(firstEntry-px)/firstEntry;
+      const pnl=pmp*2*100;  // × leverage
       $('pPnl').innerHTML=`<span class="${pnl>=0?'pos':'neg'}">${fmtPct(pnl)}</span>`;
       $('rpPnl').innerHTML=`<span class="${pnl>=0?'pos':'neg'}">${fmtPct(pnl)}</span>`;
-      const cr=st.current_r||0;
-      $('rpR').innerHTML=`<span class="${cr>=0?'pos':'neg'}">${cr.toFixed(1)}R</span>`;
-      const tp_pct=Math.min(100,Math.max(0,(cr/3)*100));
-      $('tpBar').style.width=tp_pct+'%';$('tpLbl').textContent=cr.toFixed(1)+'R / 3R';
-      $('rpTpBar').style.width=tp_pct+'%';$('rpTpLbl').textContent=cr.toFixed(1)+'R';
-      $('tp1Status').innerHTML=pos.partial_taken?'<span class="pos">DONE</span>':'waiting';
-      $('tp2Status').innerHTML=pos.partial_taken2?'<span class="pos">DONE</span>':'waiting';
-      $('pyrStatus').innerHTML=pos.pyramided?'<span class="pos">ADDED</span>':'waiting';
+      const favPct=(st.fav_pct||(pmp*100));
+      $('rpR').innerHTML=`<span class="${favPct>=0?'pos':'neg'}">${favPct.toFixed(2)}%</span>`;
+      // Progress toward prev_mid TP (absolute distance)
+      const prevMid=st.indicators?.prev_mid || 0;
+      const totalDist=Math.abs(prevMid-firstEntry);
+      const curDist=Math.abs(px-firstEntry);
+      const tp_pct=totalDist>0?Math.min(100,Math.max(0,(curDist/totalDist)*100)):0;
+      $('tpBar').style.width=tp_pct+'%';$('tpLbl').textContent=favPct.toFixed(2)+'% → prev_mid';
+      $('rpTpBar').style.width=tp_pct+'%';$('rpTpLbl').textContent=favPct.toFixed(2)+'%';
+      const nLegs=(pos.entries||[{px:firstEntry}]).length;
+      $('tp1Status').innerHTML=`<span class="pos">${nLegs}/2</span>`;
+      $('tp2Status').innerHTML=pos.be_armed?'<span class="pos">ARMED</span>':'off';
+      $('pyrStatus').innerHTML=`<span class="pos">open</span>`;
     } else {
       $('stateBadge').textContent='FLAT';$('stateBadge').className='badge b-flat';
       $('posPanel').style.display='none';$('rightPos').style.display='none';
