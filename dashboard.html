@@ -170,13 +170,13 @@ th:first-child,td:first-child{text-align:left}
     <div class="panel">
       <div class="panel-hdr"><h2>Strategy — S/R DCA</h2></div>
       <div class="panel-body" style="font-size:11px;color:#9ca3af;line-height:1.6">
-        <div><b style="color:#e6edf3">TF:</b> 5m Exec / 1d Bias + prev-day H/L</div>
-        <div><b style="color:#e6edf3">Entry:</b> Touch prev-day L (long) / H (short) + daily bias + range/volume/RSI filters</div>
+        <div><b style="color:#e6edf3">TF:</b> 5m Exec / 1h EMA15 Bias + prev-day H/L</div>
+        <div><b style="color:#e6edf3">Entry:</b> Touch prev-day L (long) / H (short) + 1h bias + volume + RSI filters</div>
+        <div><b style="color:#e6edf3">S/R zone:</b> 0.1% around prev_H / prev_L</div>
         <div><b style="color:#e6edf3">DCA:</b> L2 at worst_entry × (1 - 1%) (2 levels total)</div>
         <div><b style="color:#e6edf3">TP:</b> prior-day midpoint (prev_H + prev_L)/2</div>
         <div><b style="color:#e6edf3">SL:</b> 2% below worst entry (dynamic)</div>
-        <div><b style="color:#e6edf3">BE stop:</b> +1% favorable → SL ratchets to entry + 0.5%</div>
-        <div><b style="color:#e6edf3">Force flatten:</b> UTC 23:00 (EOD)</div>
+        <div><b style="color:#e6edf3">Force flatten:</b> UTC 20:00 (EOD + no new entries)</div>
         <div><b style="color:#e6edf3">Cap:</b> 1 cycle per UTC day</div>
         <div><b style="color:#e6edf3">Risk:</b> 6% total per cycle (2× leverage)</div>
       </div>
