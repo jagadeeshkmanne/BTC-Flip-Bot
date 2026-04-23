@@ -1,14 +1,17 @@
 """
-core.py — S/R DCA Day Strategy (5m execution + 1d bias)
+core.py — S/R DCA Day Strategy (5m execution + 1h bias)
 
 Python port of strategy_sr_dca_5m.pine:
-  - Entry: prev_day's L/H touch + daily bias + filters
+  - Entry: prev_day's L/H touch + 1h EMA20 bias + filters
   - DCA: 1% below L1 (2 levels default)
   - TP: prev_day midpoint
   - SL: 2% below worst entry
-  - BE-stop: after +1% favorable, SL → entry + 0.5%
+  - BE-stop: after +1% favorable, SL → entry + 0.5% (default OFF)
   - EOD flatten at UTC 23:00
   - Max 1 cycle per UTC day
+
+1h bias is resampled from 5m data internally — bot.py keeps its existing
+signature (df_5m + df_1d for prev H/L, 1h resampled from 5m for bias).
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -41,7 +44,7 @@ RSI_HIGH       = 75           # skip short if RSI > 75
 
 RSI_PERIOD     = 14
 VOL_AVG_LEN    = 20
-EMA_BIAS_LEN   = 50
+EMA_BIAS_LEN   = 20           # 1h EMA period — faster than V1's daily EMA50
 
 Side = Literal["LONG", "SHORT"]
 
@@ -63,7 +66,11 @@ def ema(s: pd.Series, n: int) -> pd.Series:
 
 # ═════ Features ═════
 def build_features(df_5m: pd.DataFrame, df_1d: pd.DataFrame) -> pd.DataFrame:
-    """Add RSI, volume SMA, and map prev-day H/L/mid/bias to each 5m bar."""
+    """Add RSI, volume SMA, 1h EMA20 bias, and prev-day H/L/mid to each 5m bar.
+
+    1h bias is resampled from the 5m data (no extra fetch needed).
+    Prev-day H/L/mid still come from df_1d.
+    """
     df = df_5m.copy().reset_index(drop=True)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["date"] = df["timestamp"].dt.normalize()
@@ -72,25 +79,36 @@ def build_features(df_5m: pd.DataFrame, df_1d: pd.DataFrame) -> pd.DataFrame:
     df["rsi"] = rsi_series(df["close"], RSI_PERIOD)
     df["vol_avg"] = df["volume"].rolling(VOL_AVG_LEN).mean()
 
-    # Build daily bias + prev H/L
+    # ─── 1h EMA20 bias (resampled from 5m, label=left so index = bar start) ───
+    d5 = df.set_index("timestamp").sort_index()
+    h1 = d5["close"].resample("1h").last().dropna().to_frame()
+    h1["ema"] = ema(h1["close"], EMA_BIAS_LEN)
+    h1["bias"] = np.where(h1["close"] > h1["ema"],  1,
+                  np.where(h1["close"] < h1["ema"], -1, 0))
+    # Pine's close[1] semantic: at 5m bar T we look at PRIOR closed 1h bar's close.
+    # With label=left, the 1h bar at 13:00 contains 13:00–14:00 data (closes at 14:00).
+    # For a 5m bar at 14:15, the prior closed 1h bar is the one at 13:00.
+    # Map: for 5m bar T → look up h1 at (floor(T,'1H') - 1h).
+    bias_h_map = h1["bias"].to_dict()
+
+    def prior_hour_bias(ts):
+        prior = ts.floor("1h") - pd.Timedelta(hours=1)
+        return bias_h_map.get(prior, 0)
+
+    df["bias_h"] = df["timestamp"].apply(prior_hour_bias).astype(int)
+
+    # ─── Prev-day H/L/mid (still from daily bars) ───
     d1 = df_1d.copy().reset_index(drop=True)
     d1["timestamp"] = pd.to_datetime(d1["timestamp"])
     d1["date"] = d1["timestamp"].dt.normalize()
-    d1["ema50"] = ema(d1["close"], EMA_BIAS_LEN)
-    d1["bias"] = np.where(d1["close"] > d1["ema50"], 1,
-                  np.where(d1["close"] < d1["ema50"], -1, 0))
-    d1["prev_H"]     = d1["high"].shift(1)
-    d1["prev_L"]     = d1["low"].shift(1)
-    d1["prev_mid"]   = (d1["prev_H"] + d1["prev_L"]) / 2.0
-    d1["bias_prior"] = d1["bias"].shift(1).fillna(0).astype(int)
+    d1["prev_H"]   = d1["high"].shift(1)
+    d1["prev_L"]   = d1["low"].shift(1)
+    d1["prev_mid"] = (d1["prev_H"] + d1["prev_L"]) / 2.0
 
-    # Map daily values onto 5m bars by date
-    bias_map  = dict(zip(d1["date"], d1["bias_prior"]))
     prev_h_map = dict(zip(d1["date"], d1["prev_H"]))
     prev_l_map = dict(zip(d1["date"], d1["prev_L"]))
     prev_m_map = dict(zip(d1["date"], d1["prev_mid"]))
 
-    df["bias_d"]   = df["date"].map(bias_map).fillna(0).astype(int)
     df["prev_H"]   = df["date"].map(prev_h_map)
     df["prev_L"]   = df["date"].map(prev_l_map)
     df["prev_mid"] = df["date"].map(prev_m_map)
@@ -115,7 +133,7 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
     prev_h = row["prev_H"]
     prev_l = row["prev_L"]
     prev_mid = row["prev_mid"]
-    bias = int(row["bias_d"])
+    bias = int(row["bias_h"])   # 1h EMA20 bias (prior closed 1h bar)
     rsi_v = row["rsi"]
     vol = row["volume"]
     vol_avg = row["vol_avg"]
@@ -151,8 +169,8 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
         s.side = "SHORT"
 
     s.conditions = {
-        "Daily bias BULL":    bool(bias == 1),
-        "Daily bias BEAR":    bool(bias == -1),
+        "1h bias BULL":       bool(bias == 1),
+        "1h bias BEAR":       bool(bias == -1),
         "Range OK (1.5–10%)": bool(range_ok),
         "Volume > 1.2× avg":  bool(vol_ok),
         "RSI long ok (>25)":  bool(rsi_ok_long),
@@ -163,7 +181,7 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
     }
     s.raw = {
         "prev_H": float(prev_h), "prev_L": float(prev_l), "prev_mid": float(prev_mid),
-        "bias_d": bias,
+        "bias_h": bias,
         "rsi":    float(rsi_v) if not pd.isna(rsi_v) else None,
         "vol":    float(vol),
         "vol_avg": float(vol_avg) if not pd.isna(vol_avg) else None,

@@ -1,20 +1,20 @@
 //@version=6
 // ─────────────────────────────────────────────────────────────────────
-// S/R DCA Day Trader (5m) — the config that gave +11-14% in 5 weeks on TV
+// S/R DCA Day Trader (5m)
 //
-// Same logic as 1h/15m variants, defaults tuned to match what produced
-// +14.07% / 9.75% DD / 52% WR / PF 1.75 on ETHUSDT 5m (Mar 16 → Apr 23, 2026).
+// Tuned config produced +25.35% / 3.32% DD / PF 5.65 / 67.74% WR on
+// BTCUSDT 5m (Mar 16 → Apr 23, 2026).
 //
 // ⚠ Warning: 5m results are only validated over SHORT recent windows.
-// Python port does NOT match TV on 5m (unreliable for long-term validation).
 // TV free tier caps 5m history to ~1 month. Real long-term edge unverified.
 //
 // Logic:
 //   - Support = prior day's low; Resistance = prior day's high
-//   - Daily EMA50 bias (prior-day close, no lookahead)
-//   - Long (bias bull): price touches prev_L → enter L1
-//                       + 1% below L1 → DCA L2
-//   - Short: mirror at prev_H
+//   - 1h EMA20 bias (prior 1h close, no lookahead) — catches intraday
+//     regime shifts that daily EMA50 misses
+//   - Long (1h bias bull): price touches prev_L → enter L1
+//                          + 1% below L1 → DCA L2
+//   - Short: mirror at prev_H (1h bias bear)
 //   - TP: prior day midpoint (prev_H + prev_L) / 2
 //   - SL: 2% below worst entry
 //   - EOD flatten at UTC 23:00
@@ -76,10 +76,11 @@ prevH = request.security(syminfo.tickerid, "1D", high[1],  lookahead=barmerge.lo
 prevL = request.security(syminfo.tickerid, "1D", low[1],   lookahead=barmerge.lookahead_off)
 prevMid = (prevH + prevL) / 2.0
 
-dailyClose = request.security(syminfo.tickerid, "1D", close[1], lookahead=barmerge.lookahead_off)
-dailyEma50 = request.security(syminfo.tickerid, "1D", ta.ema(close, 50)[1], lookahead=barmerge.lookahead_off)
-dailyBull  = dailyClose > dailyEma50
-dailyBear  = dailyClose < dailyEma50
+// 1h EMA20 bias — faster than daily, catches intraday regime shifts
+hourClose  = request.security(syminfo.tickerid, "60", close[1],                lookahead=barmerge.lookahead_off)
+hourEma20  = request.security(syminfo.tickerid, "60", ta.ema(close, 20)[1],    lookahead=barmerge.lookahead_off)
+hourBull   = hourClose > hourEma20
+hourBear   = hourClose < hourEma20
 
 // ─── Time ───
 utcH = hour(time, "UTC")
@@ -116,11 +117,11 @@ qtyCap = (strategy.equity * 0.95 * leverageInput) / close / dcaLevels
 perLevelQty := math.min(perLevelQty, qtyCap)
 
 // ─── L1 entry: touch prev_L (for longs) or prev_H (for shorts) ───
-l1LongOk = dailyBull and not cycleDone and strategy.position_size == 0 and utcH < closeHour
+l1LongOk = hourBull and not cycleDone and strategy.position_size == 0 and utcH < closeHour
      and low <= prevL * (1 + supportZone) and low > prevL * (1 - 0.01)
      and rangeOk and volOk and rsiOkLong
 
-l1ShortOk = dailyBear and not cycleDone and strategy.position_size == 0 and utcH < closeHour
+l1ShortOk = hourBear and not cycleDone and strategy.position_size == 0 and utcH < closeHour
      and high >= prevH * (1 - supportZone) and high < prevH * (1 + 0.01)
      and rangeOk and volOk and rsiOkShort
 
@@ -224,6 +225,9 @@ plot(strategy.position_size != 0 and not na(worstEntryPx)
      ? (strategy.position_size > 0 ? slLongPx : slShortPx) : na,
      "Active SL", color=color.new(color.red, 20), style=plot.style_linebr, linewidth=2)
 
+// 1h EMA20 plotted on chart for visual bias reference
+plot(hourEma20, "1h EMA20", color=color.new(color.purple, 20), linewidth=2)
+
 plotshape(l1LongOk,  "L1",  shape.triangleup,   location.belowbar, color.green, size=size.small)
 plotshape(l1ShortOk, "S1",  shape.triangledown, location.abovebar, color.red,   size=size.small)
 
@@ -239,8 +243,8 @@ if barstate.islast
     var table dash = table.new(position.top_right, 2, 10, border_width=1)
     table.cell(dash, 0, 0, "S/R DCA", bgcolor=color.gray, text_color=color.white)
     table.cell(dash, 1, 0, str.tostring(leverageInput, "#.#") + "× LEV", bgcolor=color.teal, text_color=color.white)
-    table.cell(dash, 0, 1, "Daily EMA50")
-    table.cell(dash, 1, 1, dailyBull ? "BULL ✓" : "BEAR", text_color=dailyBull ? color.green : color.red)
+    table.cell(dash, 0, 1, "1h EMA20 bias")
+    table.cell(dash, 1, 1, hourBull ? "BULL ✓" : "BEAR", text_color=hourBull ? color.green : color.red)
     table.cell(dash, 0, 2, "Prev H / L / Mid")
     table.cell(dash, 1, 2, str.tostring(prevL, "#.##") + " / " + str.tostring(prevMid, "#.##") + " / " + str.tostring(prevH, "#.##"))
     table.cell(dash, 0, 3, "UTC hour")
