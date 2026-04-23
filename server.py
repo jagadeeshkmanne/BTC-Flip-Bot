@@ -240,7 +240,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
 
     def _is_public(self, path):
         """Public pages: dashboards + data files. No auth needed."""
-        if path in ('/', '/dashboard.html', '/dashboard_day.html', '/dashboard_grid.html', '/dashboard_bb.html'):
+        if path in ('/', '/dashboard.html'):
             return True
         if path.startswith('/data/') or path.startswith('/api/bot/'):
             return True
@@ -262,55 +262,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        # ── Public API endpoints (no auth) ──
-        if path == '/api/status':
-            env = parse_qs(parsed.query).get('env', ['testnet'])[0]
-            status_file = os.path.join(BOT_DIR, 'data', env, 'status.json')
-            if os.path.exists(status_file):
-                try:
-                    with open(status_file) as f:
-                        return self._json_response(json.load(f))
-                except Exception:
-                    return self._json_response({"error": "status read failed"})
-            return self._json_response({"state": "NO_DATA", "env": env})
-
-        if path == '/api/trades':
-            env = parse_qs(parsed.query).get('env', ['testnet'])[0]
-            state_file = os.path.join(BOT_DIR, 'data', env, 'state.json')
-            if os.path.exists(state_file):
-                try:
-                    with open(state_file) as f:
-                        st = json.load(f)
-                    return self._json_response(st.get('trade_log', []))
-                except Exception:
-                    return self._json_response([])
-            return self._json_response([])
-
-        # ── Bot API (public, no auth) ──
-        if path == '/api/bot/state':
-            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'state.json')
-            if os.path.exists(sf):
-                try:
-                    with open(sf) as f: return self._json_response(json.load(f))
-                except: pass
-            return self._json_response({"position": None, "stats": {"total": 0, "wins": 0, "pnl": 0}})
-
-        if path == '/api/bot/status':
-            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'status.json')
-            if os.path.exists(sf):
-                try:
-                    with open(sf) as f: return self._json_response(json.load(f))
-                except: pass
-            return self._json_response({})
-
-        if path == '/api/bot/log':
-            lf = os.path.join(BOT_DIR, 'data', 'testnet', 'bot.log')
-            lines = []
-            if os.path.exists(lf):
-                with open(lf) as f: lines = f.readlines()[-100:]
-            return self._json_response({"lines": [l.strip() for l in lines]})
-
-        # ── Day bot API (separate state files) ──
+        # ── Bot API (public, no auth). Day bot is the only active strategy. ──
         if path == '/api/bot/day/state':
             sf = os.path.join(BOT_DIR, 'data', 'testnet', 'state_day.json')
             if os.path.exists(sf):
