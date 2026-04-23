@@ -26,7 +26,7 @@ RISK_PCT       = 0.06         # 6% total risk per cycle
 DCA_LEVELS     = 2
 DCA_SPACING    = 0.01         # 1% between DCA levels
 SL_BELOW_WORST = 0.02         # 2% below worst entry
-SUPPORT_ZONE   = 0.002        # 0.2% zone around prev H/L
+SUPPORT_ZONE   = 0.001        # 0.1% zone around prev H/L — TV test: same 31 trades, DD 3.32→2.88%, PF 5.65→6.90
 
 CLOSE_HOUR     = 23           # UTC hour to force flatten (EOD reset)
 
