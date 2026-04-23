@@ -85,7 +85,7 @@ th:first-child,td:first-child{text-align:left}
   <!-- LEFT -->
   <div>
     <div class="panel">
-      <div class="panel-hdr"><h2>ETH/USDT 5m</h2><span style="color:#7d8590;font-size:10px" id="updated">--</span></div>
+      <div class="panel-hdr"><h2>BTC/USDT 5m</h2><span style="color:#7d8590;font-size:10px" id="updated">--</span></div>
       <div id="priceChart"></div>
     </div>
 
@@ -250,7 +250,9 @@ async function loadKlines() {
       return ema ? {time: b.time, value: ema} : null;
     }).filter(x => x);
     ema1hSeries.setData(ema1hData);
-    priceChart.timeScale().fitContent();
+    // Show last ~120 bars (10 hours) scrolled to latest — Binance-style default view
+    const totalBars = candleData.length;
+    priceChart.timeScale().setVisibleLogicalRange({from: Math.max(0, totalBars - 120), to: totalBars + 5});
   } catch(e) {}
 }
 
@@ -399,8 +401,8 @@ async function refresh() {
 window.addEventListener('load',()=>{
   priceChart=LightweightCharts.createChart($('priceChart'),{
     layout:{background:{type:'solid',color:'#0a0e13'},textColor:'#9ca3af'},
-    grid:{vertLines:{color:'#1f262e'},horzLines:{color:'#1f262e'}},
-    timeScale:{timeVisible:true,borderColor:'#1f262e'},
+    grid:{vertLines:{visible:false},horzLines:{visible:false}},
+    timeScale:{timeVisible:true,borderColor:'#1f262e',rightOffset:5,barSpacing:8,shiftVisibleRangeOnNewBar:true},
     rightPriceScale:{borderColor:'#1f262e'},crosshair:{mode:1}
   });
   candleSeries=priceChart.addCandlestickSeries({upColor:'#3fb950',downColor:'#f85149',borderUpColor:'#3fb950',borderDownColor:'#f85149',wickUpColor:'#3fb950',wickDownColor:'#f85149'});
