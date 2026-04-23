@@ -37,7 +37,7 @@ RSI_HIGH       = 75           # skip short if RSI > 75
 
 RSI_PERIOD     = 14
 VOL_AVG_LEN    = 20
-EMA_BIAS_LEN   = 20           # 1h EMA period — faster than V1's daily EMA50
+EMA_BIAS_LEN   = 15           # 1h EMA period — TV test: EMA 15 & 20 give identical +27% / PF 10.83 / WR 74%; 15 chosen for faster response
 
 Side = Literal["LONG", "SHORT"]
 

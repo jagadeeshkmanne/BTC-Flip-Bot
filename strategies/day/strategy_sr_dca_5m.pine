@@ -2,8 +2,9 @@
 // ─────────────────────────────────────────────────────────────────────
 // S/R DCA Day Trader (5m)
 //
-// Tuned config produced +25.35% / 3.32% DD / PF 5.65 / 67.74% WR on
+// Tuned config produced +27.07% / 3.22% DD / PF 10.83 / 74% WR on
 // BTCUSDT 5m (Mar 16 → Apr 23, 2026).
+// Config: 1h EMA15 bias, zone 0.1%, closeHour 20, SL 2%, DCA 2×1%.
 //
 // ⚠ Warning: 5m results are only validated over SHORT recent windows.
 // TV free tier caps 5m history to ~1 month. Real long-term edge unverified.
@@ -65,8 +66,8 @@ prevMid = (prevH + prevL) / 2.0
 
 // 1h EMA bias — faster than daily, catches intraday regime shifts
 grpBias = "🎯 1h Bias"
-hourEmaLen = input.int(20, "1h EMA period", minval=5, maxval=100, step=1, group=grpBias,
-     tooltip="EMA length for 1h bias. Validated at 20 (+25% on TV). Try 15 or 25 to see if there's a better value.")
+hourEmaLen = input.int(15, "1h EMA period", minval=5, maxval=100, step=1, group=grpBias,
+     tooltip="EMA length for 1h bias. TV test: 15 and 20 give identical +27% / PF 10.83 / WR 74% with closeHour=20 filter. 15 chosen for faster response.")
 hourClose  = request.security(syminfo.tickerid, "60", close[1],                     lookahead=barmerge.lookahead_off)
 hourEma    = request.security(syminfo.tickerid, "60", ta.ema(close, hourEmaLen)[1], lookahead=barmerge.lookahead_off)
 hourBull   = hourClose > hourEma

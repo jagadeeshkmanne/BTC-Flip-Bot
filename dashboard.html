@@ -203,14 +203,12 @@ function isT(v) { return v === true || v === 'True' || v === 'true'; }
 const LONG_CONDS = [
   {key:'1h bias',       need:'BULL',   check: d => isT(d.conditions?.['1h bias BULL']),       val: d => d.bias_h===1?'BULL':(d.bias_h===-1?'BEAR':'—')},
   {key:'RSI > 25',      need:'OK',     check: d => isT(d.conditions?.['RSI long ok (>25)']),  val: d => d.rsi?.toFixed(1) || '--'},
-  {key:'Range OK',      need:'1.5–10%',check: d => isT(d.conditions?.['Range OK (1.5–10%)']), val: d => (d.prev_range_pct*100)?.toFixed(2)+'%' || '--'},
   {key:'Volume ≥ 1.2×', need:'YES',    check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol/d.vol_avg).toFixed(2)+'×' : '--'},
   {key:'Touch prev_L',  need:'YES',    check: d => isT(d.conditions?.['Touch prev low']),     val: d => d.prev_L ? '$'+Number(d.prev_L).toFixed(0) : '--'},
 ];
 const SHORT_CONDS = [
   {key:'1h bias',       need:'BEAR',   check: d => isT(d.conditions?.['1h bias BEAR']),       val: d => d.bias_h===-1?'BEAR':(d.bias_h===1?'BULL':'—')},
   {key:'RSI < 75',      need:'OK',     check: d => isT(d.conditions?.['RSI short ok (<75)']), val: d => d.rsi?.toFixed(1) || '--'},
-  {key:'Range OK',      need:'1.5–10%',check: d => isT(d.conditions?.['Range OK (1.5–10%)']), val: d => (d.prev_range_pct*100)?.toFixed(2)+'%' || '--'},
   {key:'Volume ≥ 1.2×', need:'YES',    check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol/d.vol_avg).toFixed(2)+'×' : '--'},
   {key:'Touch prev_H',  need:'YES',    check: d => isT(d.conditions?.['Touch prev high']),    val: d => d.prev_H ? '$'+Number(d.prev_H).toFixed(0) : '--'},
 ];
