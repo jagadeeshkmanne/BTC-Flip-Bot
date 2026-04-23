@@ -54,7 +54,8 @@ slBelowWorst = input.float(0.5, "SL below worst entry (%)", minval=0.1, maxval=5
      tooltip="V2 default 0.5% (vs V1's 2%). 2% is ~5× a typical 1h range — SL would almost never trigger.") / 100
 supportZone  = input.float(0.1, "S/R entry zone (%)", minval=0.02, maxval=1, step=0.02, group=grpDCA,
      tooltip="V2 default 0.1% (vs V1's 0.2%). Tighter zone for tighter 1h range.") / 100
-closeHour    = input.int(23, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA)
+closeHour    = input.int(20, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA,
+     tooltip="Matches main pine default. Validated at 20 (vs 23): +2.15% P&L, +9.5pp WR.")
 
 // ─── Quality filters ───
 grpFilter = "🎯 Entry Quality Filters"
