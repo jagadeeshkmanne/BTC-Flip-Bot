@@ -38,31 +38,15 @@ riskPct = input.float(6.0, "Total risk per cycle (%)", minval=0.1, maxval=15, st
 // ─── DCA ───
 grpDCA = "📊 S/R DCA"
 dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
-     tooltip="5m uses 2 levels (vs 3 on 1h) — matches the +14% TV config.")
+     tooltip="5m uses 2 levels. Each DCA adds 1 leg at worst_entry × (1 ± dcaSpacing).")
 dcaSpacing   = input.float(1.0, "DCA spacing (%)", minval=0.3, maxval=3, step=0.1, group=grpDCA) / 100
 slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA)/100
 supportZone  = input.float(0.2, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA) / 100
-useFixedTP   = input.bool(false, "Use fixed +1% TP from avg entry (vs prev-mid)", group=grpDCA,
-     tooltip="True: TP = avg_entry × 1.01. Default FALSE — prev-mid TP performs better on TV.")
-tpAboveAvg   = input.float(1.0, "Fixed TP above avg (%)", minval=0.3, maxval=3.0, step=0.1, group=grpDCA) / 100
-closeHour    = input.int(23, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA)
+closeHour    = input.int(23, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA,
+     tooltip="EOD flatten hour (UTC). Positions are force-closed at this hour to reset the daily cycle.")
 
-// ─── BE-stop after profit ───
-grpBE        = "🛡️ BE Stop After Profit"
-useBeStop    = input.bool(false, "Move SL to BE after favorable move", group=grpBE,
-     tooltip="After price moves favorable by trigger%, SL ratchets up to entry + buffer. DEFAULT OFF — live TV test on BTC 5m showed +17% without BE vs +15.78% with BE; BE stopped profitable trades too early.")
-beTriggerPct = input.float(1.0, "BE trigger (% favorable from entry)", minval=0.3, maxval=3.0, step=0.1, group=grpBE) / 100
-beBufferPct  = input.float(0.5, "BE buffer above entry (%)", minval=0.0, maxval=1.0, step=0.05, group=grpBE) / 100
-
-// ─── Quality filters (tighter entries) ───
+// ─── Quality filters ───
 grpFilter = "🎯 Entry Quality Filters"
-useRangeFilter   = input.bool(false, "Skip days with too-small/too-wide prev range", group=grpFilter,
-     tooltip="DEFAULT OFF — TV test showed no impact on BTC 5m (filter too permissive at 1.5-10% to reject anything meaningful).")
-rangeMinPct      = input.float(1.5, "Min prev-day range (%)", minval=0.3, maxval=10, step=0.1, group=grpFilter,
-     tooltip="Skip quiet days where DCA can't breathe.") / 100
-rangeMaxPct      = input.float(10.0, "Max prev-day range (%)", minval=3, maxval=20, step=0.5, group=grpFilter,
-     tooltip="Skip wild days likely to blow through SL.") / 100
-
 useVolumeFilter  = input.bool(true, "Require volume confirmation at entry", group=grpFilter)
 volMult          = input.float(1.2, "Volume × 20-bar avg", minval=0.5, maxval=3.0, step=0.1, group=grpFilter,
      tooltip="Entry bar volume must exceed this × 20-bar SMA volume.")
@@ -91,10 +75,7 @@ hourBear   = hourClose < hourEma
 utcH = hour(time, "UTC")
 newDay = ta.change(dayofmonth) != 0
 
-// ─── Quality filter computations ───
-prevRangePct = (prevH - prevL) / prevL
-rangeOk = not useRangeFilter or (prevRangePct >= rangeMinPct and prevRangePct <= rangeMaxPct)
-
+// ─── Filter computations ───
 volAvg = ta.sma(volume, 20)
 volOk = not useVolumeFilter or volume >= volMult * volAvg
 
@@ -124,11 +105,11 @@ perLevelQty := math.min(perLevelQty, qtyCap)
 // ─── L1 entry: touch prev_L (for longs) or prev_H (for shorts) ───
 l1LongOk = hourBull and not cycleDone and strategy.position_size == 0 and utcH < closeHour
      and low <= prevL * (1 + supportZone) and low > prevL * (1 - 0.01)
-     and rangeOk and volOk and rsiOkLong
+     and volOk and rsiOkLong
 
 l1ShortOk = hourBear and not cycleDone and strategy.position_size == 0 and utcH < closeHour
      and high >= prevH * (1 - supportZone) and high < prevH * (1 + 0.01)
-     and rangeOk and volOk and rsiOkShort
+     and volOk and rsiOkShort
 
 if l1LongOk and perLevelQty > 0
     entryPx = prevL * (1 + supportZone / 2)
@@ -161,39 +142,14 @@ if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
         worstEntryPx := nextDcaPx
         filledCount := filledCount + 1
 
-// ─── TP + SL (dynamic SL based on current worst entry + BE ratchet) ───
-avgEntry  = strategy.position_avg_price
-tpLongPx  = useFixedTP ? avgEntry * (1 + tpAboveAvg) : prevMid
-tpShortPx = useFixedTP ? avgEntry * (1 - tpAboveAvg) : prevMid
-slLongRaw  = worstEntryPx * (1 - slBelowWorst)
-slShortRaw = worstEntryPx * (1 + slBelowWorst)
-
-// BE-stop: track max favorable excursion, ratchet SL up once trigger hit
-var bool  beArmedL = false
-var bool  beArmedS = false
-var float maxFavL = 0.0
-var float maxFavS = 0.0
-
-if strategy.position_size > 0 and not na(firstEntryPx)
-    curFav = (high - firstEntryPx) / firstEntryPx
-    maxFavL := math.max(maxFavL, curFav)
-    if useBeStop and maxFavL >= beTriggerPct
-        beArmedL := true
-
-if strategy.position_size < 0 and not na(firstEntryPx)
-    curFav = (firstEntryPx - low) / firstEntryPx
-    maxFavS := math.max(maxFavS, curFav)
-    if useBeStop and maxFavS >= beTriggerPct
-        beArmedS := true
-
-// Compute final SL: MAX of raw SL and BE floor (for long) / MIN for short
-beFloorLong  = firstEntryPx * (1 + beBufferPct)
-beFloorShort = firstEntryPx * (1 - beBufferPct)
-slLongPx  = beArmedL ? math.max(slLongRaw, beFloorLong)   : slLongRaw
-slShortPx = beArmedS ? math.min(slShortRaw, beFloorShort) : slShortRaw
+// ─── TP + SL ───
+tpLongPx  = prevMid
+tpShortPx = prevMid
+slLongPx  = worstEntryPx * (1 - slBelowWorst)
+slShortPx = worstEntryPx * (1 + slBelowWorst)
 
 if strategy.position_size > 0 and not na(worstEntryPx)
-    // Exit all long legs at TP=prevMid or SL=worst-2%
+    // Exit all long legs at TP=prevMid or SL=2% below worst entry
     strategy.exit("xL1", from_entry="L1", limit=tpLongPx, stop=slLongPx)
     if filledCount >= 2
         strategy.exit("xL2", from_entry="L2", limit=tpLongPx, stop=slLongPx)
@@ -217,10 +173,6 @@ if strategy.position_size == 0 and strategy.position_size[1] != 0
     filledCount := 0
     firstEntryPx := na
     worstEntryPx := na
-    beArmedL := false
-    beArmedS := false
-    maxFavL := 0.0
-    maxFavS := 0.0
 
 // ─── Visuals ───
 plot(prevH, "Prev H",   color=color.new(color.red,   50), style=plot.style_linebr)

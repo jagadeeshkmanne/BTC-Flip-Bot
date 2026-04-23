@@ -25,9 +25,9 @@ sys.path.insert(0, STRATEGY_DIR)
 
 from core import (
     LEVERAGE, RISK_PCT, DCA_LEVELS, DCA_SPACING, SL_BELOW_WORST, SUPPORT_ZONE,
-    USE_BE_STOP, BE_TRIGGER_PCT, BE_BUFFER_PCT, CLOSE_HOUR,
+    CLOSE_HOUR,
     build_features, evaluate_signal,
-    entry_price_zone, dca_price, sl_price, tp_price, per_level_qty, be_triggered,
+    entry_price_zone, dca_price, sl_price, tp_price, per_level_qty,
 )
 
 
@@ -162,7 +162,7 @@ def load_state():
             with open(STATE_FILE) as f: return json.load(f)
         except: pass
     return {
-        "position": None,          # {side, first_entry, entries: [{px, qty}], qty_total, sl, be_armed, cycle_day}
+        "position": None,          # {side, first_entry, entries: [{px, qty}], qty_total, sl, cycle_day}
         "cycle_closed_day": "",    # UTC date string of last cycle close — blocks new entries same day
         "last_exit_time": 0,
         "peak_equity": 0.0,
@@ -235,7 +235,6 @@ def main():
             "entries": [{"px": entry, "qty": qty}],
             "qty_total": qty, "orig_qty_per_level": qty,
             "sl": entry * (1 - SL_BELOW_WORST) if side == "LONG" else entry * (1 + SL_BELOW_WORST),
-            "be_armed": False,
             "cycle_day": str(datetime.now(timezone.utc).date()),
             "entry_time": datetime.now(timezone.utc).isoformat(),
         }
@@ -297,9 +296,7 @@ def main():
                             "side": sig.side, "first_entry": fill,
                             "entries": [{"px": fill, "qty": qty}],
                             "qty_total": qty, "orig_qty_per_level": qty,
-                            "sl": sl_price(sig.side, fill, fill, False),
-                            "be_armed": False,
-                            "max_fav_pct": 0.0,
+                            "sl": sl_price(sig.side, fill),
                             "cycle_day": today,
                             "entry_time": datetime.now(timezone.utc).isoformat(),
                         }
@@ -312,7 +309,7 @@ def main():
         else:
             log.info(f"  No signal — waiting")
 
-    # ── IN POSITION: manage DCA, BE, TP, SL, EOD ──
+    # ── IN POSITION: manage DCA, TP, SL, EOD ──
     if pos is not None:
         side = pos["side"]
         first_entry = pos["first_entry"]
@@ -320,31 +317,13 @@ def main():
         qty_total = pos["qty_total"]
         orig_qty = pos["orig_qty_per_level"]
         cur_sl = pos["sl"]
-        be_armed = pos.get("be_armed", False)
-        max_fav_pct = pos.get("max_fav_pct", 0.0)
         cycle_day = pos.get("cycle_day", today)
 
         worst_entry = min(e["px"] for e in entries) if side == "LONG" else max(e["px"] for e in entries)
-
-        # Track max favorable across last closed bar AND live price (match pine's high/low usage)
         last_bar = df.iloc[last_idx]
-        bar_fav = ((float(last_bar["high"]) - first_entry) / first_entry) if side == "LONG" \
-                  else ((first_entry - float(last_bar["low"])) / first_entry)
-        live_fav = ((live_px - first_entry) / first_entry) if side == "LONG" \
-                   else ((first_entry - live_px) / first_entry)
-        new_max_fav = max(max_fav_pct, bar_fav, live_fav)
-        if new_max_fav > max_fav_pct:
-            max_fav_pct = new_max_fav
-            pos["max_fav_pct"] = max_fav_pct
 
-        # Check BE trigger against tracked max_fav
-        if USE_BE_STOP and not be_armed and max_fav_pct >= BE_TRIGGER_PCT:
-            be_armed = True
-            pos["be_armed"] = True
-            log.info(f"  BE armed (max fav reached +{max_fav_pct*100:.2f}%)")
-
-        # Update SL based on current worst + BE state
-        new_sl = sl_price(side, worst_entry, first_entry, be_armed)
+        # Update SL based on current worst entry (2% below/above worst)
+        new_sl = sl_price(side, worst_entry)
         if (side == "LONG" and new_sl > cur_sl) or (side == "SHORT" and new_sl < cur_sl):
             pos["sl"] = new_sl
             cur_sl = new_sl
@@ -367,18 +346,18 @@ def main():
                         qty_total = pos["qty_total"]
                         # Recompute SL with new worst entry
                         worst_entry = min(e["px"] for e in entries) if side == "LONG" else max(e["px"] for e in entries)
-                        pos["sl"] = sl_price(side, worst_entry, first_entry, be_armed)
+                        pos["sl"] = sl_price(side, worst_entry)
                         cur_sl = pos["sl"]
                         log.info(f"  DCA L{len(entries)} filled {dca_qty}@${dca_fill:.2f} | new worst=${worst_entry:.2f} SL=${cur_sl:.2f}")
 
         # TP: prev_mid of the CYCLE START day (use sig.raw.prev_mid — valid for today's bars)
         tp_px = tp_price(side, sig.raw.get("prev_mid", close_price))
 
-        # Compute current R + fav
+        # Compute current fav%
         fav = (live_px - first_entry) if side == "LONG" else (first_entry - live_px)
         fav_pct = fav / first_entry * 100 if first_entry > 0 else 0
         log.info(f"  IN {side} L{len(entries)} qty={qty_total} entry=${first_entry:.2f} "
-                 f"live=${live_px:.2f} fav={fav_pct:+.2f}% SL=${cur_sl:.2f} TP=${tp_px:.2f} BE={'Y' if be_armed else 'n'}")
+                 f"live=${live_px:.2f} fav={fav_pct:+.2f}% SL=${cur_sl:.2f} TP=${tp_px:.2f}")
 
         status["state"] = "IN_POSITION"
         status["fav_pct"] = fav_pct
@@ -417,7 +396,6 @@ def main():
                     "side": side, "first_entry": first_entry, "exit": fill,
                     "entries": len(entries), "avg_entry": sum(e["px"]*e["qty"] for e in entries)/qty_total,
                     "reason": reason, "pnl_usd": total_pnl, "pnl_pct": pnl_pct,
-                    "be_armed": be_armed,
                     "time": datetime.now(timezone.utc).isoformat(),
                 }
                 state["trade_log"].append(trade)

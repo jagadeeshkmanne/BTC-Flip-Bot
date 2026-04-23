@@ -28,16 +28,9 @@ DCA_SPACING    = 0.01         # 1% between DCA levels
 SL_BELOW_WORST = 0.02         # 2% below worst entry
 SUPPORT_ZONE   = 0.002        # 0.2% zone around prev H/L
 
-USE_BE_STOP    = False        # TV test: +17% without BE vs +15.78% with BE — BE cut winners early
-BE_TRIGGER_PCT = 0.01         # +1% favorable from entry
-BE_BUFFER_PCT  = 0.005        # SL moves to entry + 0.5%
+CLOSE_HOUR     = 23           # UTC hour to force flatten (EOD reset)
 
-CLOSE_HOUR     = 23           # UTC hour to force flatten
-
-# Filter defaults
-USE_RANGE_FILTER = False      # TV test: no impact on results
-RANGE_MIN_PCT  = 0.015        # 1.5% min prev-day range
-RANGE_MAX_PCT  = 0.10         # 10% max prev-day range
+# Entry filters
 VOL_MULT       = 1.2          # volume > 1.2× 20-bar avg
 RSI_LOW        = 25           # skip long if RSI < 25
 RSI_HIGH       = 75           # skip short if RSI > 75
@@ -143,10 +136,6 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
     if pd.isna(prev_h) or pd.isna(prev_l) or pd.isna(rsi_v) or pd.isna(vol_avg):
         return s
 
-    # Range filter
-    prev_range_pct = (prev_h - prev_l) / prev_l if prev_l > 0 else 0
-    range_ok = (not USE_RANGE_FILTER) or (RANGE_MIN_PCT <= prev_range_pct <= RANGE_MAX_PCT)
-
     # Volume filter (on THIS 5m bar)
     vol_ok = vol >= VOL_MULT * vol_avg if vol_avg > 0 else False
 
@@ -160,8 +149,8 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
 
     in_trade_window = utc_h < CLOSE_HOUR
 
-    long_ok  = (bias == 1  and rsi_ok_long  and range_ok and vol_ok and touch_L and in_trade_window)
-    short_ok = (bias == -1 and rsi_ok_short and range_ok and vol_ok and touch_H and in_trade_window)
+    long_ok  = (bias == 1  and rsi_ok_long  and vol_ok and touch_L and in_trade_window)
+    short_ok = (bias == -1 and rsi_ok_short and vol_ok and touch_H and in_trade_window)
 
     if long_ok:
         s.side = "LONG"
@@ -171,7 +160,6 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
     s.conditions = {
         "1h bias BULL":       bool(bias == 1),
         "1h bias BEAR":       bool(bias == -1),
-        "Range OK (1.5–10%)": bool(range_ok),
         "Volume > 1.2× avg":  bool(vol_ok),
         "RSI long ok (>25)":  bool(rsi_ok_long),
         "RSI short ok (<75)": bool(rsi_ok_short),
@@ -185,7 +173,6 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
         "rsi":    float(rsi_v) if not pd.isna(rsi_v) else None,
         "vol":    float(vol),
         "vol_avg": float(vol_avg) if not pd.isna(vol_avg) else None,
-        "prev_range_pct": float(prev_range_pct),
         "utc_hour": utc_h,
         "price": s.price,
     }
@@ -203,13 +190,9 @@ def dca_price(side: Side, worst_entry: float) -> float:
     return worst_entry * (1 - DCA_SPACING) if side == "LONG" else worst_entry * (1 + DCA_SPACING)
 
 
-def sl_price(side: Side, worst_entry: float, first_entry: float, be_armed: bool) -> float:
-    """Current SL price: 2% below worst, floored to BE+buffer if armed."""
-    raw = worst_entry * (1 - SL_BELOW_WORST) if side == "LONG" else worst_entry * (1 + SL_BELOW_WORST)
-    if be_armed and first_entry > 0:
-        be_floor = first_entry * (1 + BE_BUFFER_PCT) if side == "LONG" else first_entry * (1 - BE_BUFFER_PCT)
-        return max(raw, be_floor) if side == "LONG" else min(raw, be_floor)
-    return raw
+def sl_price(side: Side, worst_entry: float) -> float:
+    """Current SL price: SL_BELOW_WORST (2%) below worst entry for longs, above for shorts."""
+    return worst_entry * (1 - SL_BELOW_WORST) if side == "LONG" else worst_entry * (1 + SL_BELOW_WORST)
 
 
 def tp_price(side: Side, prev_mid: float) -> float:
@@ -230,9 +213,3 @@ def per_level_qty(equity: float, price: float) -> float:
     return min(qty, cap)
 
 
-def be_triggered(side: Side, first_entry: float, bar_high: float, bar_low: float) -> bool:
-    """Check if max favorable from entry has reached BE trigger."""
-    if first_entry <= 0:
-        return False
-    fav = (bar_high - first_entry) / first_entry if side == "LONG" else (first_entry - bar_low) / first_entry
-    return fav >= BE_TRIGGER_PCT

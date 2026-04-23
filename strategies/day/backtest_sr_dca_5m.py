@@ -49,7 +49,7 @@ def backtest(symbol: str, start=None, end=None, verbose=False) -> dict:
         return {"label": symbol, "error": "no data in window"}
 
     equity = INITIAL_EQUITY
-    position = None   # {"side", "entries":[{px,qty}], "first_entry", "worst_entry", "per_level_qty", "be_armed"}
+    position = None   # {"side", "entries":[{px,qty}], "first_entry", "worst_entry", "per_level_qty"}
     pending = None    # {"side", "target_px", "placed_date"} — persistent limit order
     trades = []       # per-cycle summary
     legs = []         # per-leg fills (for TV-style counting)
@@ -85,7 +85,6 @@ def backtest(symbol: str, start=None, end=None, verbose=False) -> dict:
                         "first_entry": fill_px,
                         "worst_entry": fill_px,
                         "per_level_qty": q,
-                        "be_armed": False,
                         "open_ts": ts,
                     }
                 pending = None
@@ -98,11 +97,7 @@ def backtest(symbol: str, start=None, end=None, verbose=False) -> dict:
             total_qty = sum(e["qty"] for e in entries)
             avg_entry = sum(e["px"] * e["qty"] for e in entries) / total_qty
 
-            if not position["be_armed"] and C.USE_BE_STOP:
-                if C.be_triggered(side, position["first_entry"], hi, lo):
-                    position["be_armed"] = True
-
-            sl = C.sl_price(side, position["worst_entry"], position["first_entry"], position["be_armed"])
+            sl = C.sl_price(side, position["worst_entry"])
             tp = C.tp_price(side, bar["prev_mid"])
 
             # Suppress SL/TP on the same bar as the L1 entry (Pine wouldn't see them trigger
@@ -182,7 +177,6 @@ def backtest(symbol: str, start=None, end=None, verbose=False) -> dict:
                             "first_entry": fill_px,
                             "worst_entry": fill_px,
                             "per_level_qty": q,
-                            "be_armed": False,
                             "open_ts": ts,
                         }
                     pending = None
@@ -252,8 +246,8 @@ def main():
     print(f"{'='*78}")
     print(f"S/R DCA 5m Day Trader — Python port of strategy_sr_dca_5m.pine")
     print(f"  DCA={C.DCA_LEVELS}×{C.DCA_SPACING*100:.0f}%  risk={C.RISK_PCT*100:.0f}%  SL={C.SL_BELOW_WORST*100:.0f}% below worst")
-    print(f"  filters: range {C.RANGE_MIN_PCT*100:.0f}-{C.RANGE_MAX_PCT*100:.0f}%, vol ≥{C.VOL_MULT}× avg, RSI {C.RSI_LOW}-{C.RSI_HIGH}")
-    print(f"  BE-stop: trigger +{C.BE_TRIGGER_PCT*100:.0f}% → SL entry+{C.BE_BUFFER_PCT*100:.1f}%")
+    print(f"  filters: vol ≥{C.VOL_MULT}× avg, RSI {C.RSI_LOW}-{C.RSI_HIGH}")
+    print(f"  bias: 1h EMA{C.EMA_BIAS_LEN}")
     if start or end: print(f"  window:  {start} → {end}")
     print(f"{'='*78}")
 
