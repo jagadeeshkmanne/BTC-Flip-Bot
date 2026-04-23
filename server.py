@@ -240,7 +240,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
 
     def _is_public(self, path):
         """Public pages: dashboards + data files. No auth needed."""
-        if path in ('/', '/dashboard.html', '/dashboard_grid.html', '/dashboard_bb.html'):
+        if path in ('/', '/dashboard.html', '/dashboard_day.html', '/dashboard_grid.html', '/dashboard_bb.html'):
             return True
         if path.startswith('/data/') or path.startswith('/api/bot/'):
             return True
@@ -305,6 +305,30 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == '/api/bot/log':
             lf = os.path.join(BOT_DIR, 'data', 'testnet', 'bot.log')
+            lines = []
+            if os.path.exists(lf):
+                with open(lf) as f: lines = f.readlines()[-100:]
+            return self._json_response({"lines": [l.strip() for l in lines]})
+
+        # ── Day bot API (separate state files) ──
+        if path == '/api/bot/day/state':
+            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'state_day.json')
+            if os.path.exists(sf):
+                try:
+                    with open(sf) as f: return self._json_response(json.load(f))
+                except: pass
+            return self._json_response({"position": None, "stats": {"total": 0, "wins": 0, "pnl": 0}})
+
+        if path == '/api/bot/day/status':
+            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'status_day.json')
+            if os.path.exists(sf):
+                try:
+                    with open(sf) as f: return self._json_response(json.load(f))
+                except: pass
+            return self._json_response({})
+
+        if path == '/api/bot/day/log':
+            lf = os.path.join(BOT_DIR, 'data', 'testnet', 'bot_day.log')
             lines = []
             if os.path.exists(lf):
                 with open(lf) as f: lines = f.readlines()[-100:]

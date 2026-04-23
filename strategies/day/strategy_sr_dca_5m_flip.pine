@@ -1,0 +1,316 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────
+// S/R DCA Day Trader (5m) + SL-FLIP — experimental variant
+//
+// Base = strategy_sr_dca_5m.pine (the +13% working version).
+// Addition: on SL loss (cycle didn't hit BE), optionally flip to opposite side.
+// Flip can be bias-gated (only fire if daily bias agrees with new side).
+//
+// Python port of base 5m does NOT match TV. Validate flip behavior in TV.
+//
+// ⚠ Warning: 5m results are only validated over SHORT recent windows.
+// Python port does NOT match TV on 5m (unreliable for long-term validation).
+// TV free tier caps 5m history to ~1 month. Real long-term edge unverified.
+//
+// Logic:
+//   - Support = prior day's low; Resistance = prior day's high
+//   - Daily EMA50 bias (prior-day close, no lookahead)
+//   - Long (bias bull): price touches prev_L → enter L1
+//                       + 1% below L1 → DCA L2
+//   - Short: mirror at prev_H
+//   - TP: prior day midpoint (prev_H + prev_L) / 2
+//   - SL: 2% below worst entry
+//   - EOD flatten at UTC 23:00
+//   - Max 1 cycle per UTC day
+// ─────────────────────────────────────────────────────────────────────
+
+leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5)
+
+strategy("S/R DCA Day Trader (5m) + Flip", overlay=true, initial_capital=5000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=95,
+     pyramiding=3, calc_on_order_fills=false, calc_on_every_tick=false,
+     process_orders_on_close=true, commission_type=strategy.commission.percent,
+     commission_value=0.04, slippage=3,
+     margin_long=0, margin_short=0)
+
+// ─── Risk ───
+grpRisk = "⚙️ Risk"
+riskPct = input.float(6.0, "Total risk per cycle (%)", minval=0.1, maxval=15, step=0.5, group=grpRisk,
+     tooltip="At 6% the TV 5-week test gave +14.07% / 9.75% DD. Drop to 5% for safer, raise to 8% for aggressive.") / 100
+
+// ─── DCA ───
+grpDCA = "📊 S/R DCA"
+dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
+     tooltip="5m uses 2 levels (vs 3 on 1h) — matches the +14% TV config.")
+dcaSpacing   = input.float(1.0, "DCA spacing (%)", minval=0.3, maxval=3, step=0.1, group=grpDCA) / 100
+slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA)/100
+supportZone  = input.float(0.2, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA) / 100
+useFixedTP   = input.bool(false, "Use fixed +1% TP from avg entry (vs prev-mid)", group=grpDCA,
+     tooltip="True: TP = avg_entry × 1.01. Default FALSE — prev-mid TP performs better on TV.")
+tpAboveAvg   = input.float(1.0, "Fixed TP above avg (%)", minval=0.3, maxval=3.0, step=0.1, group=grpDCA) / 100
+closeHour    = input.int(23, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA)
+
+// ─── BE-stop after profit ───
+grpBE        = "🛡️ BE Stop After Profit"
+useBeStop    = input.bool(true, "Move SL to BE after favorable move", group=grpBE,
+     tooltip="After price moves favorable by trigger%, SL ratchets up to entry + buffer. Saves 'drifted-back-to-zero' trades.")
+beTriggerPct = input.float(1.0, "BE trigger (% favorable from entry)", minval=0.3, maxval=3.0, step=0.1, group=grpBE) / 100
+beBufferPct  = input.float(0.5, "BE buffer above entry (%)", minval=0.0, maxval=1.0, step=0.05, group=grpBE) / 100
+
+// ─── SL-Flip (experimental, like V2b swing) ───
+grpFlip      = "🔄 SL-Flip"
+useSlFlip    = input.bool(true, "Flip to opposite side on SL loss", group=grpFlip,
+     tooltip="When cycle SL'd (no BE triggered), open opposite side. Captures 'support failed → trend down' moves.")
+biasGateFlip = input.bool(true, "Bias-gated flip (only if daily bias agrees)", group=grpFlip,
+     tooltip="Only flip if daily EMA50 bias supports the new side. Prevents ping-pong in chop.")
+
+// ─── Quality filters (tighter entries) ───
+grpFilter = "🎯 Entry Quality Filters"
+useRangeFilter   = input.bool(true, "Skip days with too-small/too-wide prev range", group=grpFilter)
+rangeMinPct      = input.float(1.5, "Min prev-day range (%)", minval=0.3, maxval=10, step=0.1, group=grpFilter,
+     tooltip="Skip quiet days where DCA can't breathe.") / 100
+rangeMaxPct      = input.float(10.0, "Max prev-day range (%)", minval=3, maxval=20, step=0.5, group=grpFilter,
+     tooltip="Skip wild days likely to blow through SL.") / 100
+
+useVolumeFilter  = input.bool(true, "Require volume confirmation at entry", group=grpFilter)
+volMult          = input.float(1.2, "Volume × 20-bar avg", minval=0.5, maxval=3.0, step=0.1, group=grpFilter,
+     tooltip="Entry bar volume must exceed this × 20-bar SMA volume.")
+
+useRsiFilter     = input.bool(true, "Skip extreme RSI (falling/flying knives)", group=grpFilter)
+rsiLow           = input.float(25.0, "Skip long if RSI <", minval=10, maxval=40, step=1, group=grpFilter)
+rsiHigh          = input.float(75.0, "Skip short if RSI >", minval=60, maxval=90, step=1, group=grpFilter)
+
+// ─── Prior day levels (via security) ───
+prevH = request.security(syminfo.tickerid, "1D", high[1],  lookahead=barmerge.lookahead_off)
+prevL = request.security(syminfo.tickerid, "1D", low[1],   lookahead=barmerge.lookahead_off)
+prevMid = (prevH + prevL) / 2.0
+
+dailyClose = request.security(syminfo.tickerid, "1D", close[1], lookahead=barmerge.lookahead_off)
+dailyEma50 = request.security(syminfo.tickerid, "1D", ta.ema(close, 50)[1], lookahead=barmerge.lookahead_off)
+dailyBull  = dailyClose > dailyEma50
+dailyBear  = dailyClose < dailyEma50
+
+// ─── Time ───
+utcH = hour(time, "UTC")
+newDay = ta.change(dayofmonth) != 0
+
+// ─── Quality filter computations ───
+prevRangePct = (prevH - prevL) / prevL
+rangeOk = not useRangeFilter or (prevRangePct >= rangeMinPct and prevRangePct <= rangeMaxPct)
+
+volAvg = ta.sma(volume, 20)
+volOk = not useVolumeFilter or volume >= volMult * volAvg
+
+rsi14 = ta.rsi(close, 14)
+rsiOkLong  = not useRsiFilter or rsi14 >= rsiLow
+rsiOkShort = not useRsiFilter or rsi14 <= rsiHigh
+
+// ─── State ───
+var int   filledCount = 0
+var float firstEntryPx = na
+var float worstEntryPx = na
+var int   cycleClosedOnDay = -1
+
+if newDay
+    cycleClosedOnDay := -1
+
+cycleDone = cycleClosedOnDay == dayofmonth
+
+// ─── Per-level sizing ───
+// Total risk = riskPct of equity; worst-case SL distance from L1 = (N-1)*spacing + slBelow
+worstSlDistPct = (dcaLevels - 1) * dcaSpacing + slBelowWorst
+totalNotional = strategy.equity * 0.95 * riskPct / worstSlDistPct
+perLevelQty = totalNotional / close / dcaLevels
+qtyCap = (strategy.equity * 0.95 * leverageInput) / close / dcaLevels
+perLevelQty := math.min(perLevelQty, qtyCap)
+
+// ─── L1 entry: touch prev_L (for longs) or prev_H (for shorts) ───
+l1LongOk = dailyBull and not cycleDone and strategy.position_size == 0 and utcH < closeHour
+     and low <= prevL * (1 + supportZone) and low > prevL * (1 - 0.01)
+     and rangeOk and volOk and rsiOkLong
+
+l1ShortOk = dailyBear and not cycleDone and strategy.position_size == 0 and utcH < closeHour
+     and high >= prevH * (1 - supportZone) and high < prevH * (1 + 0.01)
+     and rangeOk and volOk and rsiOkShort
+
+if l1LongOk and perLevelQty > 0
+    entryPx = prevL * (1 + supportZone / 2)
+    strategy.entry("L1", strategy.long, qty=perLevelQty, limit=entryPx)
+    firstEntryPx := entryPx
+    worstEntryPx := entryPx
+    filledCount := 1
+
+if l1ShortOk and perLevelQty > 0
+    entryPx = prevH * (1 - supportZone / 2)
+    strategy.entry("S1", strategy.short, qty=perLevelQty, limit=entryPx)
+    firstEntryPx := entryPx
+    worstEntryPx := entryPx
+    filledCount := 1
+
+// ─── DCA: add next level when price moves spacing% against us ───
+if strategy.position_size > 0 and filledCount >= 1 and filledCount < dcaLevels
+    nextDcaPx = worstEntryPx * (1 - dcaSpacing)
+    if low <= nextDcaPx
+        idStr = "L" + str.tostring(filledCount + 1)
+        strategy.entry(idStr, strategy.long, qty=perLevelQty, limit=nextDcaPx)
+        worstEntryPx := nextDcaPx
+        filledCount := filledCount + 1
+
+if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
+    nextDcaPx = worstEntryPx * (1 + dcaSpacing)
+    if high >= nextDcaPx
+        idStr = "S" + str.tostring(filledCount + 1)
+        strategy.entry(idStr, strategy.short, qty=perLevelQty, limit=nextDcaPx)
+        worstEntryPx := nextDcaPx
+        filledCount := filledCount + 1
+
+// ─── TP + SL (dynamic SL based on current worst entry + BE ratchet) ───
+avgEntry  = strategy.position_avg_price
+tpLongPx  = useFixedTP ? avgEntry * (1 + tpAboveAvg) : prevMid
+tpShortPx = useFixedTP ? avgEntry * (1 - tpAboveAvg) : prevMid
+slLongRaw  = worstEntryPx * (1 - slBelowWorst)
+slShortRaw = worstEntryPx * (1 + slBelowWorst)
+
+// BE-stop: track max favorable excursion, ratchet SL up once trigger hit
+var bool  beArmedL = false
+var bool  beArmedS = false
+var float maxFavL = 0.0
+var float maxFavS = 0.0
+
+if strategy.position_size > 0 and not na(firstEntryPx)
+    curFav = (high - firstEntryPx) / firstEntryPx
+    maxFavL := math.max(maxFavL, curFav)
+    if useBeStop and maxFavL >= beTriggerPct
+        beArmedL := true
+
+if strategy.position_size < 0 and not na(firstEntryPx)
+    curFav = (firstEntryPx - low) / firstEntryPx
+    maxFavS := math.max(maxFavS, curFav)
+    if useBeStop and maxFavS >= beTriggerPct
+        beArmedS := true
+
+// Compute final SL: MAX of raw SL and BE floor (for long) / MIN for short
+beFloorLong  = firstEntryPx * (1 + beBufferPct)
+beFloorShort = firstEntryPx * (1 - beBufferPct)
+slLongPx  = beArmedL ? math.max(slLongRaw, beFloorLong)   : slLongRaw
+slShortPx = beArmedS ? math.min(slShortRaw, beFloorShort) : slShortRaw
+
+if strategy.position_size > 0 and not na(worstEntryPx)
+    // Exit all long legs at TP=prevMid or SL=worst-2%
+    strategy.exit("xL1", from_entry="L1", limit=tpLongPx, stop=slLongPx)
+    if filledCount >= 2
+        strategy.exit("xL2", from_entry="L2", limit=tpLongPx, stop=slLongPx)
+    if filledCount >= 3
+        strategy.exit("xL3", from_entry="L3", limit=tpLongPx, stop=slLongPx)
+
+if strategy.position_size < 0 and not na(worstEntryPx)
+    strategy.exit("xS1", from_entry="S1", limit=tpShortPx, stop=slShortPx)
+    if filledCount >= 2
+        strategy.exit("xS2", from_entry="S2", limit=tpShortPx, stop=slShortPx)
+    if filledCount >= 3
+        strategy.exit("xS3", from_entry="S3", limit=tpShortPx, stop=slShortPx)
+
+// ─── EOD flatten ───
+var bool eodExit = false
+if utcH >= closeHour and strategy.position_size != 0
+    strategy.close_all(comment="EOD flatten")
+    eodExit := true
+
+// ─── SL-Flip detection + firing ───
+// Detect: position just closed, not from EOD, BE never armed (= real SL loss),
+// last closed trade unprofitable = it was SL (not TP).
+justClosed    = strategy.position_size == 0 and strategy.position_size[1] != 0
+prevSide      = strategy.position_size[1] > 0 ? 1 : strategy.position_size[1] < 0 ? -1 : 0
+prevBeArmed   = prevSide == 1 ? beArmedL : beArmedS
+lastTradeLoss = strategy.closedtrades > 0 and strategy.closedtrades.profit(strategy.closedtrades - 1) < 0
+isRealSlLoss  = justClosed and not eodExit and not prevBeArmed and lastTradeLoss
+
+// Bias gate: long-was-SL'd → flip short iff bias bear (and vice versa)
+wantFlipShort = isRealSlLoss and prevSide == 1  and useSlFlip and (not biasGateFlip or dailyBear)
+wantFlipLong  = isRealSlLoss and prevSide == -1 and useSlFlip and (not biasGateFlip or dailyBull)
+
+if wantFlipShort and perLevelQty > 0
+    flipPx = close  // fill at current close
+    strategy.entry("FS", strategy.short, qty=perLevelQty)
+    firstEntryPx := flipPx
+    worstEntryPx := flipPx
+    filledCount := 1
+    // Reset BE state for the flip cycle
+    beArmedL := false
+    beArmedS := false
+    maxFavL := 0.0
+    maxFavS := 0.0
+    // Don't lock this day — flip IS the new cycle
+    cycleClosedOnDay := -1
+
+if wantFlipLong and perLevelQty > 0
+    flipPx = close
+    strategy.entry("FL", strategy.long, qty=perLevelQty)
+    firstEntryPx := flipPx
+    worstEntryPx := flipPx
+    filledCount := 1
+    beArmedL := false
+    beArmedS := false
+    maxFavL := 0.0
+    maxFavS := 0.0
+    cycleClosedOnDay := -1
+
+// ─── Cycle reset after exit (only if no flip fired) ───
+if justClosed and not wantFlipShort and not wantFlipLong
+    cycleClosedOnDay := dayofmonth
+    filledCount := 0
+    firstEntryPx := na
+    worstEntryPx := na
+    beArmedL := false
+    beArmedS := false
+    maxFavL := 0.0
+    maxFavS := 0.0
+
+// Reset EOD flag when we're flat next bar
+if strategy.position_size == 0
+    eodExit := false
+
+// ─── Visuals ───
+plot(prevH, "Prev H",   color=color.new(color.red,   50), style=plot.style_linebr)
+plot(prevL, "Prev L",   color=color.new(color.green, 50), style=plot.style_linebr)
+plot(prevMid, "Prev Mid (TP)", color=color.new(color.aqua, 30), style=plot.style_linebr)
+plot(strategy.position_size != 0 and not na(worstEntryPx)
+     ? (strategy.position_size > 0 ? slLongPx : slShortPx) : na,
+     "Active SL", color=color.new(color.red, 20), style=plot.style_linebr, linewidth=2)
+
+plotshape(l1LongOk,    "L1",   shape.triangleup,   location.belowbar, color.green,  size=size.small)
+plotshape(l1ShortOk,   "S1",   shape.triangledown, location.abovebar, color.red,    size=size.small)
+plotshape(wantFlipLong,  "FL", shape.circle,       location.belowbar, color.lime,   size=size.small)
+plotshape(wantFlipShort, "FS", shape.circle,       location.abovebar, color.orange, size=size.small)
+
+wrongTf = timeframe.period != "5"
+if barstate.islast and wrongTf
+    var table tfWarn = table.new(position.bottom_center, 1, 1, border_width=2, border_color=color.red)
+    table.cell(tfWarn, 0, 0,
+         "⚠ Chart TF is " + timeframe.period + " — designed for 5m",
+         bgcolor=color.new(color.red, 15), text_color=color.white, text_size=size.normal)
+
+// Dashboard
+if barstate.islast
+    var table dash = table.new(position.top_right, 2, 10, border_width=1)
+    table.cell(dash, 0, 0, "S/R DCA", bgcolor=color.gray, text_color=color.white)
+    table.cell(dash, 1, 0, str.tostring(leverageInput, "#.#") + "× LEV", bgcolor=color.teal, text_color=color.white)
+    table.cell(dash, 0, 1, "Daily EMA50")
+    table.cell(dash, 1, 1, dailyBull ? "BULL ✓" : "BEAR", text_color=dailyBull ? color.green : color.red)
+    table.cell(dash, 0, 2, "Prev H / L / Mid")
+    table.cell(dash, 1, 2, str.tostring(prevL, "#.##") + " / " + str.tostring(prevMid, "#.##") + " / " + str.tostring(prevH, "#.##"))
+    table.cell(dash, 0, 3, "UTC hour")
+    table.cell(dash, 1, 3, str.tostring(utcH) + ":00")
+    table.cell(dash, 0, 4, "DCA levels / space")
+    table.cell(dash, 1, 4, str.tostring(dcaLevels) + " × " + str.tostring(dcaSpacing * 100, "#.#") + "%")
+    table.cell(dash, 0, 5, "Filled")
+    table.cell(dash, 1, 5, str.tostring(filledCount) + "/" + str.tostring(dcaLevels))
+    table.cell(dash, 0, 6, "Position")
+    table.cell(dash, 1, 6, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color=strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray)
+    table.cell(dash, 0, 7, "Worst entry")
+    table.cell(dash, 1, 7, na(worstEntryPx) ? "—" : str.tostring(worstEntryPx, "#.##"))
+    table.cell(dash, 0, 8, "Cycle done today")
+    table.cell(dash, 1, 8, cycleDone ? "YES" : "no")
+    table.cell(dash, 0, 9, "Equity")
+    table.cell(dash, 1, 9, "$" + str.tostring(strategy.equity, "#,###"))
