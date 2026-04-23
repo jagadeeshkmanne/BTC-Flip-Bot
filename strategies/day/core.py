@@ -25,13 +25,14 @@ DCA_SPACING    = 0.01         # 1% between DCA levels
 SL_BELOW_WORST = 0.02         # 2% below worst entry
 SUPPORT_ZONE   = 0.002        # 0.2% zone around prev H/L
 
-USE_BE_STOP    = True
+USE_BE_STOP    = False        # TV test: +17% without BE vs +15.78% with BE — BE cut winners early
 BE_TRIGGER_PCT = 0.01         # +1% favorable from entry
 BE_BUFFER_PCT  = 0.005        # SL moves to entry + 0.5%
 
 CLOSE_HOUR     = 23           # UTC hour to force flatten
 
 # Filter defaults
+USE_RANGE_FILTER = False      # TV test: no impact on results
 RANGE_MIN_PCT  = 0.015        # 1.5% min prev-day range
 RANGE_MAX_PCT  = 0.10         # 10% max prev-day range
 VOL_MULT       = 1.2          # volume > 1.2× 20-bar avg
@@ -126,7 +127,7 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
 
     # Range filter
     prev_range_pct = (prev_h - prev_l) / prev_l if prev_l > 0 else 0
-    range_ok = RANGE_MIN_PCT <= prev_range_pct <= RANGE_MAX_PCT
+    range_ok = (not USE_RANGE_FILTER) or (RANGE_MIN_PCT <= prev_range_pct <= RANGE_MAX_PCT)
 
     # Volume filter (on THIS 5m bar)
     vol_ok = vol >= VOL_MULT * vol_avg if vol_avg > 0 else False

@@ -49,14 +49,15 @@ closeHour    = input.int(23, "Force flatten at UTC hour", minval=12, maxval=23, 
 
 // ─── BE-stop after profit ───
 grpBE        = "🛡️ BE Stop After Profit"
-useBeStop    = input.bool(true, "Move SL to BE after favorable move", group=grpBE,
-     tooltip="After price moves favorable by trigger%, SL ratchets up to entry + buffer. Saves 'drifted-back-to-zero' trades.")
+useBeStop    = input.bool(false, "Move SL to BE after favorable move", group=grpBE,
+     tooltip="After price moves favorable by trigger%, SL ratchets up to entry + buffer. DEFAULT OFF — live TV test on BTC 5m showed +17% without BE vs +15.78% with BE; BE stopped profitable trades too early.")
 beTriggerPct = input.float(1.0, "BE trigger (% favorable from entry)", minval=0.3, maxval=3.0, step=0.1, group=grpBE) / 100
 beBufferPct  = input.float(0.5, "BE buffer above entry (%)", minval=0.0, maxval=1.0, step=0.05, group=grpBE) / 100
 
 // ─── Quality filters (tighter entries) ───
 grpFilter = "🎯 Entry Quality Filters"
-useRangeFilter   = input.bool(true, "Skip days with too-small/too-wide prev range", group=grpFilter)
+useRangeFilter   = input.bool(false, "Skip days with too-small/too-wide prev range", group=grpFilter,
+     tooltip="DEFAULT OFF — TV test showed no impact on BTC 5m (filter too permissive at 1.5-10% to reject anything meaningful).")
 rangeMinPct      = input.float(1.5, "Min prev-day range (%)", minval=0.3, maxval=10, step=0.1, group=grpFilter,
      tooltip="Skip quiet days where DCA can't breathe.") / 100
 rangeMaxPct      = input.float(10.0, "Max prev-day range (%)", minval=3, maxval=20, step=0.5, group=grpFilter,
