@@ -68,6 +68,8 @@ volMult          = input.float(1.2, "Volume × 20-bar avg", minval=0.5, maxval=3
      tooltip="Entry bar volume must exceed this × 20-bar SMA volume.")
 
 useRsiFilter     = input.bool(true, "Skip extreme RSI (falling/flying knives)", group=grpFilter)
+rsiPeriod        = input.int(14, "RSI period", minval=5, maxval=30, step=1, group=grpFilter,
+     tooltip="How many 5m bars used to compute RSI. 14 = 70min (classic). Lower = more reactive, fires more often.")
 rsiLow           = input.float(25.0, "Skip long if RSI <", minval=10, maxval=40, step=1, group=grpFilter)
 rsiHigh          = input.float(75.0, "Skip short if RSI >", minval=60, maxval=90, step=1, group=grpFilter)
 
@@ -76,11 +78,14 @@ prevH = request.security(syminfo.tickerid, "1D", high[1],  lookahead=barmerge.lo
 prevL = request.security(syminfo.tickerid, "1D", low[1],   lookahead=barmerge.lookahead_off)
 prevMid = (prevH + prevL) / 2.0
 
-// 1h EMA20 bias — faster than daily, catches intraday regime shifts
-hourClose  = request.security(syminfo.tickerid, "60", close[1],                lookahead=barmerge.lookahead_off)
-hourEma20  = request.security(syminfo.tickerid, "60", ta.ema(close, 20)[1],    lookahead=barmerge.lookahead_off)
-hourBull   = hourClose > hourEma20
-hourBear   = hourClose < hourEma20
+// 1h EMA bias — faster than daily, catches intraday regime shifts
+grpBias = "🎯 1h Bias"
+hourEmaLen = input.int(20, "1h EMA period", minval=5, maxval=100, step=1, group=grpBias,
+     tooltip="EMA length for 1h bias. Validated at 20 (+25% on TV). Try 15 or 25 to see if there's a better value.")
+hourClose  = request.security(syminfo.tickerid, "60", close[1],                     lookahead=barmerge.lookahead_off)
+hourEma    = request.security(syminfo.tickerid, "60", ta.ema(close, hourEmaLen)[1], lookahead=barmerge.lookahead_off)
+hourBull   = hourClose > hourEma
+hourBear   = hourClose < hourEma
 
 // ─── Time ───
 utcH = hour(time, "UTC")
@@ -93,9 +98,9 @@ rangeOk = not useRangeFilter or (prevRangePct >= rangeMinPct and prevRangePct <=
 volAvg = ta.sma(volume, 20)
 volOk = not useVolumeFilter or volume >= volMult * volAvg
 
-rsi14 = ta.rsi(close, 14)
-rsiOkLong  = not useRsiFilter or rsi14 >= rsiLow
-rsiOkShort = not useRsiFilter or rsi14 <= rsiHigh
+rsiVal = ta.rsi(close, rsiPeriod)
+rsiOkLong  = not useRsiFilter or rsiVal >= rsiLow
+rsiOkShort = not useRsiFilter or rsiVal <= rsiHigh
 
 // ─── State ───
 var int   filledCount = 0
@@ -225,8 +230,8 @@ plot(strategy.position_size != 0 and not na(worstEntryPx)
      ? (strategy.position_size > 0 ? slLongPx : slShortPx) : na,
      "Active SL", color=color.new(color.red, 20), style=plot.style_linebr, linewidth=2)
 
-// 1h EMA20 plotted on chart for visual bias reference
-plot(hourEma20, "1h EMA20", color=color.new(color.purple, 20), linewidth=2)
+// 1h EMA plotted on chart for visual bias reference
+plot(hourEma, "1h EMA", color=color.new(color.purple, 20), linewidth=2)
 
 plotshape(l1LongOk,  "L1",  shape.triangleup,   location.belowbar, color.green, size=size.small)
 plotshape(l1ShortOk, "S1",  shape.triangledown, location.abovebar, color.red,   size=size.small)
@@ -243,7 +248,7 @@ if barstate.islast
     var table dash = table.new(position.top_right, 2, 10, border_width=1)
     table.cell(dash, 0, 0, "S/R DCA", bgcolor=color.gray, text_color=color.white)
     table.cell(dash, 1, 0, str.tostring(leverageInput, "#.#") + "× LEV", bgcolor=color.teal, text_color=color.white)
-    table.cell(dash, 0, 1, "1h EMA20 bias")
+    table.cell(dash, 0, 1, "1h EMA" + str.tostring(hourEmaLen) + " bias")
     table.cell(dash, 1, 1, hourBull ? "BULL ✓" : "BEAR", text_color=hourBull ? color.green : color.red)
     table.cell(dash, 0, 2, "Prev H / L / Mid")
     table.cell(dash, 1, 2, str.tostring(prevL, "#.##") + " / " + str.tostring(prevMid, "#.##") + " / " + str.tostring(prevH, "#.##"))
