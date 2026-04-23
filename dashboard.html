@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ETH Day Bot (S/R DCA)</title>
+<title>BTC Day Bot (S/R DCA)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
@@ -220,8 +220,9 @@ function renderConds(el, defs, data) {
   defs.forEach(c => {
     const met = c.check(data);
     const v = c.val(data);
-    const need = c.need || '';
-    el.innerHTML += `<div class="cond${met?' met':''}"><span class="dot"></span><span class="label">${c.key}</span><span class="val" style="color:#7d8590;font-size:9px">${need}</span><span class="val">${v}</span></div>`;
+    const status = met ? '✓' : '✗';
+    const statusColor = met ? '#3fb950' : '#f85149';
+    el.innerHTML += `<div class="cond${met?' met':''}"><span class="dot"></span><span class="label">${c.key}</span><span class="val" style="color:${statusColor};font-weight:700;min-width:14px;text-align:center">${status}</span><span class="val">${v}</span></div>`;
   });
 }
 
