@@ -189,7 +189,8 @@ const fmt$ = v => '$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:
 const fmtPct = v => (v>=0?'+':'')+Number(v).toFixed(2)+'%';
 const $ = id => document.getElementById(id);
 
-let priceChart, candleSeries, ema50Series, eqChart, eqSeries;
+let priceChart, candleSeries, ema1hSeries, eqChart, eqSeries;
+let prevHLine, prevLLine, prevMidLine, slLine;   // dynamic price lines
 let candleData = [];
 
 function emaCalc(values, period) {
@@ -226,14 +227,75 @@ function renderConds(el, defs, data) {
 
 async function loadKlines() {
   try {
-    const r = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=500');
-    const data = await r.json();
-    candleData = data.map(k => ({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
+    // 5m candles for the main chart
+    const r5 = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=500');
+    const data5 = await r5.json();
+    candleData = data5.map(k => ({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
     candleSeries.setData(candleData);
-    const closes = candleData.map(c=>c.close);
-    ema50Series.setData(candleData.map((c,i)=>({time:c.time,value:emaCalc(closes,50)[i]})));
+
+    // 1h klines → EMA15 (bias indicator — matches live bot)
+    const r1h = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=200');
+    const data1h = await r1h.json();
+    const h1Times = data1h.map(k => Math.floor(k[0]/1000));
+    const h1Closes = data1h.map(k => +k[4]);
+    const h1Emas = emaCalc(h1Closes, 15);
+    // Map: hour-open-timestamp -> EMA value at THAT 1h bar's close
+    const emaByHour = new Map();
+    h1Times.forEach((t,i) => emaByHour.set(t, h1Emas[i]));
+    // For each 5m bar, use PRIOR closed 1h bar's EMA (matches bot's close[1] semantic)
+    const ema1hData = candleData.map(b => {
+      const barHourOpen = b.time - (b.time % 3600);
+      const priorHourOpen = barHourOpen - 3600;
+      const ema = emaByHour.get(priorHourOpen);
+      return ema ? {time: b.time, value: ema} : null;
+    }).filter(x => x);
+    ema1hSeries.setData(ema1hData);
     priceChart.timeScale().fitContent();
   } catch(e) {}
+}
+
+// Update S/R price lines + active SL from status JSON
+function updateStrategyLines(st) {
+  const ind = st.indicators || {};
+  const pos = st.position;
+  // Remove old lines (createPriceLine needs explicit removal)
+  [prevHLine, prevLLine, prevMidLine, slLine].forEach(l => { if(l) candleSeries.removePriceLine(l); });
+  prevHLine = prevLLine = prevMidLine = slLine = null;
+
+  if (ind.prev_H) prevHLine = candleSeries.createPriceLine({
+    price: ind.prev_H, color: '#f85149', lineWidth: 1, lineStyle: 0,
+    axisLabelVisible: true, title: 'prev_H'
+  });
+  if (ind.prev_L) prevLLine = candleSeries.createPriceLine({
+    price: ind.prev_L, color: '#3fb950', lineWidth: 1, lineStyle: 0,
+    axisLabelVisible: true, title: 'prev_L'
+  });
+  if (ind.prev_mid) prevMidLine = candleSeries.createPriceLine({
+    price: ind.prev_mid, color: '#58a6ff', lineWidth: 1, lineStyle: 2,
+    axisLabelVisible: true, title: 'TP'
+  });
+  if (pos && pos.sl) slLine = candleSeries.createPriceLine({
+    price: pos.sl, color: '#f85149', lineWidth: 2, lineStyle: 1,
+    axisLabelVisible: true, title: 'SL'
+  });
+}
+
+// Entry / exit markers from trade_log
+function updateMarkers(tl) {
+  if (!tl || !tl.length) { candleSeries.setMarkers([]); return; }
+  const markers = [];
+  tl.slice(-30).forEach(t => {
+    const ts = Math.floor(new Date(t.time).getTime() / 1000);
+    markers.push({
+      time: ts,
+      position: t.side === 'LONG' ? 'belowBar' : 'aboveBar',
+      color: t.side === 'LONG' ? '#3fb950' : '#f85149',
+      shape: t.reason === 'TP' ? 'arrowUp' : (t.reason === 'SL' ? 'arrowDown' : 'circle'),
+      text: `${t.side[0]}${t.reason[0]} ${t.pnl_pct?.toFixed(1)}%`,
+    });
+  });
+  markers.sort((a,b) => a.time - b.time);
+  candleSeries.setMarkers(markers);
 }
 
 function startWS() {
@@ -327,6 +389,10 @@ async function refresh() {
       eqSeries.setData(tl.map(t=>{cap*=(1+t.pnl_pct/100);return{time:Math.floor(new Date(t.time).getTime()/1000),value:cap}}));
       eqChart.timeScale().fitContent();
     }
+
+    // Main chart overlays — strategy levels + trade markers
+    updateStrategyLines(st);
+    updateMarkers(tl);
   } catch(e) {}
 }
 
@@ -338,7 +404,8 @@ window.addEventListener('load',()=>{
     rightPriceScale:{borderColor:'#1f262e'},crosshair:{mode:1}
   });
   candleSeries=priceChart.addCandlestickSeries({upColor:'#3fb950',downColor:'#f85149',borderUpColor:'#3fb950',borderDownColor:'#f85149',wickUpColor:'#3fb950',wickDownColor:'#f85149'});
-  ema50Series=priceChart.addLineSeries({color:'#79c0ff',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+  // 1h EMA15 — the bias indicator (purple, matches pine chart)
+  ema1hSeries=priceChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false,lastValueVisible:true,title:'1h EMA15'});
   eqChart=LightweightCharts.createChart($('eqChart'),{
     layout:{background:{type:'solid',color:'#0a0e13'},textColor:'#9ca3af'},
     grid:{vertLines:{color:'transparent'},horzLines:{color:'#1f262e'}},
