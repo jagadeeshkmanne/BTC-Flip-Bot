@@ -189,7 +189,7 @@ const fmt$ = v => '$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:
 const fmtPct = v => (v>=0?'+':'')+Number(v).toFixed(2)+'%';
 const $ = id => document.getElementById(id);
 
-let priceChart, candleSeries, ema1hSeries, eqChart, eqSeries;
+let priceChart, candleSeries, volumeSeries, ema1hSeries, eqChart, eqSeries;
 let prevHLine, prevLLine, prevMidLine, slLine;   // dynamic price lines
 let candleData = [];
 
@@ -232,6 +232,13 @@ async function loadKlines() {
     const data5 = await r5.json();
     candleData = data5.map(k => ({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4]}));
     candleSeries.setData(candleData);
+    // Volume histogram — Binance-style, colored by candle direction
+    const volData = data5.map(k => ({
+      time: Math.floor(k[0]/1000),
+      value: +k[5],
+      color: +k[4] >= +k[1] ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)',
+    }));
+    volumeSeries.setData(volData);
 
     // 1h klines → EMA15 (bias indicator — matches live bot)
     const r1h = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=200');
@@ -250,9 +257,9 @@ async function loadKlines() {
       return ema ? {time: b.time, value: ema} : null;
     }).filter(x => x);
     ema1hSeries.setData(ema1hData);
-    // Show last ~120 bars (10 hours) scrolled to latest — Binance-style default view
+    // Show last ~70 bars (≈6 hours of 5m) — tight Binance-style default
     const totalBars = candleData.length;
-    priceChart.timeScale().setVisibleLogicalRange({from: Math.max(0, totalBars - 120), to: totalBars + 5});
+    priceChart.timeScale().setVisibleLogicalRange({from: Math.max(0, totalBars - 70), to: totalBars + 3});
   } catch(e) {}
 }
 
@@ -310,6 +317,11 @@ function startWS() {
     if(candleData.length&&candleData[candleData.length-1].time===bar.time) candleData[candleData.length-1]=bar;
     else candleData.push(bar);
     candleSeries.update(bar);
+    // Update volume bar too, colored by candle direction
+    volumeSeries.update({
+      time: bar.time, value: +k.v,
+      color: bar.close >= bar.open ? 'rgba(38,166,154,0.4)' : 'rgba(239,83,80,0.4)'
+    });
     $('price').textContent=fmt$(bar.close);
   };
 }
@@ -405,9 +417,20 @@ window.addEventListener('load',()=>{
     timeScale:{timeVisible:true,borderColor:'#1f262e',rightOffset:5,barSpacing:8,shiftVisibleRangeOnNewBar:true},
     rightPriceScale:{borderColor:'#1f262e'},crosshair:{mode:1}
   });
-  candleSeries=priceChart.addCandlestickSeries({upColor:'#3fb950',downColor:'#f85149',borderUpColor:'#3fb950',borderDownColor:'#f85149',wickUpColor:'#3fb950',wickDownColor:'#f85149'});
+  candleSeries=priceChart.addCandlestickSeries({
+    upColor:'#26a69a',downColor:'#ef5350',
+    borderUpColor:'#26a69a',borderDownColor:'#ef5350',
+    wickUpColor:'#26a69a',wickDownColor:'#ef5350',
+    priceLineWidth: 1, priceLineColor: '#9ca3af', priceLineStyle: 2
+  });
   // 1h EMA15 — the bias indicator (purple, matches pine chart)
   ema1hSeries=priceChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false,lastValueVisible:true,title:'1h EMA15'});
+  // Volume histogram — Binance style, bottom 20% of chart, separate price scale
+  volumeSeries=priceChart.addHistogramSeries({
+    priceFormat:{type:'volume'}, priceScaleId:'', color:'#26a69a',
+    scaleMargins:{top:0.8,bottom:0}   // volume in bottom 20% only
+  });
+  priceChart.priceScale('').applyOptions({scaleMargins:{top:0.8,bottom:0}});
   eqChart=LightweightCharts.createChart($('eqChart'),{
     layout:{background:{type:'solid',color:'#0a0e13'},textColor:'#9ca3af'},
     grid:{vertLines:{color:'transparent'},horzLines:{color:'#1f262e'}},
