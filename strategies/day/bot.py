@@ -9,7 +9,7 @@ Architecture mirrors strategies/swing/bot.py:
   core.py  — strategy logic (entry detection, sizing, SL/TP computation)
   bot.py   — exchange I/O, 5-min cron, position state, BE tracking
 
-PAIR: ETHUSDT (separate from swing which runs BNBUSDT).
+PAIR: BTCUSDT (separate from swing which runs BNBUSDT).
 State file: data/{env}/state_day.json (separate from swing's state.json).
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ ap.add_argument("--dry", action="store_true", help="Log signals only, no orders"
 ARGS, _ = ap.parse_known_args()
 ENV = ARGS.env
 
-PAIR = "ETHUSDT"
+PAIR = "BTCUSDT"
 LEV = int(LEVERAGE)
 if ENV == "testnet":
     API_KEY = os.environ.get("TESTNET_API_KEY", "")
