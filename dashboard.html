@@ -387,10 +387,12 @@ async function refresh() {
       $('posPanel').style.display='';$('rightPos').style.display='';
       $('pSide').textContent=pos.side;$('pSide').className='badge '+sc;
       $('rpSide').textContent=pos.side;$('rpSide').className='badge '+sc;
-      $('pEntry').textContent=fmt$(pos.entry_price);$('rpEntry').textContent=fmt$(pos.entry_price);
-      $('pSL').textContent=fmt$(pos.sl_price);$('rpSL').textContent=fmt$(pos.sl_price);
+      // Bot state uses first_entry + sl (not entry_price/sl_price)
+      const firstEntry=pos.first_entry||pos.entry_price||0;
+      const slPx=pos.sl||pos.sl_price||0;
+      $('pEntry').textContent=fmt$(firstEntry);$('rpEntry').textContent=fmt$(firstEntry);
+      $('pSL').textContent=fmt$(slPx);$('rpSL').textContent=fmt$(slPx);
       $('pQty').textContent=(pos.qty_total||pos.qty||0).toFixed(4);
-      const firstEntry=pos.first_entry||pos.entry_price;
       const px=st.live_price||st.price||firstEntry;
       const pmp=pos.side==='LONG'?(px-firstEntry)/firstEntry:(firstEntry-px)/firstEntry;
       const pnl=pmp*2*100;  // × leverage
@@ -407,7 +409,7 @@ async function refresh() {
       $('rpTpBar').style.width=tp_pct+'%';$('rpTpLbl').textContent=favPct.toFixed(2)+'%';
       const nLegs=(pos.entries||[{px:firstEntry}]).length;
       $('tp1Status').innerHTML=`<span class="pos">${nLegs}/2</span>`;
-      $('tp2Status').innerHTML=pos.be_armed?'<span class="pos">ARMED</span>':'off';
+      $('tp2Status').innerHTML='—';  // BE stop removed from strategy
       $('pyrStatus').innerHTML=`<span class="pos">open</span>`;
     } else {
       $('stateBadge').textContent='FLAT';$('stateBadge').className='badge b-flat';
