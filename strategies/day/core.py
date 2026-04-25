@@ -37,7 +37,7 @@ RSI_HIGH       = 75           # skip short if RSI > 75
 
 RSI_PERIOD     = 14
 VOL_AVG_LEN    = 20
-EMA_BIAS_LEN   = 15           # 1h EMA period — TV test: EMA 15 & 20 give identical +27% / PF 10.83 / WR 74%; 15 chosen for faster response
+EMA_BIAS_LEN   = 20           # 1h EMA period — Apr 2026 BTC backtest (2.31y): EMA20 net -1.33% / PF 1.07 (vs EMA15 -13.41% / 0.92). Stickier bias = fewer false flips when price approaches prev_H/L.
 
 Side = Literal["LONG", "SHORT"]
 

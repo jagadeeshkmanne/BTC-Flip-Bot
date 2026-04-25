@@ -66,8 +66,8 @@ prevMid = (prevH + prevL) / 2.0
 
 // 1h EMA bias — faster than daily, catches intraday regime shifts
 grpBias = "🎯 1h Bias"
-hourEmaLen = input.int(15, "1h EMA period", minval=5, maxval=100, step=1, group=grpBias,
-     tooltip="EMA length for 1h bias. TV test: 15 and 20 give identical +27% / PF 10.83 / WR 74% with closeHour=20 filter. 15 chosen for faster response.")
+hourEmaLen = input.int(20, "1h EMA period", minval=5, maxval=100, step=1, group=grpBias,
+     tooltip="EMA length for 1h bias. Apr 2026 BTC backtest (2.31y): EMA20 net -1.33% / PF 1.07 vs EMA15 -13.41% / 0.92. Stickier bias avoids false flips when price approaches prev_H/L.")
 hourClose  = request.security(syminfo.tickerid, "60", close[1],                     lookahead=barmerge.lookahead_off)
 hourEma    = request.security(syminfo.tickerid, "60", ta.ema(close, hourEmaLen)[1], lookahead=barmerge.lookahead_off)
 hourBull   = hourClose > hourEma

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bot.py — S/R DCA Day Trader live bot (5m + 1d bias).
+bot.py — S/R DCA Day Trader live bot (5m exec + 1h bias + 1d S/R).
 
 Runs every 5 min via cron. Fetches 5m klines + 1d klines, computes prev-day
 H/L/mid + bias, manages DCA position (entry → L1 → optional L2 → TP/SL/BE).
@@ -187,7 +187,7 @@ def round_qty(q, step):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"S/R DCA Day Bot (5m+1d) — env={ENV} dry={ARGS.dry}")
+    log.info(f"S/R DCA Day Bot (5m+1h bias+1d S/R) — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
@@ -255,7 +255,7 @@ def main():
         "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos, "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "S/R DCA Day (5m + 1d bias)",
+        "strategy": "S/R DCA Day (5m exec + 1h EMA20 bias + 1d S/R)",
         "cycle_closed_day": state.get("cycle_closed_day", ""),
     }
 
