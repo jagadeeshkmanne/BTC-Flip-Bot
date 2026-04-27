@@ -26,7 +26,7 @@ RISK_PCT       = 0.06         # 6% total risk per cycle
 DCA_LEVELS     = 2
 DCA_SPACING    = 0.01         # 1% between DCA levels
 SL_BELOW_WORST = 0.02         # 2% below worst entry
-SUPPORT_ZONE   = 0.001        # 0.1% zone around prev H/L — TV test: same 31 trades, DD 3.32→2.88%, PF 5.65→6.90
+SUPPORT_ZONE   = 0.002        # 0.2% zone around prev H/L — testnet experiment. Apr 2026 BTC backtest 2.3y: 0.2% net -7.17% / PF 0.98 vs 0.1% -1.33% / PF 1.07. User-requested for testnet observation.
 
 CLOSE_HOUR     = 23           # UTC hour to force flatten + block new entries. Apr 2026 BTC backtest 2.3y: closeHour=23 net +13.76% / PF 1.31 / WR 62% vs closeHour=20 −1.33% / PF 1.07 / WR 56%. The earlier 5-week TV test favoring 20 didn't generalize.
 
