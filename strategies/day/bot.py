@@ -329,10 +329,21 @@ def main():
             cur_sl = new_sl
             log.info(f"  SL updated → ${cur_sl:.2f}")
 
+        # Bar high/low — used by DCA, TP, SL checks below.
+        # Without this, DCA only sees `live_px` and misses intra-bar spikes that
+        # don't coincide with cron timing (Apr 26 2026: bar high $78,478 hit DCA
+        # trigger $78,455 but bot's cron read live_px after the spike collapsed,
+        # so the DCA leg never fired and the EOD loss was 60% larger).
+        bar_low = float(last_bar["low"])
+        bar_high = float(last_bar["high"])
+
         # DCA check (only if still less than DCA_LEVELS filled)
         if len(entries) < DCA_LEVELS and not ARGS.dry:
             dca_trigger = dca_price(side, worst_entry)
-            dca_hit = (live_px <= dca_trigger) if side == "LONG" else (live_px >= dca_trigger)
+            if side == "LONG":
+                dca_hit = (live_px <= dca_trigger) or (bar_low <= dca_trigger)
+            else:
+                dca_hit = (live_px >= dca_trigger) or (bar_high >= dca_trigger)
             if dca_hit:
                 dca_qty = round_qty(orig_qty, info["step"])
                 if dca_qty >= info["min_qty"]:
@@ -363,8 +374,7 @@ def main():
         status["fav_pct"] = fav_pct
 
         # Exit checks — use both last bar's high/low AND live price
-        bar_low = float(last_bar["low"])
-        bar_high = float(last_bar["high"])
+        # (bar_low / bar_high already computed above, shared with DCA detection)
         if side == "LONG":
             sl_hit = (live_px <= cur_sl) or (bar_low <= cur_sl)
             tp_hit = (live_px >= tp_px)  or (bar_high >= tp_px)
