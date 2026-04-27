@@ -28,7 +28,7 @@ DCA_SPACING    = 0.01         # 1% between DCA levels
 SL_BELOW_WORST = 0.02         # 2% below worst entry
 SUPPORT_ZONE   = 0.001        # 0.1% zone around prev H/L — TV test: same 31 trades, DD 3.32→2.88%, PF 5.65→6.90
 
-CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries. TV test: 20 > 23 (+2.15% P&L, +9.5pp WR, +3.93 PF) — late-day entries net-losers
+CLOSE_HOUR     = 23           # UTC hour to force flatten + block new entries. Apr 2026 BTC backtest 2.3y: closeHour=23 net +13.76% / PF 1.31 / WR 62% vs closeHour=20 −1.33% / PF 1.07 / WR 56%. The earlier 5-week TV test favoring 20 didn't generalize.
 
 # Entry filters
 VOL_MULT       = 1.2          # volume > 1.2× 20-bar avg
