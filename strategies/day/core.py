@@ -24,11 +24,11 @@ LEVERAGE       = 2.0
 RISK_PCT       = 0.06         # 6% total risk per cycle
 
 DCA_LEVELS     = 2
-DCA_SPACING    = 0.01         # 1% between DCA levels
-SL_BELOW_WORST = 0.02         # 2% below worst entry
-SUPPORT_ZONE   = 0.002        # 0.2% zone around prev H/L — testnet experiment. Apr 2026 BTC backtest 2.3y: 0.2% net -7.17% / PF 0.98 vs 0.1% -1.33% / PF 1.07. User-requested for testnet observation.
+DCA_SPACING    = 0.008        # V2: 0.8% between DCA levels (was 1.0% in V1)
+SL_BELOW_WORST = 0.02         # 2% below worst entry (unchanged from V1)
+SUPPORT_ZONE   = 0.0005       # V2: 0.05% zone around prev H/L (was 0.2% in V1) — only direct touches qualify
 
-CLOSE_HOUR     = 23           # UTC hour to force flatten + block new entries. Apr 2026 BTC backtest 2.3y: closeHour=23 net +13.76% / PF 1.31 / WR 62% vs closeHour=20 −1.33% / PF 1.07 / WR 56%. The earlier 5-week TV test favoring 20 didn't generalize.
+CLOSE_HOUR     = 20           # V2: UTC hour to force flatten + block new entries. Reverted to 20 (was 23 in V1's last tweak).
 
 # Entry filters
 VOL_MULT       = 1.2          # volume > 1.2× 20-bar avg
@@ -149,8 +149,11 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
 
     in_trade_window = utc_h < CLOSE_HOUR
 
-    long_ok  = (bias == 1  and rsi_ok_long  and vol_ok and touch_L and in_trade_window)
-    short_ok = (bias == -1 and rsi_ok_short and vol_ok and touch_H and in_trade_window)
+    # V2: NO BIAS GATE. Both directions allowed regardless of trend bias.
+    # The bias filter was removed because it was blocking entries at S/R levels
+    # (price reaching prev_L always coincided with bias flipping BEAR, etc).
+    long_ok  = (rsi_ok_long  and vol_ok and touch_L and in_trade_window)
+    short_ok = (rsi_ok_short and vol_ok and touch_H and in_trade_window)
 
     if long_ok:
         s.side = "LONG"
