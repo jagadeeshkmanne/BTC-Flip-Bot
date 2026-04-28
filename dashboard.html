@@ -207,9 +207,9 @@
   <!-- Waiting / setup tracker (when no position) -->
   <section class="setup" id="setupCard">
     <div class="setup-title">Waiting for Setup</div>
-    <div class="setup-sub">Bot fires when bias direction + 5m volume + RSI + price-touch all align. Cycle cap: 1/day.</div>
+    <div class="setup-sub">V2: Bot fires when 5m volume + RSI + price-touch align (no bias gate). Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
+    <div class="waiting-box" id="waitingReason" style="margin:10px 0;padding:10px 12px;background:rgba(248,81,73,.06);border-left:3px solid var(--red);border-radius:4px;font-size:11px;line-height:1.5">--</div>
     <div class="setup-stats">
-      <span>Bias <b id="setupBias">--</b></span>
       <span>RSI <b class="num" id="setupRsi">--</b></span>
       <span>Volume <b class="num" id="setupVol">--</b></span>
       <span>Range yest. <b class="num" id="setupRange">--</b></span>
@@ -254,14 +254,13 @@ const fmtPct = v => (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
 const isT = v => v === true || v === 'True' || v === 'true';
 const START_BALANCE = 5000;
 
+// V2 conditions — bias removed (was: 4 conditions per side; now: 3)
 const LONG_CONDS = [
-  {key: '1h bias BULL',     check: d => isT(d.conditions?.['1h bias BULL']),       val: d => d.bias_h === 1 ? 'BULL' : 'BEAR'},
   {key: 'RSI > 25',         check: d => isT(d.conditions?.['RSI long ok (>25)']),  val: d => d.rsi?.toFixed(1) || '--'},
   {key: 'Volume ≥ 1.2× avg',check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
   {key: 'Touch prev_L',     check: d => isT(d.conditions?.['Touch prev low']),     val: d => d.prev_L ? '$' + Number(d.prev_L).toFixed(0) : '--'},
 ];
 const SHORT_CONDS = [
-  {key: '1h bias BEAR',     check: d => isT(d.conditions?.['1h bias BEAR']),       val: d => d.bias_h === -1 ? 'BEAR' : 'BULL'},
   {key: 'RSI < 75',         check: d => isT(d.conditions?.['RSI short ok (<75)']), val: d => d.rsi?.toFixed(1) || '--'},
   {key: 'Volume ≥ 1.2× avg',check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
   {key: 'Touch prev_H',     check: d => isT(d.conditions?.['Touch prev high']),    val: d => d.prev_H ? '$' + Number(d.prev_H).toFixed(0) : '--'},
@@ -374,8 +373,6 @@ function renderPnl(price){
 function renderSetup(status){
   const ind = status.indicators || {};
   const condData = {...ind, conditions: status.conditions || {}};
-  $('setupBias').textContent = ind.bias_h === 1 ? 'BULL' : ind.bias_h === -1 ? 'BEAR' : '—';
-  $('setupBias').className = ind.bias_h === 1 ? 'pos' : 'neg';
   $('setupRsi').textContent = ind.rsi !== undefined ? ind.rsi.toFixed(1) : '--';
   $('setupVol').textContent = ind.vol && ind.vol_avg ? (ind.vol/ind.vol_avg).toFixed(2) + '×' : '--';
   const range = (ind.prev_H && ind.prev_L) ? ((ind.prev_H - ind.prev_L) / ind.prev_L * 100) : null;
@@ -400,6 +397,39 @@ function renderSetup(status){
   $('shortCnt').textContent = `${sMet}/${SHORT_CONDS.length}`;
   $('longProg').style.width = (lMet / LONG_CONDS.length * 100) + '%';
   $('shortProg').style.width = (sMet / SHORT_CONDS.length * 100) + '%';
+
+  // ── "Why waiting" — explain what's blocking the next entry ──
+  const waitingEl = $('waitingReason');
+  if (waitingEl) {
+    const reasons = [];
+    // Check time window (UTC < 20)
+    const utcHr = new Date().getUTCHours();
+    if (utcHr >= 20) reasons.push(`outside trading window (${utcHr}:00 UTC ≥ 20:00 cutoff)`);
+    // Check cycle cap
+    const cycleClosed = (status.cycle_closed_day && new Date(status.cycle_closed_day).toDateString() === new Date().toDateString());
+    if (cycleClosed) reasons.push('cycle already done today (1/day cap)');
+    // Volume
+    const volRatio = ind.vol && ind.vol_avg ? ind.vol/ind.vol_avg : null;
+    if (volRatio !== null && volRatio < 1.2) reasons.push(`volume ${volRatio.toFixed(2)}× < 1.2× required`);
+    // RSI extremes
+    if (ind.rsi !== undefined) {
+      if (ind.rsi < 25) reasons.push(`RSI ${ind.rsi.toFixed(1)} < 25 (LONG blocked, oversold)`);
+      if (ind.rsi > 75) reasons.push(`RSI ${ind.rsi.toFixed(1)} > 75 (SHORT blocked, overbought)`);
+    }
+    // Touch — closest level
+    if (ind.prev_H && ind.prev_L && ind.price) {
+      const distToH = ((ind.prev_H - ind.price) / ind.price) * 100;
+      const distToL = ((ind.price - ind.prev_L) / ind.price) * 100;
+      const touchLOk = condData.conditions['Touch prev low'];
+      const touchHOk = condData.conditions['Touch prev high'];
+      if (!touchLOk && !touchHOk) {
+        reasons.push(`price not at S/R: prev_L $${ind.prev_L.toFixed(0)} (${distToL >= 0 ? '−' : '+'}${Math.abs(distToL).toFixed(2)}% away) · prev_H $${ind.prev_H.toFixed(0)} (+${distToH.toFixed(2)}% away)`);
+      }
+    }
+    waitingEl.innerHTML = reasons.length === 0
+      ? '<span class="pos">All conditions met — entry should fire on next valid bar</span>'
+      : `Waiting because: <ul style="margin:4px 0 0 16px;padding:0;color:var(--muted-2)"><li>${reasons.join('</li><li>')}</li></ul>`;
+  }
 }
 
 // ── Main refresh — pulls bot state every 15s via HTTP ─────────
