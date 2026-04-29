@@ -9,11 +9,12 @@
 //   - Bias filter REMOVED (LONG/SHORT both fire on touch regardless of trend)
 //   - Tighter zone: 0.05% (V1: 0.2%)
 //   - Tighter DCA spacing: 0.8% (V1: 1.0%)
-//   - EOD flatten kept ON at 20:00 UTC (toggle is exposed but defaults ON;
-//     skipping EOD was tested and produced too many failed trades held overnight)
+//   - EOD flatten kept ON at 20:00 UTC
 //   - TP modes: prev_mid | prev_extreme | fixed_pct (was just prev_mid in V1)
-//   - SL: static at worst-entry × (1 − slBelowWorst) — same as V1.
-//     Trailing SL was added then REMOVED — too many false trail-outs near peaks
+//   - SL: static at worst-entry × (1 − slBelowWorst) — same as V1
+//   - RSI: same as V1 (5m, anti-extreme: skip <25 long / >75 short).
+//     Inverted-RSI variant tested + rejected; 1h-RSI tested + rejected.
+//     5m anti-extreme is the validated config.
 //
 // Test results (BTCUSDT, recent 5w on TV):
 //   V1 with bias on:        +29.82% / PF 15.31 / 26 trades
@@ -63,9 +64,13 @@ useVolumeFilter  = input.bool(true, "Require volume confirmation at entry", grou
 volMult          = input.float(1.2, "Volume × 20-bar avg", minval=0.5, maxval=3.0, step=0.1, group=grpFilter,
      tooltip="Entry bar volume must exceed this × 20-bar SMA volume.")
 
+// RSI filter — anti-extreme protection (V1 logic, validated):
+//   Skip LONG if RSI < 25 (don't catch falling knives)
+//   Skip SHORT if RSI > 75 (don't catch flying knives)
+// Tested INVERTED logic (require extremes) — backtest worse, removed.
 useRsiFilter     = input.bool(true, "Skip extreme RSI (falling/flying knives)", group=grpFilter)
 rsiPeriod        = input.int(14, "RSI period", minval=5, maxval=30, step=1, group=grpFilter,
-     tooltip="How many 5m bars used to compute RSI. 14 = 70min (classic). Lower = more reactive, fires more often.")
+     tooltip="14 = 70-min lookback on 5m. Standard.")
 rsiLow           = input.float(25.0, "Skip long if RSI <", minval=10, maxval=40, step=1, group=grpFilter)
 rsiHigh          = input.float(75.0, "Skip short if RSI >", minval=60, maxval=90, step=1, group=grpFilter)
 
@@ -101,6 +106,7 @@ volAvg = ta.sma(volume, 20)
 volOk = not useVolumeFilter or volume >= volMult * volAvg
 
 rsiVal = ta.rsi(close, rsiPeriod)
+// V1-style anti-extreme: skip LONG when oversold, skip SHORT when overbought
 rsiOkLong  = not useRsiFilter or rsiVal >= rsiLow
 rsiOkShort = not useRsiFilter or rsiVal <= rsiHigh
 
