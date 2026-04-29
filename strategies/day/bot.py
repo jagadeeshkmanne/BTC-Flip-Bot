@@ -135,6 +135,30 @@ class BinanceClient:
         if reduce_only: params["reduceOnly"] = "true"
         return self._req("POST", "/fapi/v1/order", params, signed=True)
 
+    def algo_stop_market(self, symbol, side, trigger_price, close_position=True):
+        """Place a STOP_MARKET via /fapi/v1/algoOrder (the new conditional-order
+        endpoint Binance migrated to on 2025-12-09). The legacy /fapi/v1/order
+        endpoint now returns -4120 for stop types. closePosition=true closes the
+        full position when triggered — simpler than tracking quantity, and the
+        right semantic for SL.
+        """
+        params = {"algoType": "CONDITIONAL", "symbol": symbol, "side": side,
+                  "type": "STOP_MARKET", "triggerPrice": f"{trigger_price}",
+                  "workingType": "MARK_PRICE"}
+        if close_position:
+            params["closePosition"] = "true"
+        return self._req("POST", "/fapi/v1/algoOrder", params, signed=True)
+
+    def open_orders(self, symbol):
+        return self._req("GET", "/fapi/v1/openOrders", {"symbol": symbol}, signed=True) or []
+
+    def open_algo_orders(self, symbol):
+        return self._req("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol}, signed=True) or []
+
+    def cancel_algo_order(self, symbol, algo_id):
+        return self._req("DELETE", "/fapi/v1/algoOrder",
+                         {"symbol": symbol, "algoId": algo_id}, signed=True)
+
     def live_price(self, symbol):
         r = self._req("GET", "/fapi/v1/ticker/price", {"symbol": symbol})
         return float(r["price"]) if r else None
@@ -147,11 +171,13 @@ class BinanceClient:
         if not data: return None
         for s in data["symbols"]:
             if s["symbol"] == symbol:
-                step = qty_min = 0
+                step = qty_min = tick = 0
                 for f in s["filters"]:
                     if f["filterType"] == "LOT_SIZE":
                         step = float(f["stepSize"]); qty_min = float(f["minQty"])
-                return {"step": step, "min_qty": qty_min}
+                    elif f["filterType"] == "PRICE_FILTER":
+                        tick = float(f["tickSize"])
+                return {"step": step, "min_qty": qty_min, "tick": tick}
         return None
 
 
@@ -184,6 +210,82 @@ def round_qty(q, step):
     return round(q - (q % step), 8)
 
 
+def round_price(p, tick):
+    if tick <= 0: return p
+    n = round(p / tick)
+    s = ("%.10f" % tick).rstrip("0")
+    decimals = len(s.split(".")[1]) if "." in s else 0
+    return round(n * tick, decimals)
+
+
+def ensure_exits(client, info, pair, side, qty_total, tp_px, sl_px):
+    """Maintain reduce-only TP (LIMIT) + SL (STOP_MARKET via algoOrder).
+
+    Pine V2 simulates intra-bar TP/SL fills via strategy.exit(limit=, stop=).
+    These resting orders give the live bot the same execution semantics so
+    spikes through TP/SL don't get missed by the 5-min cron interval.
+
+    Idempotent: queries open regular + algo orders, only cancels+replaces if
+    missing or the TP/SL price has changed (after a DCA leg, SL moves so it
+    needs to be re-placed; TP stays at prev_mid throughout the cycle).
+
+    Implementation note: SL goes through /fapi/v1/algoOrder (NOT /fapi/v1/order)
+    — Binance migrated all conditional order types to the algo endpoint on
+    2025-12-09; the legacy endpoint returns -4120 for STOP_MARKET.
+    """
+    qty_r = round_qty(qty_total, info["step"])
+    tp_r = round_price(tp_px, info["tick"])
+    sl_r = round_price(sl_px, info["tick"])
+    if qty_r < info["min_qty"]:
+        log.warning(f"  ensure_exits: qty {qty_r} below min {info['min_qty']}")
+        return
+    close_side = "SELL" if side == "LONG" else "BUY"
+
+    # Check existing TP (regular limit order)
+    tp_ok = False
+    for o in client.open_orders(pair) or []:
+        if (o.get("reduceOnly") and o.get("type") == "LIMIT"
+            and abs(float(o.get("price", 0)) - tp_r) <= info["tick"]
+            and abs(float(o.get("origQty", 0)) - qty_r) < info["step"]):
+            tp_ok = True
+            break
+
+    # Check existing SL (algo conditional order)
+    sl_ok = False
+    sl_to_cancel = []
+    for ao in client.open_algo_orders(pair) or []:
+        if ao.get("orderType") == "STOP_MARKET":
+            if abs(float(ao.get("triggerPrice", 0)) - sl_r) <= info["tick"]:
+                sl_ok = True
+            else:
+                sl_to_cancel.append(ao.get("algoId"))
+
+    if tp_ok and sl_ok:
+        return  # both already correct
+
+    # Cancel only what's wrong, then place fresh
+    if not tp_ok:
+        client.cancel_all(pair)  # cancels regular orders only
+        tp_resp = client.limit_order(pair, close_side, qty_r, tp_r, reduce_only=True)
+        log.info(f"  Resting TP placed: {tp_r} ({'OK' if tp_resp else 'FAIL'}) qty={qty_r}")
+    if not sl_ok:
+        for algo_id in sl_to_cancel:
+            client.cancel_algo_order(pair, algo_id)
+        sl_resp = client.algo_stop_market(pair, close_side, sl_r, close_position=True)
+        log.info(f"  Resting SL placed (algo): trigger={sl_r} ({'OK' if sl_resp else 'FAIL'})")
+
+
+def cancel_all_orders_and_algos(client, pair):
+    """Cancel BOTH regular open orders and algo (conditional) orders.
+    Used when the bot does its own market exit (cron TP/SL/EOD) so no
+    leftover resting orders fight the close."""
+    client.cancel_all(pair)
+    for ao in client.open_algo_orders(pair) or []:
+        algo_id = ao.get("algoId")
+        if algo_id:
+            client.cancel_algo_order(pair, algo_id)
+
+
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
@@ -193,6 +295,13 @@ def main():
     state = load_state()
     info = client.exchange_info(PAIR)
     if not info: log.error("No exchange info"); return
+
+    # Force leverage to LEV every tick. Binance keeps the per-symbol leverage
+    # setting persistent across runs, so without this a manual change on the UI
+    # (or an old setting from before LEV was 2x) would drift. Calling this
+    # each tick is idempotent — Binance just no-ops when leverage is already set.
+    if not ARGS.dry:
+        client.set_leverage(PAIR, LEV)
 
     # Fetch 5m + 1d klines
     df_5m_raw = client.klines(PAIR, interval="5m", limit=500)
@@ -220,6 +329,8 @@ def main():
     peak = state.get("peak_equity", balance)
     dd_pct = (balance / peak - 1) if peak > 0 else 0.0
     now_ts = int(time.time())
+    today = str(datetime.now(timezone.utc).date())
+    utc_hour = datetime.now(timezone.utc).hour
 
     pos = state.get("position")
 
@@ -241,8 +352,32 @@ def main():
         state["position"] = pos
         log.warning(f"  Adopted {side} {qty}@{entry}")
     elif not exch_pos and pos is not None:
-        log.warning("  Exchange flat, clearing state")
+        # Resting TP or SL on the exchange filled between cron ticks.
+        # Log a synthetic trade — exact fill price unknown without /fapi/v1/userTrades,
+        # but balance delta gives true PnL.
+        side = pos["side"]
+        entries = pos.get("entries", [])
+        qty_total = pos.get("qty_total", 0)
+        avg_entry = (sum(e["px"]*e["qty"] for e in entries)/qty_total) if qty_total > 0 else 0
+        prev_balance = state.get("balance_at_entry", balance)
+        pnl_usd = balance - prev_balance
+        pnl_pct = pnl_usd / prev_balance * 100 if prev_balance > 0 else 0
+        state["stats"]["total"] += 1
+        state["stats"]["pnl"] += pnl_pct
+        if pnl_usd > 0: state["stats"]["wins"] += 1
+        state.setdefault("trade_log", []).append({
+            "side": side, "first_entry": pos.get("first_entry"), "exit": live_px,
+            "entries": len(entries), "avg_entry": avg_entry,
+            "reason": "TP/SL (exchange)", "pnl_usd": pnl_usd, "pnl_pct": pnl_pct,
+            "time": datetime.now(timezone.utc).isoformat(),
+            "note": "exchange-side fill — exit price is approximate (live_px at next cron)",
+        })
+        state["trade_log"] = state["trade_log"][-100:]
+        state["last_exit_time"] = now_ts
+        state["cycle_closed_day"] = today
         state["position"] = None
+        cancel_all_orders_and_algos(client, PAIR)  # clean up any orphan exit orders
+        log.warning(f"  Exchange flat — exit fired between cron runs. PnL ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)")
         pos = None
 
     # Log signal
@@ -258,9 +393,6 @@ def main():
         "strategy": "S/R DCA Day V2 (5m exec + 1d S/R, no bias)",
         "cycle_closed_day": state.get("cycle_closed_day", ""),
     }
-
-    today = str(datetime.now(timezone.utc).date())
-    utc_hour = datetime.now(timezone.utc).hour
 
     # ── FLAT: look for entry ──
     if pos is None:
@@ -287,7 +419,6 @@ def main():
                 if qty < info["min_qty"]:
                     log.warning(f"  qty {qty} below min {info['min_qty']}")
                 else:
-                    client.set_leverage(PAIR, LEV * 2)
                     side_api = "BUY" if sig.side == "LONG" else "SELL"
                     resp = client.market_order(PAIR, side_api, qty)
                     if resp:
@@ -301,9 +432,13 @@ def main():
                             "entry_time": datetime.now(timezone.utc).isoformat(),
                         }
                         state["position"] = new_pos
+                        state["balance_at_entry"] = balance  # snapshot for synthetic-trade PnL on exchange-side fills
                         pos = new_pos
                         sl_pct = abs(new_pos["sl"] - fill) / fill * 100
                         log.info(f"  OPENED L1 {sig.side} {qty}@${fill:.2f} SL=${new_pos['sl']:.2f} ({sl_pct:.1f}%) target=${target_px:.2f}")
+                        # Place resting TP+SL on exchange so spikes between cron runs still fill.
+                        tp_px_new = tp_price(sig.side, sig.raw["prev_mid"])
+                        ensure_exits(client, info, PAIR, sig.side, qty, tp_px_new, new_pos["sl"])
         elif sig.side and ARGS.dry:
             log.info(f"  [DRY] Would open {sig.side} at ${close_price:,.2f}")
         else:
@@ -328,6 +463,15 @@ def main():
             pos["sl"] = new_sl
             cur_sl = new_sl
             log.info(f"  SL updated → ${cur_sl:.2f}")
+
+        # Ensure resting TP+SL exit orders exist on the exchange.
+        # Idempotent — only cancels+replaces if missing or prices changed.
+        # Without this, TP/SL only fire when the cron tick coincides with price
+        # being at-or-past the level. With this, Binance fills the moment price
+        # reaches the level. Recovers existing positions on bot restart too.
+        if not ARGS.dry:
+            tp_px_now = tp_price(side, sig.raw.get("prev_mid", close_price))
+            ensure_exits(client, info, PAIR, side, qty_total, tp_px_now, cur_sl)
 
         # Bar high/low — used by DCA, TP, SL checks below.
         # Without this, DCA only sees `live_px` and misses intra-bar spikes that
@@ -360,6 +504,9 @@ def main():
                         pos["sl"] = sl_price(side, worst_entry)
                         cur_sl = pos["sl"]
                         log.info(f"  DCA L{len(entries)} filled {dca_qty}@${dca_fill:.2f} | new worst=${worst_entry:.2f} SL=${cur_sl:.2f}")
+                        # Replace resting exits to cover the new total qty + updated SL.
+                        tp_px_dca = tp_price(side, sig.raw.get("prev_mid", close_price))
+                        ensure_exits(client, info, PAIR, side, qty_total, tp_px_dca, cur_sl)
 
         # TP: prev_mid of the CYCLE START day (use sig.raw.prev_mid — valid for today's bars)
         tp_px = tp_price(side, sig.raw.get("prev_mid", close_price))
@@ -389,7 +536,7 @@ def main():
         elif eod: reason = "EOD"
 
         if reason and not ARGS.dry:
-            client.cancel_all(PAIR)
+            cancel_all_orders_and_algos(client, PAIR)  # clear both LIMIT TP + algo SL
             close_side = "SELL" if side == "LONG" else "BUY"
             resp = client.market_order(PAIR, close_side, qty_total, reduce_only=True)
             if resp:

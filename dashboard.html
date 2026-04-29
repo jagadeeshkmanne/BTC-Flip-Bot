@@ -80,6 +80,7 @@
   .scale-tick.sl{background:var(--red)}
   .scale-tick.entry{background:var(--gold)}
   .scale-tick.dca{background:var(--orange)}
+  .scale-labels-top{position:relative;height:34px;margin-bottom:8px}
   .scale-labels{position:relative;height:36px;margin-top:10px}
   .scale-lbl{position:absolute;transform:translateX(-50%);text-align:center;white-space:nowrap}
   .scale-lbl-name{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;line-height:1}
@@ -192,10 +193,14 @@
     <!-- Horizontal price scale -->
     <div class="scale-wrap">
       <div class="scale-zones"><span id="zoneLeft">PROFIT</span><span id="zoneRight">LOSS</span></div>
+      <!-- Entry/TP/DCA/SL labels — rendered ABOVE the bar so they never get
+           visually clobbered when Mark drifts onto an entry/TP price. -->
+      <div class="scale-labels-top" id="scaleLabelsTop"></div>
       <div class="scale" id="scaleTrack">
         <div class="scale-mark" id="scaleMark"></div>
-        <!-- Ticks + labels populated by JS -->
+        <!-- Ticks populated by JS -->
       </div>
+      <!-- Mark label only — rendered BELOW the bar. -->
       <div class="scale-labels" id="scaleLabels"></div>
     </div>
     <div class="pos-foot">
@@ -247,7 +252,9 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const fmt$ = v => '$' + Number(v).toLocaleString(undefined, {maximumFractionDigits: 2});
+// Fixed 2 decimals so the hero price doesn't visually flicker as sub-cent
+// updates round to different lengths ("$77,188" vs "$77,188.2" vs "$77,188.15").
+const fmt$ = v => '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const fmt$0 = v => '$' + Number(v).toLocaleString(undefined, {maximumFractionDigits: 0});
 const fmtUsd = v => (v >= 0 ? '+$' : '−$') + Math.abs(v).toFixed(2);
 const fmtPct = v => (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
@@ -282,10 +289,17 @@ function renderPosition(price){
   if (!positionSnapshot) return;
   const p = positionSnapshot;
   const mark = price || p.entry;
-  const pmp = p.side === 'LONG' ? (mark - p.entry) / p.entry : (p.entry - mark) / p.entry;
-  const pnlPct = pmp * 2 * 100;
-  const pnlUsd = (p.side === 'LONG' ? (mark - p.entry) : (p.entry - mark)) * p.qty;
   const notional = p.qty * p.entry;
+  // PnL: always derive from the WS price passed in here. Hero (renderPnl)
+  // does the same so the two never contradict. We deliberately drop the
+  // liveUpnl-from-Binance path — it's mark-based while WS is last-trade,
+  // and on testnet they diverge by hundreds of dollars, which made the hero
+  // show "−$9" while the position card showed "+$48".
+  // ROI = price_move% × leverage (matches Binance UI's PnL ROI display).
+  const pmp = p.side === 'LONG' ? (mark - p.entry) / p.entry : (p.entry - mark) / p.entry;
+  const pnlUsd = pmp * p.qty * p.entry;
+  const lev = p.leverage || 1;
+  const pnlPct = pmp * 100 * lev;
   const cls = pnlUsd >= 0 ? 'pos' : 'neg';
 
   // Header
@@ -321,12 +335,13 @@ function renderPosition(price){
   const span = hi - lo;
   const pct = v => ((v - lo) / span) * 100;
 
-  // Build ticks (on the scale bar) + labels (below)
-  const labelsEl = $('scaleLabels');
+  // Build ticks on the bar + labels split top/bottom so Mark never clobbers
+  // Entry/TP/DCA/SL when they overlap horizontally.
+  //   TOP labels: TP, Entry, DCA, SL (the static reference levels)
+  //   BOTTOM:     Mark only (moves with price; needs to be visually distinct)
   const trackEl = $('scaleTrack');
-  // Clear all old ticks (preserve scaleMark element)
   Array.from(trackEl.querySelectorAll('.scale-tick')).forEach(n => n.remove());
-  let labelHtml = '';
+  let topHtml = '', bottomHtml = '';
   levels.forEach(l => {
     if (l.key === 'mark') {
       $('scaleMark').style.left = pct(l.price) + '%';
@@ -338,17 +353,22 @@ function renderPosition(price){
     }
     const distPct = ((l.price - mark) / mark) * 100;
     const distStr = l.key === 'mark' ? 'NOW' : (distPct >= 0 ? '+' : '') + distPct.toFixed(2) + '%';
-    labelHtml += `
+    const html = `
       <div class="scale-lbl ${l.key}" style="left:${pct(l.price)}%">
         <div class="scale-lbl-name">${l.name}</div>
         <div class="scale-lbl-price num">${fmt$0(l.price)}</div>
         <div class="scale-lbl-pct num">${distStr}</div>
       </div>`;
+    if (l.key === 'mark') bottomHtml += html;
+    else topHtml += html;
   });
-  labelsEl.innerHTML = labelHtml;
+  $('scaleLabelsTop').innerHTML = topHtml;
+  $('scaleLabels').innerHTML = bottomHtml;
 }
 
 // ── Render: hero PnL stats (called from refresh + WS ticks) ─────
+// Uses the same `price` that renderPosition gets, so the two displays never
+// contradict each other. Both reflect the live WS last-trade price.
 function renderPnl(price){
   let unrealizedUsd = 0;
   if (positionSnapshot) {
@@ -435,19 +455,39 @@ function renderSetup(status){
 // ── Main refresh — pulls bot state every 15s via HTTP ─────────
 async function refresh(){
   try {
-    const [r1, r2] = await Promise.all([fetch('/api/bot/day/state'), fetch('/api/bot/day/status')]);
+    const [r1, r2, r3] = await Promise.all([
+      fetch('/api/bot/day/state'),
+      fetch('/api/bot/day/status'),
+      fetch('/api/bot/day/binance').catch(() => null),  // live truth proxy
+    ]);
     const state = await r1.json();
     const status = await r2.json();
+    const binance = r3 && r3.ok ? await r3.json() : null;
 
-    // Equity + PnL setup
-    const balance = status.balance !== undefined ? status.balance : START_BALANCE;
+    // Wallet balance — prefer LIVE Binance number over cached status JSON.
+    const balance = (binance && binance.wallet_balance) || status.balance || START_BALANCE;
     $('balanceVal').textContent = fmt$(balance);
     lastHeroState.realizedUsd = balance - START_BALANCE;
 
-    // Position?
-    const pos = state.position;
+    // Position — prefer the live Binance position over the bot's cached state.
+    // Bot writes status_day.json every 5 min via cron, so it's stale between
+    // ticks. The /api/bot/day/binance proxy hits Binance directly (1s cached
+    // server-side) and shows the same numbers Binance UI shows.
+    const livePos = binance && binance.position;
+    const pos = livePos || state.position;
     if (pos) {
-      positionSnapshot = {
+      positionSnapshot = livePos ? {
+        side: livePos.side,
+        entry: livePos.entry,
+        sl: state.position ? (state.position.sl || 0) : 0,
+        qty: livePos.qty,
+        worstEntry: state.position ? (state.position.worst_entry || livePos.entry) : livePos.entry,
+        filled: state.position ? (state.position.entries || [{}]).length : 1,
+        prevMid: (status.indicators || {}).prev_mid || 0,
+        leverage: livePos.leverage,
+        marginType: livePos.marginType,
+        liveUpnl: livePos.uPnL,
+      } : {
         side: pos.side,
         entry: pos.first_entry || pos.entry_price || 0,
         sl: pos.sl || pos.sl_price || 0,
@@ -458,7 +498,11 @@ async function refresh(){
       };
       $('positionCard').style.display = '';
       $('setupCard').style.display = 'none';
-      const mark = status.live_price || status.price || positionSnapshot.entry;
+      // PnL math uses LAST TRADE — that's what Binance UI's PnL column uses.
+      // (Binance API's `unrealizedProfit` is mark-based, but the user-facing
+      // PnL display on the position table is last-trade based; matching the
+      // UI is more important for "does this match what I see on Binance".)
+      const mark = (binance && binance.last_trade) || status.live_price || status.price || positionSnapshot.entry;
       renderPosition(mark);
     } else {
       positionSnapshot = null;
@@ -466,7 +510,7 @@ async function refresh(){
       $('setupCard').style.display = '';
       renderSetup(status);
     }
-    renderPnl(status.live_price || status.price);
+    renderPnl((binance && binance.last_trade) || status.live_price || status.price);
 
     // Trades
     const tl = state.trade_log || [];
@@ -525,17 +569,29 @@ function updateMark(price, bar){
   renderPnl(price);
 }
 
-// ── WebSocket to Binance Futures for BTCUSDT 5m kline ─────────
+// ── WebSocket to Binance Futures (combined stream) ─────────────
+// Bot trades on testnet, so use testnet WS by default. ?env=mainnet flips it.
+//
+// Combined stream: aggTrade for last-trade price (matches Binance UI's PnL
+// column), kline_5m for the change% reference. Binance API's
+// unrealizedProfit field is mark-based, but the user-facing position table
+// PnL on Binance UI uses last-trade — matching the UI is what users want.
 let currentWs = null, reconnectTimer = null, lastWsMsgTs = 0, wsMsgCount = 0, restCount = 0;
+let lastBar = null; // most recent kline cache, used to compute change %
+const URL_ENV = new URLSearchParams(location.search).get('env') === 'mainnet' ? 'mainnet' : 'testnet';
+const WS_HOST = URL_ENV === 'mainnet' ? 'wss://fstream.binance.com' : 'wss://stream.binancefuture.com';
+const WS_URL  = `${WS_HOST}/stream?streams=btcusdt@kline_5m/btcusdt@aggTrade`;
+const REST_HOST = URL_ENV === 'mainnet' ? 'https://fapi.binance.com' : 'https://testnet.binancefuture.com';
+const REST_URL  = `${REST_HOST}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=1`;
 function setLive(text, kind){
   $('liveText').textContent = text;
   $('liveBadge').className = 'live' + (kind ? ' ' + kind : '');
 }
 function startWS(){
   if (currentWs) { try { currentWs.onclose = null; currentWs.close(); } catch(e) {} }
-  const ws = new WebSocket('wss://fstream.binance.com/ws/btcusdt@kline_5m');
+  const ws = new WebSocket(WS_URL);
   currentWs = ws;
-  ws.onopen = () => { lastWsMsgTs = Date.now(); setLive('LIVE'); };
+  ws.onopen = () => { lastWsMsgTs = Date.now(); setLive('LIVE ' + URL_ENV); };
   ws.onerror = () => setLive('ERROR', 'stale');
   ws.onclose = () => {
     setLive('reconnecting', 'stale');
@@ -544,10 +600,21 @@ function startWS(){
   };
   ws.onmessage = msg => {
     try {
-      const k = JSON.parse(msg.data).k; if (!k) return;
+      const wrapper = JSON.parse(msg.data);
+      const stream = wrapper.stream || '';
+      const data   = wrapper.data || wrapper;
       lastWsMsgTs = Date.now(); wsMsgCount++;
-      setLive('LIVE ' + wsMsgCount);
-      updateMark(+k.c, {t:Math.floor(k.t/1000), o:+k.o, h:+k.h, l:+k.l, c:+k.c, v:+k.v});
+      setLive(URL_ENV + ' ' + wsMsgCount);
+      if (stream.endsWith('@kline_5m')) {
+        // Cache OHLC for change% calc.
+        const k = data.k; if (!k) return;
+        lastBar = {t:Math.floor(k.t/1000), o:+k.o, h:+k.h, l:+k.l, c:+k.c, v:+k.v};
+        updateMark(+k.c, lastBar);
+      } else if (stream.endsWith('@aggTrade')) {
+        // aggTrade: { e:"aggTrade", p:"77440.00", q:..., m:... } — last trade.
+        const p = +data.p;
+        if (p > 0) updateMark(p, lastBar);
+      }
     } catch(e) {}
   };
 }
@@ -567,7 +634,7 @@ setInterval(async () => {
   const since = lastWsMsgTs ? (Date.now() - lastWsMsgTs)/1000 : 999;
   if (since < 10) return;
   try {
-    const r = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=1');
+    const r = await fetch(REST_URL);
     const d = await r.json();
     if (Array.isArray(d) && d.length) {
       restCount++;
@@ -601,7 +668,18 @@ document.addEventListener('visibilitychange', () => {
 // Boot
 startWS();
 refresh();
-setInterval(refresh, 15000);
+// Poll faster while in a position (live PnL match with Binance), slower when
+// flat (only setup data, doesn't matter as much). Server-side cache is 1s so
+// each fast poll only hits Binance at most once per second.
+let _lastRefreshMs = Date.now();
+setInterval(() => {
+  const inPos = !!positionSnapshot;
+  const interval = inPos ? 2000 : 15000;
+  if (Date.now() - _lastRefreshMs >= interval) {
+    refresh();
+    _lastRefreshMs = Date.now();
+  }
+}, 1000);
 </script>
 </body>
 </html>

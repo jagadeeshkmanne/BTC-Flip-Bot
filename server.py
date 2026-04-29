@@ -7,8 +7,12 @@ import sys
 import subprocess
 import signal
 import hashlib
+import hmac
 import secrets
 import base64
+import time
+import urllib.request
+import urllib.parse
 from urllib.parse import parse_qs, urlparse
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -184,6 +188,100 @@ def set_bot_enabled(env, enabled):
     return {"ok": True, "enabled": enabled}
 
 
+def _query_binance_position(env_name="testnet"):
+    """Hit Binance's account + open-orders + premiumIndex endpoints and return
+    a single JSON blob the dashboard can render directly. No bot-state caching
+    in the path — this is the real-time truth.
+
+    Cached for 1 second to absorb dashboard polling without hammering the API.
+    """
+    cache = getattr(_query_binance_position, "_cache", None)
+    if cache and time.time() - cache["t"] < 1.0:
+        return cache["v"]
+
+    env = load_env()
+    if env_name == "testnet":
+        key = env.get("TESTNET_API_KEY", ""); sec = env.get("TESTNET_API_SECRET", "")
+        base = "https://testnet.binancefuture.com"
+    else:
+        key = env.get("PRODUCTION_API_KEY", ""); sec = env.get("PRODUCTION_API_SECRET", "")
+        base = "https://fapi.binance.com"
+    if not key or not sec:
+        return {"error": f"no api keys for {env_name}"}
+
+    def _signed_get(path, params=None):
+        params = dict(params or {})
+        params["timestamp"] = int(time.time() * 1000)
+        params["recvWindow"] = 5000
+        q = urllib.parse.urlencode(params)
+        sig = hmac.new(sec.encode(), q.encode(), hashlib.sha256).hexdigest()
+        url = f"{base}{path}?{q}&signature={sig}"
+        req = urllib.request.Request(url, headers={"X-MBX-APIKEY": key})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    def _public_get(path, params=None):
+        q = urllib.parse.urlencode(params or {})
+        url = f"{base}{path}" + (f"?{q}" if q else "")
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return json.loads(r.read())
+
+    try:
+        acc = _signed_get("/fapi/v2/account")
+        oo = _signed_get("/fapi/v1/openOrders", {"symbol": "BTCUSDT"})
+        prem = _public_get("/fapi/v1/premiumIndex", {"symbol": "BTCUSDT"})
+        tk = _public_get("/fapi/v1/ticker/price", {"symbol": "BTCUSDT"})
+    except Exception as e:
+        return {"error": str(e)}
+
+    pos = None
+    for p in acc.get("positions", []):
+        if p["symbol"] == "BTCUSDT" and float(p.get("positionAmt", 0)) != 0:
+            amt = float(p["positionAmt"])
+            entry = float(p["entryPrice"])
+            upnl = float(p["unrealizedProfit"])
+            lev = int(float(p.get("leverage", 0)))
+            mark_implied = entry - upnl/amt if amt != 0 else 0
+            pos = {
+                "side": "SHORT" if amt < 0 else "LONG",
+                "qty": abs(amt),
+                "entry": entry,
+                "uPnL": upnl,
+                "leverage": lev,
+                "marginType": p.get("marginType", ""),
+                "isolatedWallet": float(p.get("isolatedWallet", 0)),
+                "notional": abs(amt) * entry,
+                "markImplied": mark_implied,
+            }
+            break
+
+    exit_orders = []
+    for o in oo:
+        exit_orders.append({
+            "type": o.get("type"), "side": o.get("side"),
+            "qty": float(o.get("origQty", 0)),
+            "price": float(o.get("price", 0)) or None,
+            "stopPrice": float(o.get("stopPrice", 0)) or None,
+            "reduceOnly": o.get("reduceOnly", False),
+            "status": o.get("status"),
+        })
+
+    out = {
+        "env": env_name,
+        "wallet_balance": float(acc.get("totalWalletBalance", 0)),
+        "unrealized_pnl": float(acc.get("totalUnrealizedProfit", 0)),
+        "margin_balance": float(acc.get("totalMarginBalance", 0)),
+        "position": pos,
+        "open_orders": exit_orders,
+        "mark_price": float(prem.get("markPrice", 0)),
+        "index_price": float(prem.get("indexPrice", 0)),
+        "last_trade": float(tk.get("price", 0)),
+        "ts": time.time(),
+    }
+    _query_binance_position._cache = {"t": time.time(), "v": out}
+    return out
+
+
 def run_bot_now(env):
     """Trigger a single bot run in the background."""
     data_dir = os.path.join(BOT_DIR, "data", env)
@@ -285,6 +383,13 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             if os.path.exists(lf):
                 with open(lf) as f: lines = f.readlines()[-100:]
             return self._json_response({"lines": [l.strip() for l in lines]})
+
+        # Live Binance testnet position — proxied so we don't expose API keys
+        # to the browser. Lets the dashboard render the exact same numbers
+        # Binance shows (entry, mark, leverage, unrealizedProfit) instead of
+        # the 5-min-stale snapshot in status_day.json.
+        if path == '/api/bot/day/binance':
+            return self._json_response(_query_binance_position())
 
         # Dashboard + static files are public (read-only)
         if self._is_public(path):
