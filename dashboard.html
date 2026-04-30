@@ -42,8 +42,11 @@
   @media(max-width:480px){.mark-price{font-size:26px}.mark{padding:12px 14px}}
 
   /* ── Account strip — 4-up compact tiles ─────────────────── */
-  .account{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-  @media(max-width:640px){.account{grid-template-columns:repeat(2,1fr)}}
+  /* One row of 6 tiles on desktop, 3×2 on tablet, 2×3 on phone. */
+  .account{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:8px}
+  @media(max-width:900px){.account{grid-template-columns:repeat(3,1fr)}}
+  @media(max-width:540px){.account{grid-template-columns:repeat(2,1fr)}}
+  .stats-row{margin-top:0}  /* collapse the gap so 6 tiles look like one band */
   .acct{padding:10px 12px;background:var(--panel);border:1px solid var(--border);border-radius:6px}
   .acct-label{font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
   .acct-value{font-size:16px;font-weight:700;margin-top:4px;color:var(--text-bright)}
@@ -101,6 +104,11 @@
   .setup{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:18px}
   .setup-title{font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:4px;letter-spacing:.3px}
   .setup-sub{font-size:11px;color:var(--muted);margin-bottom:14px}
+  /* Cycle Done state — just show the countdown, hide all the entry-condition
+     UI (RSI/volume/range stats, condition rows). Cleaner waiting state. */
+  .setup.cycle-done{padding:36px 18px;text-align:center}
+  .setup.cycle-done > *:not(#setupTitle){display:none !important}
+  .setup.cycle-done #setupTitle{font-size:16px;line-height:1.4}
   .setup-stats{display:flex;gap:14px;font-size:11px;margin-bottom:16px;flex-wrap:wrap}
   .setup-stats span{color:var(--muted)} .setup-stats b{color:var(--text);font-weight:700}
   .setup-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
@@ -167,12 +175,14 @@
     <span class="mark-change num" id="priceChange">--</span>
   </section>
 
-  <!-- Account 4-up -->
+  <!-- Account stats — single 6-tile row -->
   <section class="account">
     <div class="acct"><div class="acct-label">Equity</div><div class="acct-value num" id="balanceVal">--</div><div class="acct-sub" id="balanceSub">starting $5,000</div></div>
     <div class="acct"><div class="acct-label">Realized PnL</div><div class="acct-value num" id="realizedVal">--</div><div class="acct-sub num" id="realizedSub">--</div></div>
     <div class="acct"><div class="acct-label">Unrealized PnL</div><div class="acct-value num" id="unrealizedVal">--</div><div class="acct-sub num" id="unrealizedSub">--</div></div>
     <div class="acct"><div class="acct-label">Total PnL</div><div class="acct-value num" id="totalVal">--</div><div class="acct-sub num" id="totalSub">--</div></div>
+    <div class="acct"><div class="acct-label">Trades</div><div class="acct-value num" id="tradesVal">0/0</div><div class="acct-sub num" id="tradesSub">--</div></div>
+    <div class="acct"><div class="acct-label">Drawdown</div><div class="acct-value num" id="ddVal">--</div><div class="acct-sub" id="ddSub">--</div></div>
   </section>
 
   <!-- Active position (only when in trade) -->
@@ -211,8 +221,8 @@
 
   <!-- Waiting / setup tracker (when no position) -->
   <section class="setup" id="setupCard">
-    <div class="setup-title">Waiting for Setup</div>
-    <div class="setup-sub">V2: Bot fires when 5m volume + RSI + price-touch align (no bias gate). Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
+    <div class="setup-title" id="setupTitle">Waiting for Setup</div>
+    <div class="setup-sub" id="setupSub">V2: Bot fires when 5m volume + RSI + price-touch align (no bias gate). Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
     <div class="waiting-box" id="waitingReason" style="margin:10px 0;padding:10px 12px;background:rgba(248,81,73,.06);border-left:3px solid var(--red);border-radius:4px;font-size:11px;line-height:1.5">--</div>
     <div class="setup-stats">
       <span>RSI <b class="num" id="setupRsi">--</b></span>
@@ -420,14 +430,18 @@ function renderSetup(status){
 
   // ── "Why waiting" — explain what's blocking the next entry ──
   const waitingEl = $('waitingReason');
-  if (waitingEl) {
+  // When cycle is done for today, collapse the whole setup card to just the
+  // countdown — RSI / volume / condition rows are irrelevant since we're not
+  // hunting until 00:00 UTC tomorrow regardless of price action.
+  const _utcDateStr = (d => `${d.getUTCFullYear()}-${(d.getUTCMonth()+1).toString().padStart(2,'0')}-${d.getUTCDate().toString().padStart(2,'0')}`)(new Date());
+  const _cycleDoneToday = (status.cycle_closed_day === _utcDateStr) ||
+    (status.cycle_closed_day && new Date(status.cycle_closed_day).toDateString() === new Date().toDateString());
+  $('setupCard').classList.toggle('cycle-done', _cycleDoneToday);
+  if (waitingEl && !_cycleDoneToday) {
     const reasons = [];
     // Check time window (UTC < 20)
     const utcHr = new Date().getUTCHours();
     if (utcHr >= 20) reasons.push(`outside trading window (${utcHr}:00 UTC ≥ 20:00 cutoff)`);
-    // Check cycle cap
-    const cycleClosed = (status.cycle_closed_day && new Date(status.cycle_closed_day).toDateString() === new Date().toDateString());
-    if (cycleClosed) reasons.push('cycle already done today (1/day cap)');
     // Volume
     const volRatio = ind.vol && ind.vol_avg ? ind.vol/ind.vol_avg : null;
     if (volRatio !== null && volRatio < 1.2) reasons.push(`volume ${volRatio.toFixed(2)}× < 1.2× required`);
@@ -467,14 +481,45 @@ async function refresh(){
     // Wallet balance — prefer LIVE Binance number over cached status JSON.
     const balance = (binance && binance.wallet_balance) || status.balance || START_BALANCE;
     $('balanceVal').textContent = fmt$(balance);
-    lastHeroState.realizedUsd = balance - START_BALANCE;
+    $('balanceSub').textContent = 'starting $5,000';
 
-    // Position — prefer the live Binance position over the bot's cached state.
-    // Bot writes status_day.json every 5 min via cron, so it's stale between
-    // ticks. The /api/bot/day/binance proxy hits Binance directly (1s cached
-    // server-side) and shows the same numbers Binance UI shows.
-    const livePos = binance && binance.position;
-    const pos = livePos || state.position;
+    // Realized PnL = sum of completed-trade PnL only. Funding fees and
+    // commissions are excluded; they're noise. Equity still reflects the
+    // true wallet (which includes all fees + funding).
+    const tradeLog = state.trade_log || [];
+    lastHeroState.realizedUsd = tradeLog.reduce((sum, t) =>
+      sum + (typeof t.pnl_usd === 'number' ? t.pnl_usd : 0), 0);
+
+    // Trades tile — wins / total, win rate
+    const _wins = tradeLog.filter(t => (t.pnl_usd || 0) > 0).length;
+    const _total = tradeLog.length;
+    const _wr = _total ? Math.round((_wins / _total) * 100) : 0;
+    $('tradesVal').textContent = `${_wins}/${_total}`;
+    $('tradesSub').innerHTML = _total
+      ? `<span class="${_wr >= 50 ? 'pos' : 'neg'}">${_wr}% WR</span>`
+      : '<span class="mute">no trades yet</span>';
+
+    // Drawdown tile — distance from peak equity
+    const peakEq = Math.max(status.peak_equity || 0, balance);
+    const ddPct = peakEq > 0 ? ((balance / peakEq - 1) * 100) : 0;
+    if (ddPct > -0.01) {
+      $('ddVal').innerHTML = '<span class="pos">0.00%</span>';
+      $('ddSub').innerHTML = `<span class="mute">at peak ${fmt$(peakEq)}</span>`;
+    } else {
+      $('ddVal').innerHTML = `<span class="neg">${ddPct.toFixed(2)}%</span>`;
+      $('ddSub').innerHTML = `<span class="mute">from peak ${fmt$(peakEq)}</span>`;
+    }
+
+    // Cache cycle-cap state so the per-second countdown ticker can use it
+    // without needing to call refresh() (which only runs every 2-15s).
+    lastHeroState.cycleClosedDay = state.cycle_closed_day || status.cycle_closed_day || '';
+
+    // Position — trust the live Binance proxy. If proxy returns position=null,
+    // the position is flat on Binance regardless of what bot's state.json says
+    // (state lags by up to 5 min while waiting for the next cron to reconcile).
+    // Only fall back to state.position if the proxy itself failed to load.
+    const livePos = binance ? binance.position : null;
+    const pos = binance ? livePos : state.position;
     if (pos) {
       positionSnapshot = livePos ? {
         side: livePos.side,
@@ -514,7 +559,11 @@ async function refresh(){
 
     // Trades
     const tl = state.trade_log || [];
-    $('tradeCount').textContent = tl.length + ' trades';
+    const _twins = tl.filter(t => (t.pnl_usd || 0) > 0).length;
+    const _twr = tl.length ? Math.round((_twins / tl.length) * 100) : 0;
+    $('tradeCount').textContent = tl.length
+      ? `${_twins}/${tl.length} wins · ${_twr}% WR`
+      : '0 trades';
     if (!tl.length) {
       $('tradesContainer').innerHTML = '<div class="empty">No trades yet — strategy fires only when all entry conditions align.</div>';
       $('equityCard').style.display = 'none';
@@ -645,15 +694,56 @@ setInterval(async () => {
   } catch(e) {}
 }, 3000);
 
-// EOD countdown — ticks every second when in position
+// Format milliseconds as Hh MMm SSs
+function fmtHMS(ms) {
+  if (ms < 0) ms = 0;
+  const h = Math.floor(ms/3600000);
+  const m = Math.floor((ms%3600000)/60000);
+  const s = Math.floor((ms%60000)/1000);
+  return `${h}h ${m.toString().padStart(2,'0')}m ${s.toString().padStart(2,'0')}s`;
+}
+
+// Per-second countdown ticker. Two states:
+//  - In position: counts down to EOD (20:00 UTC) — when bot force-closes
+//  - Flat with cycle done: counts down to next UTC day (00:00) — cap reset
+//  - Flat & in trading window: counts down to 20:00 UTC entry cutoff
 setInterval(() => {
-  if (!positionSnapshot) return;
   const now = new Date();
-  const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
-  if (now >= eod) eod.setUTCDate(eod.getUTCDate() + 1);
-  const ms = eod - now;
-  const h = Math.floor(ms/3600000), m = Math.floor((ms%3600000)/60000), s = Math.floor((ms%60000)/1000);
-  $('eodCountdown').textContent = `${h}h ${m.toString().padStart(2,'0')}m ${s.toString().padStart(2,'0')}s`;
+  const utcH = now.getUTCHours();
+
+  if (positionSnapshot) {
+    // EOD countdown for the active position
+    const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
+    if (now >= eod) eod.setUTCDate(eod.getUTCDate() + 1);
+    $('eodCountdown').textContent = fmtHMS(eod - now);
+    return;
+  }
+
+  // Flat — update setup card title with cycle countdown
+  const titleEl = $('setupTitle');
+  if (!titleEl || $('setupCard').style.display === 'none') return;
+
+  const cycleDoneToday = lastHeroState.cycleClosedDay && (() => {
+    // Compare lastHeroState.cycleClosedDay with current UTC date string
+    const tStr = `${now.getUTCFullYear()}-${(now.getUTCMonth()+1).toString().padStart(2,'0')}-${now.getUTCDate().toString().padStart(2,'0')}`;
+    return lastHeroState.cycleClosedDay === tStr;
+  })();
+
+  if (cycleDoneToday) {
+    // Cap hit — cap resets at 00:00 UTC, but a trade only fires when price
+    // touches prev_H/prev_L AND RSI + volume align. So the countdown is
+    // "next window opens" not "next trade".
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()+1, 0, 0, 0));
+    titleEl.innerHTML = `Cycle Done — Next window opens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span><div class="mute" style="font-size:11px;font-weight:500;margin-top:6px">Trade fires only when conditions align — touch prev_H/prev_L + RSI 25-75 + volume ≥ 1.2× avg</div>`;
+  } else if (utcH >= 20) {
+    // Past EOD cutoff — same as cycle done
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()+1, 0, 0, 0));
+    titleEl.innerHTML = `Trading Window Closed — Reopens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span>`;
+  } else {
+    // Active hunting window
+    const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
+    titleEl.innerHTML = `Waiting for Setup <span class="mute" style="font-size:11px;font-weight:500"> · Window closes in <span class="num" style="color:var(--text)">${fmtHMS(eod - now)}</span></span>`;
+  }
 }, 1000);
 
 // Tab return → reconnect WS if stale

@@ -159,6 +159,11 @@ class BinanceClient:
         return self._req("DELETE", "/fapi/v1/algoOrder",
                          {"symbol": symbol, "algoId": algo_id}, signed=True)
 
+    def user_trades(self, symbol, start_time=None, limit=50):
+        params = {"symbol": symbol, "limit": limit}
+        if start_time: params["startTime"] = start_time
+        return self._req("GET", "/fapi/v1/userTrades", params, signed=True) or []
+
     def live_price(self, symbol):
         r = self._req("GET", "/fapi/v1/ticker/price", {"symbol": symbol})
         return float(r["price"]) if r else None
@@ -352,32 +357,60 @@ def main():
         state["position"] = pos
         log.warning(f"  Adopted {side} {qty}@{entry}")
     elif not exch_pos and pos is not None:
-        # Resting TP or SL on the exchange filled between cron ticks.
-        # Log a synthetic trade — exact fill price unknown without /fapi/v1/userTrades,
-        # but balance delta gives true PnL.
+        # Resting TP or SL filled between cron ticks. Query Binance's userTrades
+        # to get the ACTUAL fill price + realizedPnl rather than guessing from
+        # balance delta (balance can move from funding fees which aren't trade PnL).
         side = pos["side"]
         entries = pos.get("entries", [])
         qty_total = pos.get("qty_total", 0)
         avg_entry = (sum(e["px"]*e["qty"] for e in entries)/qty_total) if qty_total > 0 else 0
-        prev_balance = state.get("balance_at_entry", balance)
-        pnl_usd = balance - prev_balance
-        pnl_pct = pnl_usd / prev_balance * 100 if prev_balance > 0 else 0
+
+        entry_time_str = pos.get("entry_time", "")
+        try:
+            entry_ts = int(datetime.fromisoformat(entry_time_str).timestamp() * 1000)
+        except Exception:
+            entry_ts = (now_ts - 86400) * 1000  # fallback: last 24h
+
+        recent_trades = client.user_trades(PAIR, start_time=entry_ts, limit=50)
+        # Sum the closing trades — they're the ones with realizedPnl != 0
+        # (entries have realizedPnl=0; exits have non-zero from Binance's calc).
+        exit_pnl = sum(float(t.get("realizedPnl", 0)) for t in recent_trades)
+        exit_fee = sum(float(t.get("commission", 0)) for t in recent_trades
+                       if float(t.get("realizedPnl", 0)) != 0)
+        exit_qty_filled = sum(float(t.get("qty", 0)) for t in recent_trades
+                              if float(t.get("realizedPnl", 0)) != 0)
+        exit_notional = sum(float(t.get("qty", 0)) * float(t.get("price", 0))
+                            for t in recent_trades if float(t.get("realizedPnl", 0)) != 0)
+        exit_avg = exit_notional / exit_qty_filled if exit_qty_filled > 0 else live_px
+        exit_time_ms = max((t["time"] for t in recent_trades
+                            if float(t.get("realizedPnl", 0)) != 0), default=now_ts*1000)
+
+        pnl_usd = exit_pnl - exit_fee  # net of close commission
+        notional_at_entry = avg_entry * qty_total if qty_total > 0 else (balance or 1)
+        pnl_pct = (pnl_usd / notional_at_entry * 100) if notional_at_entry > 0 else 0
+
         state["stats"]["total"] += 1
         state["stats"]["pnl"] += pnl_pct
         if pnl_usd > 0: state["stats"]["wins"] += 1
+        # Reason heuristic: SL trigger > entry for short → exit price closer to SL means SL fired
+        sl_px_was = pos.get("sl", 0)
+        if side == "SHORT":
+            reason = "SL" if exit_avg >= sl_px_was * 0.99 else "TP"
+        else:
+            reason = "SL" if exit_avg <= sl_px_was * 1.01 else "TP"
         state.setdefault("trade_log", []).append({
-            "side": side, "first_entry": pos.get("first_entry"), "exit": live_px,
+            "side": side, "first_entry": pos.get("first_entry"), "exit": exit_avg,
             "entries": len(entries), "avg_entry": avg_entry,
-            "reason": "TP/SL (exchange)", "pnl_usd": pnl_usd, "pnl_pct": pnl_pct,
-            "time": datetime.now(timezone.utc).isoformat(),
-            "note": "exchange-side fill — exit price is approximate (live_px at next cron)",
+            "reason": reason, "pnl_usd": pnl_usd, "pnl_pct": pnl_pct,
+            "time": datetime.fromtimestamp(exit_time_ms/1000, tz=timezone.utc).isoformat(),
         })
         state["trade_log"] = state["trade_log"][-100:]
         state["last_exit_time"] = now_ts
         state["cycle_closed_day"] = today
         state["position"] = None
         cancel_all_orders_and_algos(client, PAIR)  # clean up any orphan exit orders
-        log.warning(f"  Exchange flat — exit fired between cron runs. PnL ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)")
+        log.warning(f"  Exchange flat — exit fired @ ${exit_avg:.2f} via {reason}. "
+                    f"PnL ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)")
         pos = None
 
     # Log signal
