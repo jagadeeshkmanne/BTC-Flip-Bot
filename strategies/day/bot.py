@@ -402,6 +402,7 @@ def main():
             "side": side, "first_entry": pos.get("first_entry"), "exit": exit_avg,
             "entries": len(entries), "avg_entry": avg_entry,
             "reason": reason, "pnl_usd": pnl_usd, "pnl_pct": pnl_pct,
+            "entry_time": pos.get("entry_time"),
             "time": datetime.fromtimestamp(exit_time_ms/1000, tz=timezone.utc).isoformat(),
         })
         state["trade_log"] = state["trade_log"][-100:]
@@ -586,6 +587,7 @@ def main():
                     "side": side, "first_entry": first_entry, "exit": fill,
                     "entries": len(entries), "avg_entry": sum(e["px"]*e["qty"] for e in entries)/qty_total,
                     "reason": reason, "pnl_usd": total_pnl, "pnl_pct": pnl_pct,
+                    "entry_time": pos.get("entry_time"),
                     "time": datetime.now(timezone.utc).isoformat(),
                 }
                 state["trade_log"].append(trade)

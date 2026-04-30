@@ -102,29 +102,32 @@
 
   /* ── Setup card (when no position) ────────────────────────── */
   .setup{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:18px}
-  .setup-title{font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:4px;letter-spacing:.3px}
-  .setup-sub{font-size:11px;color:var(--muted);margin-bottom:14px}
+  .setup-title{font-size:17px;font-weight:700;color:var(--text-bright);margin-bottom:8px;letter-spacing:.3px;line-height:1.3}
+  .setup-sub{font-size:14px;color:var(--muted);margin-bottom:16px;line-height:1.5}
   /* Cycle Done state — just show the countdown, hide all the entry-condition
      UI (RSI/volume/range stats, condition rows). Cleaner waiting state. */
   .setup.cycle-done{padding:36px 18px;text-align:center}
   .setup.cycle-done > *:not(#setupTitle){display:none !important}
   .setup.cycle-done #setupTitle{font-size:16px;line-height:1.4}
-  .setup-stats{display:flex;gap:14px;font-size:11px;margin-bottom:16px;flex-wrap:wrap}
+  .setup-stats{display:flex;gap:18px;font-size:14px;margin-bottom:18px;flex-wrap:wrap}
   .setup-stats span{color:var(--muted)} .setup-stats b{color:var(--text);font-weight:700}
+  /* Waiting reasons list inside .waiting-box */
+  .waiting-box ul{margin:6px 0 0 18px;padding:0;color:var(--muted-2)}
+  .waiting-box ul li{margin-bottom:4px;line-height:1.55}
   .setup-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-  .setup-pill{font-size:10px;font-weight:800;padding:4px 10px;border-radius:4px;letter-spacing:.5px;min-width:54px;text-align:center}
+  .setup-pill{font-size:12px;font-weight:800;padding:5px 12px;border-radius:4px;letter-spacing:.5px;min-width:62px;text-align:center}
   .setup-pill.long{background:rgba(46,160,67,.15);color:var(--green-2)}
   .setup-pill.short{background:rgba(248,81,73,.15);color:var(--red)}
   .setup-bar{flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
   .setup-bar > div{height:100%;transition:width .3s}
   .setup-row.long .setup-bar > div{background:linear-gradient(90deg,var(--green),var(--green-2))}
   .setup-row.short .setup-bar > div{background:linear-gradient(90deg,var(--red),var(--red-2))}
-  .setup-cnt{font-size:11px;font-weight:700;color:var(--muted);min-width:34px;text-align:right}
-  .setup-conds{margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px}
+  .setup-cnt{font-size:13px;font-weight:700;color:var(--muted);min-width:40px;text-align:right}
+  .setup-conds{margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:14px}
   @media(max-width:480px){.setup-conds{grid-template-columns:1fr}}
-  .setup-cond{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;background:rgba(255,255,255,.02)}
+  .setup-cond{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:4px;background:rgba(255,255,255,.02)}
   .setup-cond.met{background:rgba(46,160,67,.08);color:#7ee094}
-  .setup-cond .cond-mark{font-weight:700;width:12px;text-align:center}
+  .setup-cond .cond-mark{font-weight:700;width:14px;text-align:center;font-size:14px}
   .setup-cond.met .cond-mark{color:var(--green-2)}
   .setup-cond:not(.met) .cond-mark{color:var(--red)}
   .setup-cond .cond-name{flex:1}
@@ -132,22 +135,46 @@
 
   /* ── Trades + recent ───────────────────────────────────── */
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
-  .panel-head{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--border)}
-  .panel-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-  .panel-meta{font-size:11px;color:var(--muted)}
-  .empty{padding:24px;text-align:center;color:var(--muted);font-size:12px}
-  table{width:100%;border-collapse:collapse}
-  th{padding:8px 12px;font-size:10px;color:var(--muted);font-weight:700;text-align:right;text-transform:uppercase;letter-spacing:.4px;background:rgba(0,0,0,.18);border-bottom:1px solid var(--border)}
-  td{padding:8px 12px;font-size:12px;text-align:right;border-bottom:1px solid var(--border)}
+  .panel-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)}
+  .panel-title{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .panel-meta{font-size:12px;color:var(--muted)}
+  .empty{padding:24px;text-align:center;color:var(--muted);font-size:13px}
+  /* Horizontal scroll on mobile so the 8-col trades table doesn't squish. */
+  .trades-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table{width:100%;border-collapse:collapse;min-width:560px}
+  th{padding:10px 12px;font-size:11px;color:var(--muted);font-weight:700;text-align:right;text-transform:uppercase;letter-spacing:.4px;background:rgba(0,0,0,.18);border-bottom:1px solid var(--border);white-space:nowrap}
+  td{padding:11px 12px;font-size:14px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap}
   th:first-child,td:first-child{text-align:left}
   tr:last-child td{border-bottom:none}
-  .side-tag{font-size:10px;font-weight:700;padding:2px 7px;border-radius:3px;letter-spacing:.4px}
+  .side-tag{font-size:11px;font-weight:700;padding:3px 8px;border-radius:3px;letter-spacing:.4px}
   .side-tag.long{background:rgba(46,160,67,.15);color:var(--green-2)}
   .side-tag.short{background:rgba(248,81,73,.15);color:var(--red)}
+  /* Mobile: replace the wide table with stacked trade cards. Desktop keeps
+     the table view for at-a-glance horizontal scanning. */
+  .trades-cards{display:none;padding:8px 8px 4px}
+  .trade-card{padding:14px 16px;margin-bottom:8px;background:rgba(255,255,255,.02);border:1px solid var(--border);border-left-width:4px;border-radius:6px}
+  .trade-card.win{border-left-color:var(--green-2);background:rgba(46,160,67,.05)}
+  .trade-card.loss{border-left-color:var(--red);background:rgba(248,81,73,.05)}
+  .trade-card:last-child{margin-bottom:0}
+  .trade-card-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap}
+  .trade-card-side{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .trade-card-time{font-size:12px;color:var(--muted)}
+  .trade-card-pnl{font-size:18px;font-weight:800;text-align:right}
+  .trade-card-pnl-pct{font-size:13px;font-weight:700;margin-left:4px}
+  .trade-card-detail{display:flex;justify-content:space-between;font-size:13px;color:var(--muted-2);gap:14px;flex-wrap:wrap}
+  .trade-card-detail b{color:var(--text);font-weight:600}
+  /* Desktop: zebra striping + win/loss left-border accent on the table too */
+  .trades-table tr.win{background:rgba(46,160,67,.04);box-shadow:inset 4px 0 0 var(--green-2)}
+  .trades-table tr.loss{background:rgba(248,81,73,.04);box-shadow:inset 4px 0 0 var(--red)}
+  .trades-table tr.win td:first-child,.trades-table tr.loss td:first-child{padding-left:16px}
+  @media(max-width:640px){
+    .trades-table{display:none}
+    .trades-cards{display:block}
+  }
 
   /* ── Equity sparkline ───────────────────────────────────── */
-  #equityChart{width:100%;height:120px}
-  @media(max-width:768px){#equityChart{height:90px}}
+  #equityChart{width:100%;height:240px}
+  @media(max-width:768px){#equityChart{height:180px}}
 
   /* ── Chart fallback (when flat, no position) ──────────────── */
   #priceChart{width:100%;height:380px}
@@ -223,7 +250,7 @@
   <section class="setup" id="setupCard">
     <div class="setup-title" id="setupTitle">Waiting for Setup</div>
     <div class="setup-sub" id="setupSub">V2: Bot fires when 5m volume + RSI + price-touch align (no bias gate). Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
-    <div class="waiting-box" id="waitingReason" style="margin:10px 0;padding:10px 12px;background:rgba(248,81,73,.06);border-left:3px solid var(--red);border-radius:4px;font-size:11px;line-height:1.5">--</div>
+    <div class="waiting-box" id="waitingReason" style="margin:14px 0;padding:16px 18px;background:rgba(248,81,73,.06);border-left:3px solid var(--red);border-radius:4px;font-size:15px;line-height:1.7">--</div>
     <div class="setup-stats">
       <span>RSI <b class="num" id="setupRsi">--</b></span>
       <span>Volume <b class="num" id="setupVol">--</b></span>
@@ -243,19 +270,22 @@
     <div class="setup-conds" id="shortConds"></div>
   </section>
 
-  <!-- Recent trades -->
+  <!-- Equity (only if trades exist) -->
+  <section class="panel" id="equityCard" style="display:none">
+    <div class="panel-head">
+      <span class="panel-title">Equity Curve</span>
+    </div>
+    <div id="equityChart"></div>
+  </section>
+
+  <!-- Recent trades — moved to bottom, last section. Horizontally
+       scrollable on mobile so all 8 columns fit. -->
   <section class="panel">
     <div class="panel-head">
       <span class="panel-title">Recent Trades</span>
       <span class="panel-meta" id="tradeCount">0 trades</span>
     </div>
-    <div id="tradesContainer"><div class="empty">No trades yet</div></div>
-  </section>
-
-  <!-- Equity (only if trades exist) -->
-  <section class="panel" id="equityCard" style="display:none">
-    <div class="panel-head"><span class="panel-title">Equity Curve</span></div>
-    <div id="equityChart"></div>
+    <div id="tradesContainer" class="trades-scroll"><div class="empty">No trades yet</div></div>
   </section>
 
 </div>
@@ -421,12 +451,35 @@ function renderSetup(status){
   };
   renderCondList(LONG_CONDS, $('longConds'));
   renderCondList(SHORT_CONDS, $('shortConds'));
+
+  // Bar width = how close to firing entry. RSI + volume are binary (1.0 each
+  // when met, 0 when not). Touch is a SMOOTH function of price proximity:
+  // when price is at the level (within 0.05% zone), touch=1.0 (will fire).
+  // As price drifts away, touch decays linearly to 0 at MAX_DIST_PCT.
+  // This makes the bar width meaningfully reflect "is this side close to
+  // firing" rather than just the binary count, which is misleading when
+  // RSI+volume always pass and only the touch gates the entry.
+  const ZONE_PCT = 0.05;       // touch counts as fully met inside this zone
+  const MAX_DIST_PCT = 5.0;    // beyond this, touch progress is zero
+  const touchProgress = (distPct) => {
+    if (distPct <= ZONE_PCT) return 1.0;
+    if (distPct >= MAX_DIST_PCT) return 0.0;
+    return 1 - (distPct - ZONE_PCT) / (MAX_DIST_PCT - ZONE_PCT);
+  };
+  const px = ind.price || 0;
+  const distToL = (ind.prev_L && px) ? Math.abs((px - ind.prev_L) / ind.prev_L) * 100 : 999;
+  const distToH = (ind.prev_H && px) ? Math.abs((ind.prev_H - px) / ind.prev_H) * 100 : 999;
+  const rsiOkLong  = isT(condData.conditions['RSI long ok (>25)'])  ? 1 : 0;
+  const rsiOkShort = isT(condData.conditions['RSI short ok (<75)']) ? 1 : 0;
+  const volOk      = isT(condData.conditions['Volume > 1.2× avg'])  ? 1 : 0;
+  const longScore  = rsiOkLong  + volOk + touchProgress(distToL);
+  const shortScore = rsiOkShort + volOk + touchProgress(distToH);
   const lMet = LONG_CONDS.filter(c => c.check(condData)).length;
   const sMet = SHORT_CONDS.filter(c => c.check(condData)).length;
   $('longCnt').textContent = `${lMet}/${LONG_CONDS.length}`;
   $('shortCnt').textContent = `${sMet}/${SHORT_CONDS.length}`;
-  $('longProg').style.width = (lMet / LONG_CONDS.length * 100) + '%';
-  $('shortProg').style.width = (sMet / SHORT_CONDS.length * 100) + '%';
+  $('longProg').style.width = (longScore / LONG_CONDS.length * 100) + '%';
+  $('shortProg').style.width = (shortScore / SHORT_CONDS.length * 100) + '%';
 
   // ── "Why waiting" — explain what's blocking the next entry ──
   const waitingEl = $('waitingReason');
@@ -462,7 +515,7 @@ function renderSetup(status){
     }
     waitingEl.innerHTML = reasons.length === 0
       ? '<span class="pos">All conditions met — entry should fire on next valid bar</span>'
-      : `Waiting because: <ul style="margin:4px 0 0 16px;padding:0;color:var(--muted-2)"><li>${reasons.join('</li><li>')}</li></ul>`;
+      : `<b>Waiting because:</b><ul><li>${reasons.join('</li><li>')}</li></ul>`;
   }
 }
 
@@ -568,38 +621,192 @@ async function refresh(){
       $('tradesContainer').innerHTML = '<div class="empty">No trades yet — strategy fires only when all entry conditions align.</div>';
       $('equityCard').style.display = 'none';
     } else {
-      $('tradesContainer').innerHTML =
-        '<table><thead><tr><th>Time</th><th>Side</th><th>Entry</th><th>Exit</th><th>Exit&nbsp;Reason</th><th>PnL&nbsp;USD</th><th>PnL %</th></tr></thead><tbody>' +
-        tl.slice(-15).reverse().map(t => {
-          const cls = t.pnl_pct > 0 ? 'pos' : 'neg';
-          // Bot writes `first_entry` / `avg_entry` and `pnl_usd` (not `entry`/`pnl`)
-          const entryPx = t.avg_entry || t.first_entry || t.entry || 0;
-          const exitPx  = t.exit || t.exit_price || 0;
-          const pnlUsd  = t.pnl_usd !== undefined ? t.pnl_usd : t.pnl;
-          const tStr = t.time ? new Date(t.time).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '--';
-          // Reason styling — TP=green, SL=red, EOD=gray
-          const rCls = t.reason === 'TP' ? 'pos' : t.reason === 'SL' ? 'neg' : 'mute';
-          const rTag = `<span class="side-tag ${t.reason === 'TP' ? 'long' : t.reason === 'SL' ? 'short' : ''}" style="background:${t.reason==='TP'?'rgba(46,160,67,.15)':t.reason==='SL'?'rgba(248,81,73,.15)':'rgba(110,118,129,.15)'};color:${t.reason==='TP'?'var(--green-2)':t.reason==='SL'?'var(--red)':'var(--muted-2)'}">${t.reason || '?'}</span>`;
-          return `<tr><td class="mute" style="font-size:11px">${tStr}</td>` +
-                 `<td><span class="side-tag ${t.side==='LONG'?'long':'short'}">${t.side}</span></td>` +
-                 `<td class="num">$${Number(entryPx).toFixed(0)}</td>` +
-                 `<td class="num">$${Number(exitPx).toFixed(0)}</td>` +
-                 `<td>${rTag}</td>` +
-                 `<td class="num ${cls}" style="font-weight:700">${pnlUsd !== undefined ? fmtUsd(pnlUsd) : '--'}</td>` +
-                 `<td class="num ${cls}" style="font-weight:700">${fmtPct(t.pnl_pct)}</td></tr>`;
-        }).join('') + '</tbody></table>';
+      // Render trades twice: a wide table for desktop, stacked cards for
+      // mobile (CSS hides one based on screen width). Card layout puts PnL
+      // front-and-center so you don't need to scroll horizontally.
+      const trades = tl.slice(-15).reverse().map(t => {
+        const cls = (t.pnl_usd ?? t.pnl_pct ?? 0) > 0 ? 'pos' : 'neg';
+        const entryPx = t.avg_entry || t.first_entry || t.entry || 0;
+        const exitPx  = t.exit || t.exit_price || 0;
+        const pnlUsd  = t.pnl_usd !== undefined ? t.pnl_usd : t.pnl;
+        const tStr = t.time ? new Date(t.time).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '--';
+        let holdStr = '--';
+        if (t.entry_time && t.time) {
+          const hMs = new Date(t.time) - new Date(t.entry_time);
+          if (hMs > 0) {
+            const hH = Math.floor(hMs / 3600000);
+            const hM = Math.floor((hMs % 3600000) / 60000);
+            holdStr = hH > 0 ? `${hH}h ${hM.toString().padStart(2,'0')}m` : `${hM}m`;
+          }
+        }
+        const rTag = `<span class="side-tag" style="background:${t.reason==='TP'?'rgba(46,160,67,.15)':t.reason==='SL'?'rgba(248,81,73,.15)':'rgba(110,118,129,.15)'};color:${t.reason==='TP'?'var(--green-2)':t.reason==='SL'?'var(--red)':'var(--muted-2)'}">${t.reason || '?'}</span>`;
+        const sideTag = `<span class="side-tag ${t.side==='LONG'?'long':'short'}">${t.side}</span>`;
+        return {cls, entryPx, exitPx, pnlUsd, tStr, holdStr, rTag, sideTag, pnlPct: t.pnl_pct};
+      });
+
+      const tableHtml =
+        '<div class="trades-table"><table><thead><tr><th>Time</th><th>Side</th><th>Entry</th><th>Exit</th><th>Hold</th><th>Exit&nbsp;Reason</th><th>PnL&nbsp;USD</th><th>PnL %</th></tr></thead><tbody>' +
+        trades.map(x =>
+          `<tr class="${x.cls === 'pos' ? 'win' : 'loss'}"><td class="mute" style="font-size:12px">${x.tStr}</td>` +
+          `<td>${x.sideTag}</td>` +
+          `<td class="num">$${Number(x.entryPx).toFixed(0)}</td>` +
+          `<td class="num">$${Number(x.exitPx).toFixed(0)}</td>` +
+          `<td class="num mute" style="font-size:12px">${x.holdStr}</td>` +
+          `<td>${x.rTag}</td>` +
+          `<td class="num ${x.cls}" style="font-weight:700">${x.pnlUsd !== undefined ? fmtUsd(x.pnlUsd) : '--'}</td>` +
+          `<td class="num ${x.cls}" style="font-weight:700">${fmtPct(x.pnlPct)}</td></tr>`
+        ).join('') + '</tbody></table></div>';
+
+      const cardsHtml = '<div class="trades-cards">' + trades.map(x => `
+        <div class="trade-card ${x.cls === 'pos' ? 'win' : 'loss'}">
+          <div class="trade-card-top">
+            <div class="trade-card-side">${x.sideTag}${x.rTag}<span class="trade-card-time">${x.tStr}</span></div>
+            <div class="trade-card-pnl ${x.cls}">${x.pnlUsd !== undefined ? fmtUsd(x.pnlUsd) : '--'}<span class="trade-card-pnl-pct">${fmtPct(x.pnlPct)}</span></div>
+          </div>
+          <div class="trade-card-detail">
+            <span><b>$${Number(x.entryPx).toFixed(0)}</b> → <b>$${Number(x.exitPx).toFixed(0)}</b></span>
+            <span>Hold <b>${x.holdStr}</b></span>
+          </div>
+        </div>
+      `).join('') + '</div>';
+
+      $('tradesContainer').innerHTML = tableHtml + cardsHtml;
 
       $('equityCard').style.display = '';
       const eq = ensureEquityChart();
+      // Group trades by UTC date — strategy is 1-cycle/day so usually one
+      // entry per date, but bucketing handles any future multi-trade days.
+      const dayBucket = {};
+      tl.forEach(t => {
+        const d = new Date(t.time);
+        const key = `${d.getUTCFullYear()}-${(d.getUTCMonth()+1).toString().padStart(2,'0')}-${d.getUTCDate().toString().padStart(2,'0')}`;
+        if (!dayBucket[key]) dayBucket[key] = {date: key, pnlPct: 0, pnlUsd: 0};
+        dayBucket[key].pnlPct += (t.pnl_pct || 0);
+        dayBucket[key].pnlUsd += (t.pnl_usd || 0);
+      });
+      const days = Object.values(dayBucket).sort((a, b) => a.date.localeCompare(b.date));
+
+      // Fetch BTC daily klines for buy-and-hold benchmark line. The "buy
+      // price" is the FIRST TRADE'S entry price — meaning we simulate
+      // someone who bought BTC at the exact moment the strategy opened its
+      // first position, with the same $5,000. That's the most honest
+      // apples-to-apples comparison: same starting capital, same starting
+      // moment. Buy-hold equity = $5,000 × (current_BTC_close / first_entry).
+      // Cached to avoid refetching every 2s refresh.
+      let buyHoldByDate = window._buyHoldCache || {};
+      let buyHoldStartPx = (tl[0] && tl[0].first_entry) || 0;
+      if (days.length) {
+        const firstD = new Date(days[0].date + 'T00:00:00Z');
+        firstD.setUTCDate(firstD.getUTCDate() - 1);
+        const startMs = firstD.getTime();
+        const endMs = Date.now();
+        const cacheKey = `${days[0].date}-${new Date().toUTCString().slice(0, 16)}`; // refresh hourly
+        if (window._buyHoldCacheKey !== cacheKey) {
+          try {
+            const url = `${REST_HOST}/fapi/v1/klines?symbol=BTCUSDT&interval=1d&startTime=${startMs}&endTime=${endMs}&limit=500`;
+            const r = await fetch(url);
+            const ks = await r.json();
+            if (Array.isArray(ks) && ks.length) {
+              buyHoldByDate = {};
+              ks.forEach(k => {
+                const d = new Date(k[0]); // open time
+                const key = `${d.getUTCFullYear()}-${(d.getUTCMonth()+1).toString().padStart(2,'0')}-${d.getUTCDate().toString().padStart(2,'0')}`;
+                buyHoldByDate[key] = parseFloat(k[4]); // close price
+              });
+              window._buyHoldCache = buyHoldByDate;
+              window._buyHoldCacheKey = cacheKey;
+            }
+          } catch (e) { console.log('[buy-hold fetch failed]', e); }
+        }
+      }
+      // Build cumulative equity series + buy-and-hold benchmark.
+      // Equity uses pnl_usd directly (additive) rather than pnl_pct
+      // (multiplicative) — pnl_pct is calculated against trade notional, not
+      // against equity, so compounding it gives the wrong total ($61 vs $57.67
+      // for our case).
       let cap = START_BALANCE;
-      const points = tl.map(t => { cap *= (1 + t.pnl_pct/100); return [new Date(t.time).getTime(), cap]; });
+      const dates = [];
+      const equity = [];
+      const buyHold = [];
+      const dailyPnl = [];
+      if (days.length) {
+        // Anchor: the first trade's day at $5,000 (zero PnL before strategy ran)
+        dates.push(days[0].date);
+        equity.push(START_BALANCE);
+        buyHold.push(START_BALANCE);
+        dailyPnl.push(0);
+      }
+      days.forEach(d => {
+        cap += d.pnlUsd;  // additive, matches realized $ exactly
+        dates.push(d.date);
+        equity.push(+cap.toFixed(2));
+        dailyPnl.push(+d.pnlUsd.toFixed(2));
+        // Buy-and-hold: $5k of BTC bought at first trade's entry price,
+        // valued at this day's CLOSE. equity = $5,000 × (close / first_entry).
+        const bhPx = buyHoldByDate[d.date];
+        if (bhPx && buyHoldStartPx > 0) {
+          buyHold.push(+(START_BALANCE * bhPx / buyHoldStartPx).toFixed(2));
+        } else {
+          buyHold.push(buyHold[buyHold.length - 1] || START_BALANCE);
+        }
+      });
+      const fmtDate = s => {
+        const [, m, d] = s.split('-');
+        return `${parseInt(d)} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(m)-1]}`;
+      };
+      // Compute final PnL for each series so we can show it on the legend.
+      const _sLast = equity[equity.length - 1] || START_BALANCE;
+      const _bLast = buyHold[buyHold.length - 1] || START_BALANCE;
+      const _sPnl = _sLast - START_BALANCE;
+      const _bPnl = _bLast - START_BALANCE;
+      const _sPct = (_sPnl / START_BALANCE) * 100;
+      const _bPct = (_bPnl / START_BALANCE) * 100;
+      const _delta = _sPct - _bPct;
+      const _fmtSign = (v, isPct) => (v >= 0 ? '+' : '') + (isPct ? v.toFixed(2) + '%' : '$' + Math.abs(v).toFixed(2));
+      const _legendLabel = (base, pnl, pct) => {
+        const sign = pnl >= 0 ? '+' : '−';
+        return `${base}  ${sign}$${Math.abs(pnl).toFixed(2)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+      };
       eq.setOption({
         backgroundColor:'transparent', animation:false,
-        grid:{left:50,right:14,top:10,bottom:24},
-        xAxis:{type:'time', axisLine:{lineStyle:{color:'#1f262e'}}, axisLabel:{color:'#6e7681',fontSize:9}, splitLine:{show:false}},
-        yAxis:{scale:true, position:'right', splitLine:{lineStyle:{color:'#1f262e44'}}, axisLine:{show:false}, axisLabel:{color:'#9ca3af',fontSize:10,formatter:v=>'$'+(v>=1000?(v/1000).toFixed(1)+'k':v.toFixed(0))}},
-        series:[{type:'line', data:points, smooth:true, showSymbol:false, areaStyle:{color:'rgba(63,185,80,.18)'}, lineStyle:{color:'#3fb950',width:2}}],
+        legend:{
+          data:[
+            {name:'Strategy', textStyle:{color: _sPnl >= 0 ? '#3fb950' : '#f85149'}},
+            {name:'Buy & Hold', textStyle:{color: _bPnl >= 0 ? '#3fb950' : '#f85149'}},
+          ],
+          formatter: name => name === 'Strategy' ? _legendLabel('Strategy', _sPnl, _sPct)
+                          : name === 'Buy & Hold' ? _legendLabel('Buy & Hold', _bPnl, _bPct)
+                          : name,
+          top:0, textStyle:{color:'#9ca3af', fontSize:11}, itemWidth:14, itemHeight:8, itemGap:24,
+        },
+        grid:{left:50, right:50, top:30, bottom:24},
+        tooltip:{trigger:'axis', formatter:p => {
+          const sp = p.find(x => x.seriesName === 'Strategy');
+          const bp = p.find(x => x.seriesName === 'Buy & Hold');
+          const dp = p.find(x => x.seriesName === 'Daily PnL');
+          const date = p[0].axisValueLabel;
+          const sVal = sp?.value ?? START_BALANCE;
+          const bVal = bp?.value ?? START_BALANCE;
+          const sRet = ((sVal/START_BALANCE - 1)*100).toFixed(2);
+          const bRet = ((bVal/START_BALANCE - 1)*100).toFixed(2);
+          return `<b>${date}</b><br>` +
+            `<span style="color:#3fb950">Strategy: $${sVal.toFixed(2)} (${sRet >= 0 ? '+' : ''}${sRet}%)</span><br>` +
+            `<span style="color:#58a6ff">Buy & Hold: $${bVal.toFixed(2)} (${bRet >= 0 ? '+' : ''}${bRet}%)</span><br>` +
+            `Daily PnL: ${dp?.value >= 0 ? '+' : ''}$${(dp?.value ?? 0).toFixed(2)}`;
+        }},
+        xAxis:{type:'category', data:dates, boundaryGap:false, axisLine:{lineStyle:{color:'#1f262e'}}, axisLabel:{color:'#6e7681',fontSize:10,formatter:fmtDate}, splitLine:{show:false}},
+        yAxis:[
+          {scale:true, position:'left', splitLine:{lineStyle:{color:'#1f262e44'}}, axisLine:{show:false}, axisLabel:{color:'#9ca3af',fontSize:10,formatter:v=>'$'+(v>=1000?(v/1000).toFixed(1)+'k':v.toFixed(0))}},
+          {scale:true, position:'right', splitLine:{show:false}, axisLine:{show:false}, axisLabel:{color:'#9ca3af',fontSize:10,formatter:v=>(v>=0?'+':'')+'$'+v.toFixed(0)}},
+        ],
+        series:[
+          {name:'Strategy', type:'line', data:equity, smooth:true, showSymbol:true, symbolSize:6, areaStyle:{color:'rgba(63,185,80,.18)'}, lineStyle:{color:'#3fb950',width:2}, itemStyle:{color:'#3fb950'}, yAxisIndex:0},
+          {name:'Buy & Hold', type:'line', data:buyHold, smooth:true, showSymbol:false, lineStyle:{color:'#58a6ff',width:1.5,type:'dashed'}, itemStyle:{color:'#58a6ff'}, yAxisIndex:0},
+          {name:'Daily PnL', type:'bar', data:dailyPnl, yAxisIndex:1, barWidth:'30%', itemStyle:{color:p => p.value >= 0 ? 'rgba(63,185,80,.45)' : 'rgba(248,81,73,.45)'}},
+        ],
       }, true);
+
+      // (No header strip — values shown directly on the chart legend.)
     }
   } catch(e) { console.log('[refresh] error', e); }
 }
@@ -734,15 +941,15 @@ setInterval(() => {
     // touches prev_H/prev_L AND RSI + volume align. So the countdown is
     // "next window opens" not "next trade".
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()+1, 0, 0, 0));
-    titleEl.innerHTML = `Cycle Done — Next window opens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span><div class="mute" style="font-size:11px;font-weight:500;margin-top:6px">Trade fires only when conditions align — touch prev_H/prev_L + RSI 25-75 + volume ≥ 1.2× avg</div>`;
+    titleEl.innerHTML = `Cycle Done — Next window opens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span><div style="font-size:14px;font-weight:500;color:var(--muted);margin-top:10px;line-height:1.55">Trade fires only when conditions align — touch prev_H/prev_L + RSI 25-75 + volume ≥ 1.2× avg</div>`;
   } else if (utcH >= 20) {
     // Past EOD cutoff — same as cycle done
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()+1, 0, 0, 0));
     titleEl.innerHTML = `Trading Window Closed — Reopens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span>`;
   } else {
-    // Active hunting window
+    // Active hunting window — countdown rendered on its own line below.
     const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
-    titleEl.innerHTML = `Waiting for Setup <span class="mute" style="font-size:11px;font-weight:500"> · Window closes in <span class="num" style="color:var(--text)">${fmtHMS(eod - now)}</span></span>`;
+    titleEl.innerHTML = `Waiting for Setup<div style="font-size:14px;font-weight:500;color:var(--muted);margin-top:8px">Window closes in <span class="num" style="color:var(--text-bright);font-weight:700">${fmtHMS(eod - now)}</span></div>`;
   }
 }, 1000);
 
