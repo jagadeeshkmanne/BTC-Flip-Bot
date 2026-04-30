@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bot.py — S/R DCA Day Trader V2 live bot (5m exec + 1d S/R, no bias).
+bot.py — S/R DCA Day Trader live bot (5m exec + 1d S/R).
 
 Runs every 5 min via cron. Fetches 5m klines + 1d klines, computes prev-day
 H/L/mid + bias, manages DCA position (entry → L1 → optional L2 → TP/SL/BE).
@@ -226,7 +226,7 @@ def round_price(p, tick):
 def ensure_exits(client, info, pair, side, qty_total, tp_px, sl_px):
     """Maintain reduce-only TP (LIMIT) + SL (STOP_MARKET via algoOrder).
 
-    Pine V2 simulates intra-bar TP/SL fills via strategy.exit(limit=, stop=).
+    Pine strategy simulates intra-bar TP/SL fills via strategy.exit(limit=, stop=).
     These resting orders give the live bot the same execution semantics so
     spikes through TP/SL don't get missed by the 5-min cron interval.
 
@@ -294,7 +294,7 @@ def cancel_all_orders_and_algos(client, pair):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"S/R DCA Day Bot V2 (5m + 1d S/R, no bias) — env={ENV} dry={ARGS.dry}")
+    log.info(f"S/R DCA Day Bot (5m + 1d S/R) — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
@@ -424,7 +424,7 @@ def main():
         "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos, "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "S/R DCA Day V2 (5m exec + 1d S/R, no bias)",
+        "strategy": "S/R DCA Day (5m exec + 1d S/R)",
         "cycle_closed_day": state.get("cycle_closed_day", ""),
     }
 

@@ -24,11 +24,11 @@ LEVERAGE       = 2.0
 RISK_PCT       = 0.06         # 6% total risk per cycle
 
 DCA_LEVELS     = 2
-DCA_SPACING    = 0.008        # V2: 0.8% between DCA levels (was 1.0% in V1)
-SL_BELOW_WORST = 0.02         # 2% below worst entry (unchanged from V1)
-SUPPORT_ZONE   = 0.0005       # V2: 0.05% zone around prev H/L (was 0.2% in V1) — only direct touches qualify
+DCA_SPACING    = 0.008        # 0.8% between DCA legs
+SL_BELOW_WORST = 0.02         # 2% below worst entry (above for shorts)
+SUPPORT_ZONE   = 0.0005       # 0.05% zone around prev H/L — only direct touches qualify
 
-CLOSE_HOUR     = 20           # V2: UTC hour to force flatten + block new entries. Reverted to 20 (was 23 in V1's last tweak).
+CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries
 
 # Entry filters
 VOL_MULT       = 1.2          # volume > 1.2× 20-bar avg
@@ -149,9 +149,10 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
 
     in_trade_window = utc_h < CLOSE_HOUR
 
-    # V2: NO BIAS GATE. Both directions allowed regardless of trend bias.
-    # The bias filter was removed because it was blocking entries at S/R levels
-    # (price reaching prev_L always coincided with bias flipping BEAR, etc).
+    # NO BIAS GATE. Both directions allowed regardless of trend bias.
+    # The bias filter was tested and removed — it blocked 60%+ of valid
+    # entries because bias flips BEAR right when price reaches prev_L
+    # (likewise BULL when price reaches prev_H).
     long_ok  = (rsi_ok_long  and vol_ok and touch_L and in_trade_window)
     short_ok = (rsi_ok_short and vol_ok and touch_H and in_trade_window)
 

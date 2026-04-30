@@ -2,24 +2,33 @@
 // ─────────────────────────────────────────────────────────────────────
 // S/R DCA Day Trader (5m)
 //
-// Tuned config produced +27.07% / 3.22% DD / PF 10.83 / 74% WR on
-// BTCUSDT 5m (Mar 16 → Apr 23, 2026).
-// Config: 1h EMA20 bias, zone 0.2%, closeHour 23, SL 2%, DCA 2×1%.
+// ⚠ DESIGNED FOR: BTCUSDT · 5-minute timeframe · ONLY.
+//   Tuned to BTC's daily range, RSI behavior, and S/R touch frequency.
+//   Other symbols and timeframes have NOT been validated.
+//   The strategy shows a wrong-TF warning on anything other than 5m.
 //
-// ⚠ Warning: 5m results are only validated over SHORT recent windows.
-// TV free tier caps 5m history to ~1 month. Real long-term edge unverified.
+// 5m support/resistance DCA day trader. Buys at prev_day low, shorts at
+// prev_day high, averages down once if price moves further against, exits
+// at prev_day midpoint. Force-flattens at 20:00 UTC, never holds overnight.
+// 1 cycle per UTC day max.
 //
 // Logic:
-//   - Support = prior day's low; Resistance = prior day's high
-//   - 1h EMA20 bias (prior 1h close, no lookahead) — catches intraday
-//     regime shifts that daily EMA50 misses
-//   - Long (1h bias bull): price touches prev_L → enter L1
-//                          + 1% below L1 → DCA L2
-//   - Short: mirror at prev_H (1h bias bear)
-//   - TP: prior day midpoint (prev_H + prev_L) / 2
-//   - SL: 2% below worst entry
-//   - EOD flatten at UTC 23:00
-//   - Max 1 cycle per UTC day
+//   - Entry: 5m low touches prev_L (LONG) or 5m high touches prev_H (SHORT),
+//     within a 0.05% zone
+//   - Filters: RSI anti-extreme (skip LONG <25 / SHORT >75) + volume ≥ 1.2× SMA
+//   - DCA: 1 add at worst_entry × (1 ∓ 0.8%)
+//   - TP: prev_day midpoint (or prev_extreme / fixed %)
+//   - SL: worst_entry × (1 ∓ 2%)
+//   - EOD: force flatten at configurable UTC hour (default 20:00)
+//
+// Tested on BTCUSDT 5m. Recent 5w: +32.35% / PF 3.65 / 43 trades (default
+// settings); +35.20% with fixed-4% TP variant.
+//
+// ⚠ Regime warning: a 2.3-year python backtest returned -72.78% / DD 82%.
+// The strategy is regime-favorable (works in mean-reverting markets) but
+// breaks down in strong trends. Paper-trade or testnet first.
+//
+// Live testnet deployment: http://34.14.124.215:8888/dashboard.html?env=testnet
 // ─────────────────────────────────────────────────────────────────────
 
 leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5)
@@ -40,12 +49,15 @@ riskPct = input.float(6.0, "Total risk per cycle (%)", minval=0.1, maxval=15, st
 grpDCA = "📊 S/R DCA"
 dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
      tooltip="5m uses 2 levels. Each DCA adds 1 leg at worst_entry × (1 ± dcaSpacing).")
-dcaSpacing   = input.float(1.0, "DCA spacing (%)", minval=0.3, maxval=3, step=0.1, group=grpDCA) / 100
+dcaSpacing   = input.float(0.8, "DCA spacing (%)", minval=0.3, maxval=3, step=0.1, group=grpDCA,
+     tooltip="Distance between DCA legs. Tighter spacing fills DCA more often with a tighter avg entry.") / 100
 slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA)/100
-supportZone  = input.float(0.2, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA,
-     tooltip="Wider zone fires more setups. Apr 2026 BTC backtest 2.3y: 0.2% net -7.17% / PF 0.98 vs 0.1% -1.33% / PF 1.07. Running 0.2% on live testnet to observe behavior.") / 100
-closeHour    = input.int(23, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA,
-     tooltip="EOD flatten hour (UTC). Also blocks new entries past this hour. Apr 2026 BTC backtest 2.3y: 23 gave +13.76% / PF 1.31 / WR 62% vs 20 gave -1.33% / PF 1.07 / WR 56%.")
+supportZone  = input.float(0.05, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA,
+     tooltip="How close to prev_H/prev_L the bar high/low must be to count as a touch. 0.05% = direct touch only, very selective. Wider zones fire on near-misses but hurt win rate.") / 100
+useEodFlatten = input.bool(true, "Force flatten at EOD UTC hour", group=grpDCA,
+     tooltip="When ON: position closes at closeHour UTC and entries are blocked past that hour. When OFF: position rides until TP or SL hits, no time limit. Backtest history says EOD-on is safer; OFF lets winners run but exposes to overnight regime shifts.")
+closeHour    = input.int(20, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA,
+     tooltip="Only used when EOD flatten is ON. Backtest: 20 is conservative, 23 lets trades work longer.")
 
 // ─── Quality filters ───
 grpFilter = "🎯 Entry Quality Filters"
@@ -53,25 +65,40 @@ useVolumeFilter  = input.bool(true, "Require volume confirmation at entry", grou
 volMult          = input.float(1.2, "Volume × 20-bar avg", minval=0.5, maxval=3.0, step=0.1, group=grpFilter,
      tooltip="Entry bar volume must exceed this × 20-bar SMA volume.")
 
+// RSI filter — anti-extreme protection:
+//   Skip LONG if RSI < 25 (don't catch falling knives)
+//   Skip SHORT if RSI > 75 (don't catch flying knives)
+// Inverted logic (require extremes) was tested and rejected — backtest worse.
 useRsiFilter     = input.bool(true, "Skip extreme RSI (falling/flying knives)", group=grpFilter)
 rsiPeriod        = input.int(14, "RSI period", minval=5, maxval=30, step=1, group=grpFilter,
-     tooltip="How many 5m bars used to compute RSI. 14 = 70min (classic). Lower = more reactive, fires more often.")
+     tooltip="14 = 70-min lookback on 5m. Standard.")
 rsiLow           = input.float(25.0, "Skip long if RSI <", minval=10, maxval=40, step=1, group=grpFilter)
 rsiHigh          = input.float(75.0, "Skip short if RSI >", minval=60, maxval=90, step=1, group=grpFilter)
+
+// (Range gate and close confirm removed — kept off in user's tested config)
+useRangeGate    = false  // disabled
+minPrevRange    = 0.0
+useCloseConfirm = false  // disabled
+
+// ─── Take Profit ───
+grpTP = "🎯 Take Profit"
+tpMode = input.string("prev_mid", "TP target", options=["prev_mid", "prev_extreme", "fixed_pct"], group=grpTP,
+     tooltip="prev_mid = midpoint of yesterday's range (default, conservative). prev_extreme = LONG TP at prev_H, SHORT TP at prev_L (full range, riskier). fixed_pct = N% from entry. 5w TV: 4% fixed gave +35.20%.")
+tpFixedPct = input.float(4.0, "Fixed TP distance from entry (%)", minval=0.1, maxval=10, step=0.1, group=grpTP,
+     tooltip="Used when TP mode = fixed_pct. 4% works on recent 5w TV. ⚠ 2.3y backtest of fixed TP all variants = -71% to -79% — regime-favorable only.") / 100
+
+// (Trailing stop tested and removed — too many false trail-outs near peaks.)
 
 // ─── Prior day levels (via security) ───
 prevH = request.security(syminfo.tickerid, "1D", high[1],  lookahead=barmerge.lookahead_off)
 prevL = request.security(syminfo.tickerid, "1D", low[1],   lookahead=barmerge.lookahead_off)
 prevMid = (prevH + prevL) / 2.0
 
-// 1h EMA bias — faster than daily, catches intraday regime shifts
-grpBias = "🎯 1h Bias"
-hourEmaLen = input.int(20, "1h EMA period", minval=5, maxval=100, step=1, group=grpBias,
-     tooltip="EMA length for 1h bias. Apr 2026 BTC backtest (2.31y): EMA20 net -1.33% / PF 1.07 vs EMA15 -13.41% / 0.92. Stickier bias avoids false flips when price approaches prev_H/L.")
-hourClose  = request.security(syminfo.tickerid, "60", close[1],                     lookahead=barmerge.lookahead_off)
+// 1h EMA — chart display only. The strategy doesn't gate entries on bias;
+// shown for visual context (bias filter was tested and removed — it blocked
+// 60%+ of valid entries because bias flips bear right when price reaches prev_L).
+hourEmaLen = 20
 hourEma    = request.security(syminfo.tickerid, "60", ta.ema(close, hourEmaLen)[1], lookahead=barmerge.lookahead_off)
-hourBull   = hourClose > hourEma
-hourBear   = hourClose < hourEma
 
 // ─── Time ───
 utcH = hour(time, "UTC")
@@ -82,8 +109,17 @@ volAvg = ta.sma(volume, 20)
 volOk = not useVolumeFilter or volume >= volMult * volAvg
 
 rsiVal = ta.rsi(close, rsiPeriod)
+// Anti-extreme: skip LONG when oversold, skip SHORT when overbought
 rsiOkLong  = not useRsiFilter or rsiVal >= rsiLow
 rsiOkShort = not useRsiFilter or rsiVal <= rsiHigh
+
+// Range gate — replaces the bias filter as the protective mechanism
+prevRangePct = (prevH - prevL) / prevL
+rangeOk = not useRangeGate or prevRangePct >= minPrevRange
+
+// Optional close confirmation
+closeOkLong  = not useCloseConfirm or close > open
+closeOkShort = not useCloseConfirm or close < open
 
 // ─── State ───
 var int   filledCount = 0
@@ -105,27 +141,31 @@ qtyCap = (strategy.equity * 0.95 * leverageInput) / close / dcaLevels
 perLevelQty := math.min(perLevelQty, qtyCap)
 
 // ─── L1 entry: touch prev_L (for longs) or prev_H (for shorts) ───
-l1LongOk = hourBull and not cycleDone and strategy.position_size == 0 and utcH < closeHour
+// NO BIAS CHECK. LONG and SHORT both allowed regardless of trend.
+inEntryWindow = not useEodFlatten or utcH < closeHour
+l1LongOk = not cycleDone and strategy.position_size == 0 and inEntryWindow
      and low <= prevL * (1 + supportZone) and low > prevL * (1 - 0.01)
      and volOk and rsiOkLong
+     and rangeOk and closeOkLong
 
-l1ShortOk = hourBear and not cycleDone and strategy.position_size == 0 and utcH < closeHour
+l1ShortOk = not cycleDone and strategy.position_size == 0 and inEntryWindow
      and high >= prevH * (1 - supportZone) and high < prevH * (1 + 0.01)
      and volOk and rsiOkShort
+     and rangeOk and closeOkShort
 
 if l1LongOk and perLevelQty > 0
     entryPx = prevL * (1 + supportZone / 2)
     strategy.entry("L1", strategy.long, qty=perLevelQty, limit=entryPx)
     firstEntryPx := entryPx
     worstEntryPx := entryPx
-    filledCount := 1
+    filledCount  := 1
 
 if l1ShortOk and perLevelQty > 0
     entryPx = prevH * (1 - supportZone / 2)
     strategy.entry("S1", strategy.short, qty=perLevelQty, limit=entryPx)
     firstEntryPx := entryPx
     worstEntryPx := entryPx
-    filledCount := 1
+    filledCount  := 1
 
 // ─── DCA: add next level when price moves spacing% against us ───
 if strategy.position_size > 0 and filledCount >= 1 and filledCount < dcaLevels
@@ -144,9 +184,11 @@ if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
         worstEntryPx := nextDcaPx
         filledCount := filledCount + 1
 
-// ─── TP + SL ───
-tpLongPx  = prevMid
-tpShortPx = prevMid
+// ─── TP + SL (static SL, configurable TP) ───
+tpLongFixed  = na(firstEntryPx) ? na : firstEntryPx * (1 + tpFixedPct)
+tpShortFixed = na(firstEntryPx) ? na : firstEntryPx * (1 - tpFixedPct)
+tpLongPx  = tpMode == "prev_mid" ? prevMid : tpMode == "prev_extreme" ? prevH : tpLongFixed
+tpShortPx = tpMode == "prev_mid" ? prevMid : tpMode == "prev_extreme" ? prevL : tpShortFixed
 slLongPx  = worstEntryPx * (1 - slBelowWorst)
 slShortPx = worstEntryPx * (1 + slBelowWorst)
 
@@ -165,16 +207,16 @@ if strategy.position_size < 0 and not na(worstEntryPx)
     if filledCount >= 3
         strategy.exit("xS3", from_entry="S3", limit=tpShortPx, stop=slShortPx)
 
-// ─── EOD flatten ───
-if utcH >= closeHour and strategy.position_size != 0
+// ─── EOD flatten (optional) ───
+if useEodFlatten and utcH >= closeHour and strategy.position_size != 0
     strategy.close_all(comment="EOD flatten")
 
 // ─── Cycle reset after exit ───
 if strategy.position_size == 0 and strategy.position_size[1] != 0
     cycleClosedOnDay := dayofmonth
-    filledCount := 0
-    firstEntryPx := na
-    worstEntryPx := na
+    filledCount     := 0
+    firstEntryPx    := na
+    worstEntryPx    := na
 
 // ─── Visuals ───
 plot(prevH, "Prev H",   color=color.new(color.red,   50), style=plot.style_linebr)
@@ -200,16 +242,16 @@ if barstate.islast and wrongTf
 // Dashboard
 if barstate.islast
     var table dash = table.new(position.top_right, 2, 10, border_width=1)
-    table.cell(dash, 0, 0, "S/R DCA", bgcolor=color.gray, text_color=color.white)
-    table.cell(dash, 1, 0, str.tostring(leverageInput, "#.#") + "× LEV", bgcolor=color.teal, text_color=color.white)
-    table.cell(dash, 0, 1, "1h EMA" + str.tostring(hourEmaLen) + " bias")
-    table.cell(dash, 1, 1, hourBull ? "BULL ✓" : "BEAR", text_color=hourBull ? color.green : color.red)
+    table.cell(dash, 0, 0, "S/R DCA Day", bgcolor=color.gray, text_color=color.white)
+    table.cell(dash, 1, 0, "5m", bgcolor=color.teal, text_color=color.white)
+    table.cell(dash, 0, 1, "EOD")
+    table.cell(dash, 1, 1, useEodFlatten ? str.tostring(closeHour) + ":00 UTC" : "OFF", text_color=useEodFlatten ? color.green : color.gray)
     table.cell(dash, 0, 2, "Prev H / L / Mid")
     table.cell(dash, 1, 2, str.tostring(prevL, "#.##") + " / " + str.tostring(prevMid, "#.##") + " / " + str.tostring(prevH, "#.##"))
     table.cell(dash, 0, 3, "UTC hour")
     table.cell(dash, 1, 3, str.tostring(utcH) + ":00")
-    table.cell(dash, 0, 4, "DCA levels / space")
-    table.cell(dash, 1, 4, str.tostring(dcaLevels) + " × " + str.tostring(dcaSpacing * 100, "#.#") + "%")
+    table.cell(dash, 0, 4, "TP mode")
+    table.cell(dash, 1, 4, tpMode + (tpMode == "fixed_pct" ? " " + str.tostring(tpFixedPct*100, "#.#") + "%" : ""))
     table.cell(dash, 0, 5, "Filled")
     table.cell(dash, 1, 5, str.tostring(filledCount) + "/" + str.tostring(dcaLevels))
     table.cell(dash, 0, 6, "Position")

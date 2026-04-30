@@ -249,7 +249,7 @@
   <!-- Waiting / setup tracker (when no position) -->
   <section class="setup" id="setupCard">
     <div class="setup-title" id="setupTitle">Waiting for Setup</div>
-    <div class="setup-sub" id="setupSub">V2: Bot fires when 5m volume + RSI + price-touch align (no bias gate). Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
+    <div class="setup-sub" id="setupSub">Bot fires when 5m volume + RSI + price-touch align. Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
     <div class="waiting-box" id="waitingReason" style="margin:14px 0;padding:16px 18px;background:rgba(248,81,73,.06);border-left:3px solid var(--red);border-radius:4px;font-size:15px;line-height:1.7">--</div>
     <div class="setup-stats">
       <span>RSI <b class="num" id="setupRsi">--</b></span>
@@ -301,7 +301,7 @@ const fmtPct = v => (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
 const isT = v => v === true || v === 'True' || v === 'true';
 const START_BALANCE = 5000;
 
-// V2 conditions — bias removed (was: 4 conditions per side; now: 3)
+// Entry conditions — 3 per side (RSI + Volume + Touch)
 const LONG_CONDS = [
   {key: 'RSI > 25',         check: d => isT(d.conditions?.['RSI long ok (>25)']),  val: d => d.rsi?.toFixed(1) || '--'},
   {key: 'Volume ≥ 1.2× avg',check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
