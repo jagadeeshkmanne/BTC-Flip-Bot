@@ -28,6 +28,12 @@ DCA_SPACING    = 0.008        # 0.8% between DCA legs
 SL_BELOW_WORST = 0.02         # 2% below worst entry (above for shorts)
 SUPPORT_ZONE   = 0.0005       # 0.05% zone around prev H/L — only direct touches qualify
 
+# TP offset: shift prev_mid TP slightly toward current price for reliable fills.
+# prev_mid sits at a thin-liquidity zone where exact-fill is unreliable; the
+# offset catches near-misses where price reverses just before exact mid.
+# Backtest Mar 23–May 1: +35.25% with offset vs +32.07% without (same DD).
+PREV_MID_OFFSET = 0.001       # 0.1%
+
 CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries
 
 # Entry filters
@@ -200,8 +206,12 @@ def sl_price(side: Side, worst_entry: float) -> float:
 
 
 def tp_price(side: Side, prev_mid: float) -> float:
-    """TP = prev day's midpoint (same for both sides, absolute target)."""
-    return float(prev_mid)
+    """TP = prev_mid shifted by PREV_MID_OFFSET toward current price for fill
+    reliability. LONG TP is above mark → lower it; SHORT TP is below mark →
+    raise it. Matches pine strategy's prevMidOffsetPct default (0.1%)."""
+    if side == "LONG":
+        return float(prev_mid) * (1 - PREV_MID_OFFSET)
+    return float(prev_mid) * (1 + PREV_MID_OFFSET)
 
 
 def per_level_qty(equity: float, price: float) -> float:

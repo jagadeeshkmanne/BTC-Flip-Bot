@@ -17,8 +17,9 @@
 //     within a 0.05% zone
 //   - Filters: RSI anti-extreme (skip LONG <25 / SHORT >75) + volume ≥ 1.2× SMA
 //   - DCA: 1 add at worst_entry × (1 ∓ 0.8%)
-//   - TP: prev_day midpoint (or prev_extreme / fixed %)
-//   - SL: worst_entry × (1 ∓ 2%)
+//   - TP: prev_day midpoint (DEFAULT). Optional "smart" mode adapts to
+//     avg entry after DCA but tested worse on the 5w window (+20% vs +32%).
+//   - SL: worst_entry × (1 ∓ 2%) — moves with each DCA leg
 //   - EOD: force flatten at configurable UTC hour (default 20:00)
 //
 // Tested on BTCUSDT 5m. Recent 5w: +32.35% / PF 3.65 / 43 trades (default
@@ -82,10 +83,14 @@ useCloseConfirm = false  // disabled
 
 // ─── Take Profit ───
 grpTP = "🎯 Take Profit"
-tpMode = input.string("prev_mid", "TP target", options=["prev_mid", "prev_extreme", "fixed_pct"], group=grpTP,
-     tooltip="prev_mid = midpoint of yesterday's range (default, conservative). prev_extreme = LONG TP at prev_H, SHORT TP at prev_L (full range, riskier). fixed_pct = N% from entry. 5w TV: 4% fixed gave +35.20%.")
+tpMode = input.string("prev_mid", "TP target", options=["prev_mid", "hybrid", "smart", "prev_extreme", "fixed_pct"], group=grpTP,
+     tooltip="prev_mid (DEFAULT, +32.07% / PF 3.32 / DD 4.80% on Mar 23–May 1) = yesterday's midpoint, fixed S/R anchor. hybrid = prev_mid pre-DCA, then switches to FIRST entry × (1 ∓ tpFixedPct) once DCA fires (gives position more room after averaging worse). smart = whichever of {prev_mid, avg × (1 ∓ smartPct)} is CLOSER to mark — adapts to slippage but takes profit earlier. prev_extreme = full prev_day range (riskier). fixed_pct = N% from FIRST entry, no prev_mid blend.")
+smartTpPct = input.float(0.5, "Smart TP: % from avg entry", minval=0.1, maxval=3.0, step=0.1, group=grpTP,
+     tooltip="Used in smart mode only. After each DCA leg fills, TP recomputes to avg_entry × (1 ∓ this%). Smaller % = earlier TP, smaller wins. 0.5% scalp tested at +20% / 5w — worse than prev_mid. Try 1.0–1.5% if you want a middle ground.") / 100
 tpFixedPct = input.float(4.0, "Fixed TP distance from entry (%)", minval=0.1, maxval=10, step=0.1, group=grpTP,
      tooltip="Used when TP mode = fixed_pct. 4% works on recent 5w TV. ⚠ 2.3y backtest of fixed TP all variants = -71% to -79% — regime-favorable only.") / 100
+prevMidOffsetPct = input.float(0.1, "Prev_mid TP offset (%)", minval=-1.0, maxval=1.0, step=0.05, group=grpTP,
+     tooltip="Shift the prev_mid TP slightly toward current price for more reliable fills (prev_mid often sits at a thin-liquidity zone where exact-fill is unreliable). 0.1% = TP fires 0.1% before exact mid → smaller wins but higher hit rate. Negative offset = wait past mid for bigger wins (riskier — may miss fill entirely). Set to 0 for exact prev_mid behavior.") / 100
 
 // (Trailing stop tested and removed — too many false trail-outs near peaks.)
 
@@ -125,6 +130,11 @@ closeOkShort = not useCloseConfirm or close < open
 var int   filledCount = 0
 var float firstEntryPx = na
 var float worstEntryPx = na
+// Weighted avg entry tracking — needed for "smart" TP mode that recomputes
+// the target after each DCA fill. cumNotional / cumQty = avgEntryPx.
+var float cumNotional = na
+var float cumQty      = na
+avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
 var int   cycleClosedOnDay = -1
 
 if newDay
@@ -158,6 +168,8 @@ if l1LongOk and perLevelQty > 0
     strategy.entry("L1", strategy.long, qty=perLevelQty, limit=entryPx)
     firstEntryPx := entryPx
     worstEntryPx := entryPx
+    cumNotional  := entryPx * perLevelQty
+    cumQty       := perLevelQty
     filledCount  := 1
 
 if l1ShortOk and perLevelQty > 0
@@ -165,6 +177,8 @@ if l1ShortOk and perLevelQty > 0
     strategy.entry("S1", strategy.short, qty=perLevelQty, limit=entryPx)
     firstEntryPx := entryPx
     worstEntryPx := entryPx
+    cumNotional  := entryPx * perLevelQty
+    cumQty       := perLevelQty
     filledCount  := 1
 
 // ─── DCA: add next level when price moves spacing% against us ───
@@ -174,7 +188,9 @@ if strategy.position_size > 0 and filledCount >= 1 and filledCount < dcaLevels
         idStr = "L" + str.tostring(filledCount + 1)
         strategy.entry(idStr, strategy.long, qty=perLevelQty, limit=nextDcaPx)
         worstEntryPx := nextDcaPx
-        filledCount := filledCount + 1
+        cumNotional  := cumNotional + nextDcaPx * perLevelQty
+        cumQty       := cumQty + perLevelQty
+        filledCount  := filledCount + 1
 
 if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
     nextDcaPx = worstEntryPx * (1 + dcaSpacing)
@@ -182,13 +198,51 @@ if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
         idStr = "S" + str.tostring(filledCount + 1)
         strategy.entry(idStr, strategy.short, qty=perLevelQty, limit=nextDcaPx)
         worstEntryPx := nextDcaPx
-        filledCount := filledCount + 1
+        cumNotional  := cumNotional + nextDcaPx * perLevelQty
+        cumQty       := cumQty + perLevelQty
+        filledCount  := filledCount + 1
 
 // ─── TP + SL (static SL, configurable TP) ───
+// prev_mid offsets: shift target slightly toward current price for fill reliability.
+// LONG TP is above current → lower it slightly; SHORT TP is below current → raise it.
+prevMidLong  = prevMid * (1 - prevMidOffsetPct)
+prevMidShort = prevMid * (1 + prevMidOffsetPct)
 tpLongFixed  = na(firstEntryPx) ? na : firstEntryPx * (1 + tpFixedPct)
 tpShortFixed = na(firstEntryPx) ? na : firstEntryPx * (1 - tpFixedPct)
-tpLongPx  = tpMode == "prev_mid" ? prevMid : tpMode == "prev_extreme" ? prevH : tpLongFixed
-tpShortPx = tpMode == "prev_mid" ? prevMid : tpMode == "prev_extreme" ? prevL : tpShortFixed
+
+// Smart TP: only adapts AFTER a DCA leg fills (filledCount > 1). Before
+// DCA, the trade rides to prev_mid (the structural mean-reversion target —
+// the whole point of the strategy). Once DCA fires (price moved against
+// us), avg entry shifts to a worse level, so we add a "% from avg entry"
+// target and pick whichever of {prev_mid, avg × (1 ∓ smartTpPct)} is
+// CLOSER to current price (easier to hit).
+//   For LONG: TP must be ABOVE mark, so easier = LOWER value → math.min
+//   For SHORT: TP must be BELOW mark, so easier = HIGHER value → math.max
+// Without this guard, a no-DCA L1 short at prev_H would scalp 0.5% instead
+// of riding the full 1-2% to prev_mid, giving up most of the strategy edge.
+tpLongAvgPct  = na(avgEntryPx) ? na : avgEntryPx * (1 + smartTpPct)
+tpShortAvgPct = na(avgEntryPx) ? na : avgEntryPx * (1 - smartTpPct)
+tpLongSmart   = (filledCount > 1 and not na(tpLongAvgPct))  ? math.min(prevMidLong,  tpLongAvgPct)  : prevMidLong
+tpShortSmart  = (filledCount > 1 and not na(tpShortAvgPct)) ? math.max(prevMidShort, tpShortAvgPct) : prevMidShort
+
+// Hybrid TP: prev_mid until DCA fires, then switch to fixed % from FIRST
+// entry. Reasoning — pre-DCA, the trade is on a small leg and prev_mid is
+// usually within reach; post-DCA, avg entry has shifted away from prev_mid
+// so a fixed-% target from first entry (e.g., 4%) often lets the winner
+// run further than prev_mid would. Uses the existing tpFixedPct param.
+tpLongHybrid  = (filledCount > 1 and not na(tpLongFixed))  ? tpLongFixed  : prevMidLong
+tpShortHybrid = (filledCount > 1 and not na(tpShortFixed)) ? tpShortFixed : prevMidShort
+
+tpLongPx  = tpMode == "smart" ? tpLongSmart
+         : tpMode == "hybrid" ? tpLongHybrid
+         : tpMode == "prev_mid" ? prevMidLong
+         : tpMode == "prev_extreme" ? prevH
+         : tpLongFixed
+tpShortPx = tpMode == "smart" ? tpShortSmart
+         : tpMode == "hybrid" ? tpShortHybrid
+         : tpMode == "prev_mid" ? prevMidShort
+         : tpMode == "prev_extreme" ? prevL
+         : tpShortFixed
 slLongPx  = worstEntryPx * (1 - slBelowWorst)
 slShortPx = worstEntryPx * (1 + slBelowWorst)
 
@@ -217,6 +271,8 @@ if strategy.position_size == 0 and strategy.position_size[1] != 0
     filledCount     := 0
     firstEntryPx    := na
     worstEntryPx    := na
+    cumNotional     := na
+    cumQty          := na
 
 // ─── Visuals ───
 plot(prevH, "Prev H",   color=color.new(color.red,   50), style=plot.style_linebr)
@@ -225,6 +281,15 @@ plot(prevMid, "Prev Mid (TP)", color=color.new(color.aqua, 30), style=plot.style
 plot(strategy.position_size != 0 and not na(worstEntryPx)
      ? (strategy.position_size > 0 ? slLongPx : slShortPx) : na,
      "Active SL", color=color.new(color.red, 20), style=plot.style_linebr, linewidth=2)
+
+// Active TP — shows where TP currently sits (moves with smart mode after DCA)
+plot(strategy.position_size != 0 and not na(firstEntryPx)
+     ? (strategy.position_size > 0 ? tpLongPx : tpShortPx) : na,
+     "Active TP", color=color.new(color.aqua, 0), style=plot.style_linebr, linewidth=2)
+
+// Avg entry — shows where the cycle's weighted avg entry sits (smart-TP anchor)
+plot(strategy.position_size != 0 and not na(avgEntryPx) ? avgEntryPx : na,
+     "Avg Entry", color=color.new(color.yellow, 30), style=plot.style_linebr, linewidth=1)
 
 // 1h EMA plotted on chart for visual bias reference
 plot(hourEma, "1h EMA", color=color.new(color.purple, 20), linewidth=2)
@@ -241,7 +306,7 @@ if barstate.islast and wrongTf
 
 // Dashboard
 if barstate.islast
-    var table dash = table.new(position.top_right, 2, 10, border_width=1)
+    var table dash = table.new(position.top_right, 2, 12, border_width=1)
     table.cell(dash, 0, 0, "S/R DCA Day", bgcolor=color.gray, text_color=color.white)
     table.cell(dash, 1, 0, "5m", bgcolor=color.teal, text_color=color.white)
     table.cell(dash, 0, 1, "EOD")
@@ -251,15 +316,20 @@ if barstate.islast
     table.cell(dash, 0, 3, "UTC hour")
     table.cell(dash, 1, 3, str.tostring(utcH) + ":00")
     table.cell(dash, 0, 4, "TP mode")
-    table.cell(dash, 1, 4, tpMode + (tpMode == "fixed_pct" ? " " + str.tostring(tpFixedPct*100, "#.#") + "%" : ""))
+    table.cell(dash, 1, 4, tpMode + (tpMode == "fixed_pct" or tpMode == "hybrid" ? " " + str.tostring(tpFixedPct*100, "#.#") + "%" : tpMode == "smart" ? " " + str.tostring(smartTpPct*100, "#.#") + "%" : ""))
     table.cell(dash, 0, 5, "Filled")
     table.cell(dash, 1, 5, str.tostring(filledCount) + "/" + str.tostring(dcaLevels))
     table.cell(dash, 0, 6, "Position")
     table.cell(dash, 1, 6, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
          text_color=strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray)
-    table.cell(dash, 0, 7, "Worst entry")
-    table.cell(dash, 1, 7, na(worstEntryPx) ? "—" : str.tostring(worstEntryPx, "#.##"))
-    table.cell(dash, 0, 8, "Cycle done today")
-    table.cell(dash, 1, 8, cycleDone ? "YES" : "no")
-    table.cell(dash, 0, 9, "Equity")
-    table.cell(dash, 1, 9, "$" + str.tostring(strategy.equity, "#,###"))
+    table.cell(dash, 0, 7, "Avg entry")
+    table.cell(dash, 1, 7, na(avgEntryPx) ? "—" : str.tostring(avgEntryPx, "#.##"))
+    table.cell(dash, 0, 8, "Worst entry")
+    table.cell(dash, 1, 8, na(worstEntryPx) ? "—" : str.tostring(worstEntryPx, "#.##"))
+    table.cell(dash, 0, 9, "Active TP")
+    table.cell(dash, 1, 9, strategy.position_size == 0 ? "—" : str.tostring(strategy.position_size > 0 ? tpLongPx : tpShortPx, "#.##"),
+         text_color=color.aqua)
+    table.cell(dash, 0, 10, "Cycle done today")
+    table.cell(dash, 1, 10, cycleDone ? "YES" : "no")
+    table.cell(dash, 0, 11, "Equity")
+    table.cell(dash, 1, 11, "$" + str.tostring(strategy.equity, "#,###"))

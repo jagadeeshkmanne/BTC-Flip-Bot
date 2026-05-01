@@ -43,8 +43,8 @@ The bot runs every 5 min via cron — testnet positions are visible on Binance T
 - Sizing: total `riskPct` of equity is split across the configured DCA levels
 
 ### Exits
-- **TP**: prev_day midpoint (default), prev_extreme, or fixed % from entry
-- **SL**: `worst_entry × (1 ∓ 2%)` — stays tight to the worst leg, moves up after each DCA fill
+- **TP** (smart, default): picks whichever of `prev_day midpoint` or `avg_entry × (1 ∓ 0.5%)` is **closer** to current price (easier to hit). Recomputes after each DCA leg, so TP adapts to your real avg entry instead of being stuck at a fixed S/R level. Other modes available: `prev_mid` (fixed S/R anchor), `prev_extreme` (full prev_day range), `fixed_pct` (N% from first entry).
+- **SL**: `worst_entry × (1 ∓ 2%)` — stays tight to the worst leg, moves with each DCA fill so the trade has room to recover
 - **EOD flatten**: closes any open position at 20:00 UTC
 
 ---
@@ -68,8 +68,8 @@ The bot runs every 5 min via cron — testnet positions are visible on Binance T
 
 ## Backtest Results
 
-### TradingView (recent 5 weeks, BTCUSDT 5m):
-- **Default**: +32.35% / PF 3.65 / 43 trades
+### TradingView (BTCUSDT 5m, Mar 23 → May 1, 2026):
+- **Default (prev_mid + 0.1% offset)**: +35.25% / PF 3.92 / DD 4.80% / 67% WR / 46 trades / Calmar 7.34
 - **Fixed 4% TP variant**: +35.20%
 
 ### ⚠️ Regime warning — important
