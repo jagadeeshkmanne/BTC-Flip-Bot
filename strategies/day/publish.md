@@ -104,6 +104,8 @@ A few things I tested and rejected during development — saving you from re-run
 - **Range gate** — required prev_day range > N% before allowing entries. Reduced trade count without improving win rate.
 - **Trailing stop** — too many false trail-outs near peaks. Static SL at worst-entry × (1 ± 2%) outperformed.
 - **Wider S/R zone** (0.2%) — fired on near-misses, hurt the win rate. Tight 0.05% only fires on direct touches.
+- **Tighter / looser SL** (1.5%, 2.5%) — tested both directions vs the 2% baseline. Neither improved Calmar; 2% is the sweet spot for BTC 5m.
+- **Breakeven SL** (move SL to entry once trade is +1% profit) — tested, no meaningful improvement on the Mar 23–May 1 window. Most losers don't first reach +1% profit, so BE rarely arms.
 
 ---
 

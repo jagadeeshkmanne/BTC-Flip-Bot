@@ -53,14 +53,6 @@ dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
 dcaSpacing   = input.float(0.8, "DCA spacing (%)", minval=0.3, maxval=3, step=0.1, group=grpDCA,
      tooltip="Distance between DCA legs. Tighter spacing fills DCA more often with a tighter avg entry.") / 100
 slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA)/100
-slOffsetPct  = input.float(0.0, "SL offset from worst entry (%)", minval=-1.0, maxval=1.0, step=0.05, group=grpDCA,
-     tooltip="Shift SL toward (positive) or away from (negative) current price. Positive = tighter SL, smaller per-loss but more frequent stop-outs. Negative = looser SL, fewer hits but bigger losses. Default 0 = original behavior.") / 100
-useBreakeven = input.bool(false, "Move SL to breakeven after +X% profit", group=grpDCA,
-     tooltip="When ON: once trade reaches beTriggerPct in profit, SL moves to first_entry + beBufferPct (locks in zero loss + tiny buffer). Different from trailing — SL only moves once, then stays.")
-beTriggerPct = input.float(1.0, "BE trigger: profit % to arm", minval=0.2, maxval=5, step=0.1, group=grpDCA,
-     tooltip="Once unrealized profit reaches this % of first entry, SL jumps to breakeven. 1.0% means a SHORT entered at $77k arms BE when mark drops to $76,230.") / 100
-beBufferPct  = input.float(0.05, "BE buffer above first entry (%)", minval=0.0, maxval=1.0, step=0.05, group=grpDCA,
-     tooltip="Small offset so BE-SL is just past breakeven (covers fees + slippage). 0.05% = LONG SL goes to first_entry × 1.0005, SHORT × 0.9995.") / 100
 supportZone  = input.float(0.05, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA,
      tooltip="How close to prev_H/prev_L the bar high/low must be to count as a touch. 0.05% = direct touch only, very selective. Wider zones fire on near-misses but hurt win rate.") / 100
 useEodFlatten = input.bool(true, "Force flatten at EOD UTC hour", group=grpDCA,
@@ -251,6 +243,10 @@ tpShortPx = tpMode == "smart" ? tpShortSmart
          : tpMode == "prev_mid" ? prevMidShort
          : tpMode == "prev_extreme" ? prevL
          : tpShortFixed
+
+// SL: static at worst_entry × (1 ∓ slBelowWorst). Tested SL offset and
+// breakeven-SL variants on Mar 23–May 1 BTCUSDT 5m — none improved on the
+// 2% baseline (+35.25% / PF 3.92 / DD 4.80%). Kept simple.
 slLongPx  = worstEntryPx * (1 - slBelowWorst)
 slShortPx = worstEntryPx * (1 + slBelowWorst)
 
