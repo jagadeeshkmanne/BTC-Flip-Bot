@@ -574,6 +574,15 @@ async function refresh(){
     const livePos = binance ? binance.position : null;
     const pos = binance ? livePos : state.position;
     if (pos) {
+      // TP shown on the dashboard should match the ACTUAL resting order on
+      // Binance (which includes the prev_mid offset applied by the bot's
+      // tp_price function). Pull it from open_orders proxy if available;
+      // fall back to raw prev_mid only when the proxy didn't return.
+      const liveTpOrder = binance && (binance.open_orders || []).find(
+        o => o.type === 'LIMIT' && o.reduceOnly && o.price
+      );
+      const liveTp = liveTpOrder ? liveTpOrder.price : 0;
+      const fallbackPrevMid = (status.indicators || {}).prev_mid || 0;
       positionSnapshot = livePos ? {
         side: livePos.side,
         entry: livePos.entry,
@@ -581,7 +590,7 @@ async function refresh(){
         qty: livePos.qty,
         worstEntry: state.position ? (state.position.worst_entry || livePos.entry) : livePos.entry,
         filled: state.position ? (state.position.entries || [{}]).length : 1,
-        prevMid: (status.indicators || {}).prev_mid || 0,
+        prevMid: liveTp || fallbackPrevMid,
         leverage: livePos.leverage,
         marginType: livePos.marginType,
         liveUpnl: livePos.uPnL,
@@ -592,7 +601,7 @@ async function refresh(){
         qty: pos.qty_total || pos.qty || 0,
         worstEntry: pos.worst_entry || pos.first_entry || pos.entry_price || 0,
         filled: (pos.entries || [{}]).length,
-        prevMid: (status.indicators || {}).prev_mid || 0,
+        prevMid: liveTp || fallbackPrevMid,
       };
       $('positionCard').style.display = '';
       $('setupCard').style.display = 'none';
