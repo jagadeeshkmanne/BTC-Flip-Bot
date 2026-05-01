@@ -111,6 +111,7 @@ A few things I tested and rejected during development — saving you from re-run
 - **Adaptive range gate** (skip days where prev_day range < N-day SMA × multiplier) — tested across 5/7/14-day lookbacks and 0.8/1.0/1.2 multipliers. None improved Calmar — gate either filtered profitable trades or didn't filter the trending-day losers.
 - **Multi-cycle per day** with TP-only re-entry — tested 2-3 cycles/day, both with and without "lock day after SL". Worse on every metric vs 1 cycle/day; same-day re-entries whipsaw.
 - **Entry offset toward mark** (mirror of TP offset, fills before exact S/R touch) — tested at 0.05% / 0.1% / 0.15%. No improvement. prev_H and prev_L are extreme S/R levels where price actually does touch (the existing 0.05% zone catches them); the fill reliability gain is marginal and outweighed by the slightly worse entry price.
+- **No SL** (ride to TP or 20:00 UTC EOD only) — tested. Total return basically unchanged (+35.30% vs +35.25%, same trade count and WR), but Max DD jumped from 4.80% → 5.94% and Calmar dropped from 7.34 → 5.94. SL fires rarely but caps the bad-day losses meaningfully. Removing it adds risk without adding return.
 
 ---
 
