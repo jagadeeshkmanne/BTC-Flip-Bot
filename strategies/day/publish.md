@@ -110,6 +110,7 @@ A few things I tested and rejected during development — saving you from re-run
 - **Entry reversal-candle filter** (only enter if touch bar closes in reversal direction) — tested, increased DD. Over-filters fast-reversal entries that were the strategy's best wins.
 - **Adaptive range gate** (skip days where prev_day range < N-day SMA × multiplier) — tested across 5/7/14-day lookbacks and 0.8/1.0/1.2 multipliers. None improved Calmar — gate either filtered profitable trades or didn't filter the trending-day losers.
 - **Multi-cycle per day** with TP-only re-entry — tested 2-3 cycles/day, both with and without "lock day after SL". Worse on every metric vs 1 cycle/day; same-day re-entries whipsaw.
+- **Entry offset toward mark** (mirror of TP offset, fills before exact S/R touch) — tested at 0.05% / 0.1% / 0.15%. No improvement. prev_H and prev_L are extreme S/R levels where price actually does touch (the existing 0.05% zone catches them); the fill reliability gain is marginal and outweighed by the slightly worse entry price.
 
 ---
 
