@@ -106,6 +106,10 @@ A few things I tested and rejected during development — saving you from re-run
 - **Wider S/R zone** (0.2%) — fired on near-misses, hurt the win rate. Tight 0.05% only fires on direct touches.
 - **Tighter / looser SL** (1.5%, 2.5%) — tested both directions vs the 2% baseline. Neither improved Calmar; 2% is the sweet spot for BTC 5m.
 - **Breakeven SL** (move SL to entry once trade is +1% profit) — tested, no meaningful improvement on the Mar 23–May 1 window. Most losers don't first reach +1% profit, so BE rarely arms.
+- **SL on candle close** (only fire SL when 5m bar closes beyond SL, filtering wicks) — tested, increased DD. Saves some false-wick stops but gives more rope on real trending moves, and the bigger trending-day losses outweigh the wick savings.
+- **Entry reversal-candle filter** (only enter if touch bar closes in reversal direction) — tested, increased DD. Over-filters fast-reversal entries that were the strategy's best wins.
+- **Adaptive range gate** (skip days where prev_day range < N-day SMA × multiplier) — tested across 5/7/14-day lookbacks and 0.8/1.0/1.2 multipliers. None improved Calmar — gate either filtered profitable trades or didn't filter the trending-day losers.
+- **Multi-cycle per day** with TP-only re-entry — tested 2-3 cycles/day, both with and without "lock day after SL". Worse on every metric vs 1 cycle/day; same-day re-entries whipsaw.
 
 ---
 
