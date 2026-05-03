@@ -26,8 +26,10 @@ sys.path.insert(0, STRATEGY_DIR)
 from core import (
     LEVERAGE, RISK_PCT, DCA_LEVELS, DCA_SPACING, SL_BELOW_WORST, SUPPORT_ZONE,
     CLOSE_HOUR,
+    USE_BREAKEVEN, BE_TRIGGER_PCT, BE_BUFFER_PCT,
     build_features, evaluate_signal,
     entry_price_zone, dca_price, sl_price, tp_price, per_level_qty,
+    be_should_activate,
 )
 
 
@@ -351,6 +353,7 @@ def main():
             "entries": [{"px": entry, "qty": qty}],
             "qty_total": qty, "orig_qty_per_level": qty,
             "sl": entry * (1 - SL_BELOW_WORST) if side == "LONG" else entry * (1 + SL_BELOW_WORST),
+            "be_activated": False,
             "cycle_day": str(datetime.now(timezone.utc).date()),
             "entry_time": datetime.now(timezone.utc).isoformat(),
         }
@@ -416,7 +419,8 @@ def main():
 
     # Log signal
     log.info(f"  Signal: {sig.side or 'NONE'}  | "
-             f"prev_H {sig.raw.get('prev_H', 0):.2f} / prev_L {sig.raw.get('prev_L', 0):.2f} / mid {sig.raw.get('prev_mid', 0):.2f}")
+             f"prev_H {sig.raw.get('prev_H', 0):.2f} / prev_L {sig.raw.get('prev_L', 0):.2f} / mid {sig.raw.get('prev_mid', 0):.2f} "
+             f"({sig.raw.get('prev_lookback', 1)}d, {sig.raw.get('prev_range_pct', 0)*100:.2f}%)")
     log.info(f"  Conditions: {sum(sig.conditions.values())}/{len(sig.conditions)} met")
 
     status = {
@@ -462,6 +466,7 @@ def main():
                             "entries": [{"px": fill, "qty": qty}],
                             "qty_total": qty, "orig_qty_per_level": qty,
                             "sl": sl_price(sig.side, fill),
+                            "be_activated": False,
                             "cycle_day": today,
                             "entry_time": datetime.now(timezone.utc).isoformat(),
                         }
@@ -471,7 +476,8 @@ def main():
                         sl_pct = abs(new_pos["sl"] - fill) / fill * 100
                         log.info(f"  OPENED L1 {sig.side} {qty}@${fill:.2f} SL=${new_pos['sl']:.2f} ({sl_pct:.1f}%) target=${target_px:.2f}")
                         # Place resting TP+SL on exchange so spikes between cron runs still fill.
-                        tp_px_new = tp_price(sig.side, sig.raw["prev_mid"])
+                        # filled_count=1 → hybrid mode falls through to prev_mid TP.
+                        tp_px_new = tp_price(sig.side, sig.raw["prev_mid"], first_entry=fill, filled_count=1)
                         ensure_exits(client, info, PAIR, sig.side, qty, tp_px_new, new_pos["sl"])
         elif sig.side and ARGS.dry:
             log.info(f"  [DRY] Would open {sig.side} at ${close_price:,.2f}")
@@ -491,12 +497,22 @@ def main():
         worst_entry = min(e["px"] for e in entries) if side == "LONG" else max(e["px"] for e in entries)
         last_bar = df.iloc[last_idx]
 
-        # Update SL based on current worst entry (2% below/above worst)
-        new_sl = sl_price(side, worst_entry)
+        # Breakeven SL — once favorable% from FIRST entry crosses BE_TRIGGER_PCT,
+        # arm BE so SL tightens to first_entry × (1 ± BE_BUFFER_PCT). Sticky:
+        # once armed, stays armed until cycle resets, so a reversal exits at BE.
+        be_activated = pos.get("be_activated", False)
+        if not be_activated and be_should_activate(side, first_entry, live_px):
+            be_activated = True
+            pos["be_activated"] = True
+            log.info(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from entry ${first_entry:.2f})")
+
+        # Recompute SL accounting for BE. After BE arms, SL anchors to first_entry
+        # (not worst_entry) and is much tighter — converts losers into small wins.
+        new_sl = sl_price(side, worst_entry, first_entry=first_entry, be_activated=be_activated)
         if (side == "LONG" and new_sl > cur_sl) or (side == "SHORT" and new_sl < cur_sl):
             pos["sl"] = new_sl
             cur_sl = new_sl
-            log.info(f"  SL updated → ${cur_sl:.2f}")
+            log.info(f"  SL updated → ${cur_sl:.2f}{'  [BE]' if be_activated else ''}")
 
         # Ensure resting TP+SL exit orders exist on the exchange.
         # Idempotent — only cancels+replaces if missing or prices changed.
@@ -504,7 +520,8 @@ def main():
         # being at-or-past the level. With this, Binance fills the moment price
         # reaches the level. Recovers existing positions on bot restart too.
         if not ARGS.dry:
-            tp_px_now = tp_price(side, sig.raw.get("prev_mid", close_price))
+            tp_px_now = tp_price(side, sig.raw.get("prev_mid", close_price),
+                                 first_entry=first_entry, filled_count=len(entries))
             ensure_exits(client, info, PAIR, side, qty_total, tp_px_now, cur_sl)
 
         # Bar high/low — used by DCA, TP, SL checks below.
@@ -533,17 +550,21 @@ def main():
                         pos["entries"] = entries
                         pos["qty_total"] = qty_total + dca_qty
                         qty_total = pos["qty_total"]
-                        # Recompute SL with new worst entry
+                        # Recompute SL with new worst entry (BE-aware: if BE was already
+                        # armed, sl_price keeps the tighter BE SL anchored to first_entry).
                         worst_entry = min(e["px"] for e in entries) if side == "LONG" else max(e["px"] for e in entries)
-                        pos["sl"] = sl_price(side, worst_entry)
+                        pos["sl"] = sl_price(side, worst_entry, first_entry=first_entry, be_activated=be_activated)
                         cur_sl = pos["sl"]
                         log.info(f"  DCA L{len(entries)} filled {dca_qty}@${dca_fill:.2f} | new worst=${worst_entry:.2f} SL=${cur_sl:.2f}")
                         # Replace resting exits to cover the new total qty + updated SL.
-                        tp_px_dca = tp_price(side, sig.raw.get("prev_mid", close_price))
+                        # Hybrid TP now switches to first_entry × (1 ∓ TP_FIXED_PCT) since filled_count ≥ 2.
+                        tp_px_dca = tp_price(side, sig.raw.get("prev_mid", close_price),
+                                             first_entry=first_entry, filled_count=len(entries))
                         ensure_exits(client, info, PAIR, side, qty_total, tp_px_dca, cur_sl)
 
-        # TP: prev_mid of the CYCLE START day (use sig.raw.prev_mid — valid for today's bars)
-        tp_px = tp_price(side, sig.raw.get("prev_mid", close_price))
+        # TP: prev_mid pre-DCA, switches to first_entry × (1 ∓ TP_FIXED_PCT) post-DCA in hybrid mode.
+        tp_px = tp_price(side, sig.raw.get("prev_mid", close_price),
+                         first_entry=first_entry, filled_count=len(entries))
 
         # Compute current fav%
         fav = (live_px - first_entry) if side == "LONG" else (first_entry - live_px)

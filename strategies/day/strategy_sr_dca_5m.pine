@@ -9,21 +9,26 @@
 //
 // 5m support/resistance DCA day trader. Buys at prev_day low, shorts at
 // prev_day high, averages down once if price moves further against, exits
-// at prev_day midpoint. Force-flattens at 20:00 UTC, never holds overnight.
-// 1 cycle per UTC day max.
+// at prev_day midpoint (or fixed % from first entry post-DCA in hybrid mode).
+// Force-flattens at 20:00 UTC, never holds overnight. 1 cycle per UTC day max.
 //
 // Logic:
 //   - Entry: 5m low touches prev_L (LONG) or 5m high touches prev_H (SHORT),
-//     within a 0.05% zone
+//     within a 0.05% zone. Adaptive S/R: when prev-day range < floor, expand
+//     lookback to N-day rolling H/L until range ≥ floor (avoids the bad-R:R
+//     entries on tight squeeze days that cost 3% live in the Apr 26→May 3 window).
 //   - Filters: RSI anti-extreme (skip LONG <25 / SHORT >75) + volume ≥ 1.2× SMA
 //   - DCA: 1 add at worst_entry × (1 ∓ 0.8%)
-//   - TP: prev_day midpoint (DEFAULT). Optional "smart" mode adapts to
-//     avg entry after DCA but tested worse on the 5w window (+20% vs +32%).
+//   - TP: hybrid (DEFAULT) — prev_mid pre-DCA, switches to first_entry × (1 ∓ 4%)
+//     post-DCA so the worse-avg trade rides further. Other modes available.
 //   - SL: worst_entry × (1 ∓ 2%) — moves with each DCA leg
 //   - EOD: force flatten at configurable UTC hour (default 20:00)
 //
-// Tested on BTCUSDT 5m. Recent 5w: +32.35% / PF 3.65 / 43 trades (default
-// settings); +35.20% with fixed-4% TP variant.
+// Backtest history (BTCUSDT 5m):
+//   - Mar 23–May 3 (5w, current defaults: extend 2d / hybrid TP / BE 1.0%/0.25%): +43.18% / PF 4.42 / DD 4.61% / 47 trades / WR 65.96%
+//   - Same window without BE-SL (extend 2d / hybrid TP):                          +40.59% / PF 3.86 / DD 4.80% / 47 trades / WR 61.7%
+//   - Mar 23–May 1 (legacy baseline: range_off / prev_mid):                       +32.07% / PF 3.32 / DD 4.80% / 43 trades / WR ~65%
+//   - Same window with fixed-4% TP only:                                          +35.20%
 //
 // ⚠ Regime warning: a 2.3-year python backtest returned -72.78% / DD 82%.
 // The strategy is regime-favorable (works in mean-reverting markets) but
@@ -52,13 +57,19 @@ dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
      tooltip="5m uses 2 levels. Each DCA adds 1 leg at worst_entry × (1 ± dcaSpacing).")
 dcaSpacing   = input.float(0.8, "DCA spacing (%)", minval=0.3, maxval=3, step=0.1, group=grpDCA,
      tooltip="Distance between DCA legs. Tighter spacing fills DCA more often with a tighter avg entry.") / 100
-slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA)/100
+slBelowWorst = input.float(1.9, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA,
+     tooltip="1.9 (DEFAULT) tested marginally better than 2.0 on 5w window. Goes below 1.5% and noise stops dominate; above 2.5% and the per-loss bite dominates.") / 100
 supportZone  = input.float(0.05, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA,
      tooltip="How close to prev_H/prev_L the bar high/low must be to count as a touch. 0.05% = direct touch only, very selective. Wider zones fire on near-misses but hurt win rate.") / 100
 useEodFlatten = input.bool(true, "Force flatten at EOD UTC hour", group=grpDCA,
      tooltip="When ON: position closes at closeHour UTC and entries are blocked past that hour. When OFF: position rides until TP or SL hits, no time limit. Backtest history says EOD-on is safer; OFF lets winners run but exposes to overnight regime shifts.")
 closeHour    = input.int(20, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA,
      tooltip="Only used when EOD flatten is ON. Backtest: 20 is conservative, 23 lets trades work longer.")
+
+// ─── Multi-cycle (opt-in) ───
+grpReentry = "🔁 Multi-cycle"
+maxCyclesPerDay = input.int(1, "Max cycles per UTC day", minval=1, maxval=5, group=grpReentry,
+     tooltip="1 (DEFAULT, matches +40.59% baseline): one entry/exit cycle per UTC day. >1: after exit (TP or SL), allow re-entry on a fresh prev_H/prev_L touch — same conditions, no special re-entry logic — up to N cycles. EOD flatten always closes the day. With extend mode active, prev_H/prev_L are the WIDER multi-day band, so re-touches within the same day are rare but each cycle re-exposes the full SL — one trend day costs N×SL.")
 
 // ─── Quality filters ───
 grpFilter = "🎯 Entry Quality Filters"
@@ -76,15 +87,31 @@ rsiPeriod        = input.int(14, "RSI period", minval=5, maxval=30, step=1, grou
 rsiLow           = input.float(25.0, "Skip long if RSI <", minval=10, maxval=40, step=1, group=grpFilter)
 rsiHigh          = input.float(75.0, "Skip short if RSI >", minval=60, maxval=90, step=1, group=grpFilter)
 
-// (Range gate and close confirm removed — kept off in user's tested config)
-useRangeGate    = false  // disabled
-minPrevRange    = 0.0
-useCloseConfirm = false  // disabled
+useCloseConfirm = false  // close confirm — kept off in user's tested config
+
+// ─── Adaptive S/R range ───
+// Problem this fixes: when prev_day range is tight (e.g., 1% squeeze day),
+// prev_mid TP target is only ~0.5% from entry while SL is 2% — R:R 0.25,
+// need 80% WR just to break even. Live data (Apr 26 → May 3) confirmed it:
+// every losing/break-even trade had prev_range < 2.5%.
+// Modes:
+//   - off    : always use prev_day H/L (BASELINE, +32% on 5w window).
+//   - skip   : gate entries when prev_day range < floor — sit out on tight days.
+//   - extend : when prev_day range < floor, expand to N-day rolling H/L until
+//              range ≥ floor. Wider band → entries fire at the wider levels and
+//              prev_mid TP shifts further → bigger wins, fewer signals.
+grpRange = "📏 Adaptive S/R range"
+rangeFilterMode = input.string("extend", "Range filter mode", options=["off", "skip", "extend"], group=grpRange,
+     tooltip="extend (DEFAULT, +40.59% Mar 23–May 3 paired with hybrid TP): when prev_day range < floor, expand lookback to N days until rolling H/L band ≥ floor; entries fire at wider levels and TP shifts to wider prev_mid. off: always use prev_day H/L (legacy baseline +32% on Mar 23–May 1). skip: gate entries when prev_day range < floor — sit out tight days entirely.")
+minPrevRangePct = input.float(2.0, "Min prev range (%)", minval=0.5, maxval=5.0, step=0.1, group=grpRange,
+     tooltip="Range floor. With default 2% SL: 2% range → R:R ~0.5 (break-even at 67% WR); 3% range → R:R ~0.75 (break-even at 58%). Lower = more trades, worse R:R; higher = pickier, better R:R.") / 100
+maxLookbackDays = input.int(2, "Max lookback days (extend mode)", minval=2, maxval=10, group=grpRange,
+     tooltip="Used in extend mode only. Cap on how far back to expand the rolling H/L window. 2 (DEFAULT) tested best on the 5w window — going to 3-5 left more days unfiltered (range still under floor with only 2 days). If even N-day range stays below floor, the widest available is used anyway.")
 
 // ─── Take Profit ───
 grpTP = "🎯 Take Profit"
-tpMode = input.string("prev_mid", "TP target", options=["prev_mid", "hybrid", "smart", "prev_extreme", "fixed_pct"], group=grpTP,
-     tooltip="prev_mid (DEFAULT, +32.07% / PF 3.32 / DD 4.80% on Mar 23–May 1) = yesterday's midpoint, fixed S/R anchor. hybrid = prev_mid pre-DCA, then switches to FIRST entry × (1 ∓ tpFixedPct) once DCA fires (gives position more room after averaging worse). smart = whichever of {prev_mid, avg × (1 ∓ smartPct)} is CLOSER to mark — adapts to slippage but takes profit earlier. prev_extreme = full prev_day range (riskier). fixed_pct = N% from FIRST entry, no prev_mid blend.")
+tpMode = input.string("hybrid", "TP target", options=["prev_mid", "hybrid", "smart", "prev_extreme", "fixed_pct"], group=grpTP,
+     tooltip="hybrid (DEFAULT, +40.59% paired with extend 2d on Mar 23–May 3) = prev_mid pre-DCA, then switches to FIRST entry × (1 ∓ tpFixedPct=4%) once DCA fires (worse-avg trades ride further). prev_mid (legacy baseline, +32.07% on Mar 23–May 1) = yesterday's midpoint, fixed S/R anchor. smart = whichever of {prev_mid, avg × (1 ∓ smartPct)} is CLOSER to mark — adapts to slippage but takes profit earlier. prev_extreme = full prev_day range (riskier). fixed_pct = N% from FIRST entry, no prev_mid blend.")
 smartTpPct = input.float(0.5, "Smart TP: % from avg entry", minval=0.1, maxval=3.0, step=0.1, group=grpTP,
      tooltip="Used in smart mode only. After each DCA leg fills, TP recomputes to avg_entry × (1 ∓ this%). Smaller % = earlier TP, smaller wins. 0.5% scalp tested at +20% / 5w — worse than prev_mid. Try 1.0–1.5% if you want a middle ground.") / 100
 tpFixedPct = input.float(4.0, "Fixed TP distance from entry (%)", minval=0.1, maxval=10, step=0.1, group=grpTP,
@@ -94,9 +121,61 @@ prevMidOffsetPct = input.float(0.1, "Prev_mid TP offset (%)", minval=-1.0, maxva
 
 // (Trailing stop tested and removed — too many false trail-outs near peaks.)
 
-// ─── Prior day levels (via security) ───
-prevH = request.security(syminfo.tickerid, "1D", high[1],  lookahead=barmerge.lookahead_off)
-prevL = request.security(syminfo.tickerid, "1D", low[1],   lookahead=barmerge.lookahead_off)
+// ─── Breakeven SL (opt-in) ───
+// Pattern this fixes: with hybrid TP at 4% post-DCA, trades that hit +1.5–2.7%
+// favorable but reverse before TP ended -1.1% / -0.3% / +0.1%. Breakeven SL
+// locks in the runup once favorable crosses a threshold, converting these
+// "almost wins" into small wins.
+//   ⚠ Earlier note in header said BE was tested and rejected, but that was
+//   on the OLD config (range_off / prev_mid TP) where targets were tighter
+//   so less runup to give back. With hybrid 4% TP, BE has more to add.
+grpBE = "🛡️ Breakeven SL"
+useBreakeven = input.bool(true, "Enable breakeven SL after favorable threshold", group=grpBE,
+     tooltip="ON (DEFAULT, +43.18% / PF 4.42 on 5w window with trigger=1.0% buffer=0.25%). Once favorable% from FIRST entry crosses the trigger, SL moves to entry ± buffer. Locks in runups that would otherwise reverse to losses. WR jumped from 61.7% → 65.96% with same trade count — strictly better exits.")
+breakevenTriggerPct = input.float(1.0, "BE trigger: favorable % from first entry", minval=0.3, maxval=3.0, step=0.1, group=grpBE,
+     tooltip="Once price moves this far in our favor (vs first entry), SL tightens to entry ± buffer. 1.0% (DEFAULT) = aggressive lock-in (proven on 5w window). 1.5% = patient (fewer BE-stops, lets winners breathe).") / 100
+breakevenBufferPct = input.float(0.25, "BE buffer above/below entry (%)", minval=0.0, maxval=0.5, step=0.05, group=grpBE,
+     tooltip="Tighten SL to firstEntry × (1 ± this%). 0.25% (DEFAULT) covers ~2× Binance taker fee (0.04%×2) + slippage cushion → locks in real ~0.20% net profit. 0.1% is barely above breakeven; 0% = exact entry (loses to fees).") / 100
+
+// ─── Prior day levels (with optional range-floor fallback) ───
+// Pre-fetch rolling N-day H/L offsets (1..5). Pine evaluates all
+// request.security calls regardless of branch, but they're cheap and we
+// only USE the lookback the cascade picks. Each is shifted by [1] so the
+// current day's bars never leak in (no lookahead).
+prevH1 = request.security(syminfo.tickerid, "1D", high[1], lookahead=barmerge.lookahead_off)
+prevL1 = request.security(syminfo.tickerid, "1D", low[1],  lookahead=barmerge.lookahead_off)
+prevH2 = request.security(syminfo.tickerid, "1D", ta.highest(high, 2)[1], lookahead=barmerge.lookahead_off)
+prevL2 = request.security(syminfo.tickerid, "1D", ta.lowest(low,  2)[1],  lookahead=barmerge.lookahead_off)
+prevH3 = request.security(syminfo.tickerid, "1D", ta.highest(high, 3)[1], lookahead=barmerge.lookahead_off)
+prevL3 = request.security(syminfo.tickerid, "1D", ta.lowest(low,  3)[1],  lookahead=barmerge.lookahead_off)
+prevH4 = request.security(syminfo.tickerid, "1D", ta.highest(high, 4)[1], lookahead=barmerge.lookahead_off)
+prevL4 = request.security(syminfo.tickerid, "1D", ta.lowest(low,  4)[1],  lookahead=barmerge.lookahead_off)
+prevH5 = request.security(syminfo.tickerid, "1D", ta.highest(high, 5)[1], lookahead=barmerge.lookahead_off)
+prevL5 = request.security(syminfo.tickerid, "1D", ta.lowest(low,  5)[1],  lookahead=barmerge.lookahead_off)
+
+// Default = 1-day (matches baseline). In extend mode, walk the cascade
+// 1→5 and stop at the first lookback whose range meets the floor (or the
+// max-lookback cap, whichever comes first).
+prevH = prevH1
+prevL = prevL1
+activeLookback = 1
+if rangeFilterMode == "extend"
+    if (prevH1 - prevL1) / prevL1 < minPrevRangePct and maxLookbackDays >= 2
+        prevH := prevH2
+        prevL := prevL2
+        activeLookback := 2
+        if (prevH2 - prevL2) / prevL2 < minPrevRangePct and maxLookbackDays >= 3
+            prevH := prevH3
+            prevL := prevL3
+            activeLookback := 3
+            if (prevH3 - prevL3) / prevL3 < minPrevRangePct and maxLookbackDays >= 4
+                prevH := prevH4
+                prevL := prevL4
+                activeLookback := 4
+                if (prevH4 - prevL4) / prevL4 < minPrevRangePct and maxLookbackDays >= 5
+                    prevH := prevH5
+                    prevL := prevL5
+                    activeLookback := 5
 prevMid = (prevH + prevL) / 2.0
 
 // 1h EMA — chart display only. The strategy doesn't gate entries on bias;
@@ -118,9 +197,11 @@ rsiVal = ta.rsi(close, rsiPeriod)
 rsiOkLong  = not useRsiFilter or rsiVal >= rsiLow
 rsiOkShort = not useRsiFilter or rsiVal <= rsiHigh
 
-// Range gate — replaces the bias filter as the protective mechanism
+// Range gate. In skip mode, block entries when active range < floor.
+// In off/extend mode, the cascade above has already picked the widest
+// usable band, so the gate passes (entries fire, possibly fewer of them).
 prevRangePct = (prevH - prevL) / prevL
-rangeOk = not useRangeGate or prevRangePct >= minPrevRange
+rangeOk = rangeFilterMode != "skip" or prevRangePct >= minPrevRangePct
 
 // Optional close confirmation
 closeOkLong  = not useCloseConfirm or close > open
@@ -136,9 +217,12 @@ var float cumNotional = na
 var float cumQty      = na
 avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
 var int   cycleClosedOnDay = -1
+var int   cyclesToday = 0
+var bool  beActivated = false
 
 if newDay
     cycleClosedOnDay := -1
+    cyclesToday := 0
 
 cycleDone = cycleClosedOnDay == dayofmonth
 
@@ -244,11 +328,26 @@ tpShortPx = tpMode == "smart" ? tpShortSmart
          : tpMode == "prev_extreme" ? prevL
          : tpShortFixed
 
-// SL: static at worst_entry × (1 ∓ slBelowWorst). Tested SL offset and
-// breakeven-SL variants on Mar 23–May 1 BTCUSDT 5m — none improved on the
-// 2% baseline (+35.25% / PF 3.92 / DD 4.80%). Kept simple.
-slLongPx  = worstEntryPx * (1 - slBelowWorst)
-slShortPx = worstEntryPx * (1 + slBelowWorst)
+// Breakeven activation: once favorable% from FIRST entry exceeds the
+// trigger, lock SL to firstEntry ± buffer for the rest of this cycle.
+// Once activated stays active until the cycle resets — so a subsequent
+// reversal can only exit at BE, not back at the worst-entry SL.
+if useBreakeven and not beActivated and not na(firstEntryPx) and strategy.position_size != 0
+    favLong  = (close - firstEntryPx) / firstEntryPx
+    favShort = (firstEntryPx - close) / firstEntryPx
+    if (strategy.position_size > 0 and favLong  >= breakevenTriggerPct) or (strategy.position_size < 0 and favShort >= breakevenTriggerPct)
+        beActivated := true
+
+// SL: static at worst_entry × (1 ∓ slBelowWorst). Tightens to BE if active.
+// Earlier breakeven-SL test on Mar 23–May 1 (range_off / prev_mid config)
+// didn't improve the +35.25% baseline — but with hybrid 4% TP, late-cycle
+// reversals are more common (bigger target = more chance to round-trip).
+slLongPxRaw   = worstEntryPx * (1 - slBelowWorst)
+slShortPxRaw  = worstEntryPx * (1 + slBelowWorst)
+slLongPxBE    = na(firstEntryPx) ? na : firstEntryPx * (1 + breakevenBufferPct)
+slShortPxBE   = na(firstEntryPx) ? na : firstEntryPx * (1 - breakevenBufferPct)
+slLongPx  = (useBreakeven and beActivated) ? slLongPxBE  : slLongPxRaw
+slShortPx = (useBreakeven and beActivated) ? slShortPxBE : slShortPxRaw
 
 if strategy.position_size > 0 and not na(worstEntryPx)
     // Exit all long legs at TP=prevMid or SL=2% below worst entry
@@ -270,13 +369,20 @@ if useEodFlatten and utcH >= closeHour and strategy.position_size != 0
     strategy.close_all(comment="EOD flatten")
 
 // ─── Cycle reset after exit ───
+// Increment cycles. Block further entries today only if (a) we've hit the
+// per-day cap, or (b) EOD flatten just fired. Otherwise leave the door open
+// for the standard L1 touch block to re-fire on a fresh prev_H/prev_L touch.
 if strategy.position_size == 0 and strategy.position_size[1] != 0
-    cycleClosedOnDay := dayofmonth
+    cyclesToday := cyclesToday + 1
+    eodForced = useEodFlatten and utcH >= closeHour
+    if cyclesToday >= maxCyclesPerDay or eodForced
+        cycleClosedOnDay := dayofmonth
     filledCount     := 0
     firstEntryPx    := na
     worstEntryPx    := na
     cumNotional     := na
     cumQty          := na
+    beActivated     := false
 
 // ─── Visuals ───
 plot(prevH, "Prev H",   color=color.new(color.red,   50), style=plot.style_linebr)
@@ -316,7 +422,7 @@ if barstate.islast
     table.cell(dash, 0, 1, "EOD")
     table.cell(dash, 1, 1, useEodFlatten ? str.tostring(closeHour) + ":00 UTC" : "OFF", text_color=useEodFlatten ? color.green : color.gray)
     table.cell(dash, 0, 2, "Prev H / L / Mid")
-    table.cell(dash, 1, 2, str.tostring(prevL, "#.##") + " / " + str.tostring(prevMid, "#.##") + " / " + str.tostring(prevH, "#.##"))
+    table.cell(dash, 1, 2, str.tostring(prevL, "#.##") + " / " + str.tostring(prevMid, "#.##") + " / " + str.tostring(prevH, "#.##") + "  (" + str.tostring(activeLookback) + "d, " + str.tostring(prevRangePct*100, "#.##") + "%)")
     table.cell(dash, 0, 3, "UTC hour")
     table.cell(dash, 1, 3, str.tostring(utcH) + ":00")
     table.cell(dash, 0, 4, "TP mode")
@@ -330,10 +436,11 @@ if barstate.islast
     table.cell(dash, 1, 7, na(avgEntryPx) ? "—" : str.tostring(avgEntryPx, "#.##"))
     table.cell(dash, 0, 8, "Worst entry")
     table.cell(dash, 1, 8, na(worstEntryPx) ? "—" : str.tostring(worstEntryPx, "#.##"))
-    table.cell(dash, 0, 9, "Active TP")
-    table.cell(dash, 1, 9, strategy.position_size == 0 ? "—" : str.tostring(strategy.position_size > 0 ? tpLongPx : tpShortPx, "#.##"),
-         text_color=color.aqua)
-    table.cell(dash, 0, 10, "Cycle done today")
-    table.cell(dash, 1, 10, cycleDone ? "YES" : "no")
+    table.cell(dash, 0, 9, "Active TP / SL src")
+    tpStr  = strategy.position_size == 0 ? "—" : str.tostring(strategy.position_size > 0 ? tpLongPx : tpShortPx, "#.##")
+    slSrc  = strategy.position_size == 0 ? "" : (useBreakeven and beActivated ? "  [BE]" : "")
+    table.cell(dash, 1, 9, tpStr + slSrc, text_color=(useBreakeven and beActivated) ? color.yellow : color.aqua)
+    table.cell(dash, 0, 10, "Cycles today")
+    table.cell(dash, 1, 10, str.tostring(cyclesToday) + "/" + str.tostring(maxCyclesPerDay) + (cycleDone ? " (done)" : ""))
     table.cell(dash, 0, 11, "Equity")
     table.cell(dash, 1, 11, "$" + str.tostring(strategy.equity, "#,###"))

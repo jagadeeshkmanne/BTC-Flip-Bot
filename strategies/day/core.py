@@ -1,17 +1,17 @@
 """
-core.py — S/R DCA Day Strategy (5m execution + 1h bias)
+core.py — S/R DCA Day Strategy (5m execution + 1d S/R)
 
-Python port of strategy_sr_dca_5m.pine:
-  - Entry: prev_day's L/H touch + 1h EMA20 bias + filters
-  - DCA: 1% below L1 (2 levels default)
-  - TP: prev_day midpoint
-  - SL: 2% below worst entry
-  - BE-stop: after +1% favorable, SL → entry + 0.5% (default OFF)
-  - EOD flatten at UTC 23:00
+Python port of strategy_sr_dca_5m.pine. Mirrors the pine tested-best
+config: extend-mode adaptive S/R range (2-day fallback at 2% floor),
+hybrid TP (prev_mid pre-DCA, first_entry × (1 ∓ 4%) post-DCA), 1.9% SL.
+TV backtest Mar 23–May 3 (5w): +40.59% / PF 3.86 / DD 4.80% / 47 trades.
+
+  - Entry: prev_day's L/H touch (with N-day fallback if range < floor) + filters
+  - DCA: 0.8% beyond L1 (2 levels default)
+  - TP: hybrid (prev_mid pre-DCA, fixed % from first entry post-DCA)
+  - SL: 1.9% below worst entry
+  - EOD flatten at UTC 20:00
   - Max 1 cycle per UTC day
-
-1h bias is resampled from 5m data internally — bot.py keeps its existing
-signature (df_5m + df_1d for prev H/L, 1h resampled from 5m for bias).
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -25,7 +25,7 @@ RISK_PCT       = 0.06         # 6% total risk per cycle
 
 DCA_LEVELS     = 2
 DCA_SPACING    = 0.008        # 0.8% between DCA legs
-SL_BELOW_WORST = 0.02         # 2% below worst entry (above for shorts)
+SL_BELOW_WORST = 0.019        # 1.9% below worst entry (above for shorts) — tested better than 2.0% on 5w window
 SUPPORT_ZONE   = 0.0005       # 0.05% zone around prev H/L — only direct touches qualify
 
 # TP offset: shift prev_mid TP slightly toward current price for reliable fills.
@@ -33,6 +33,33 @@ SUPPORT_ZONE   = 0.0005       # 0.05% zone around prev H/L — only direct touch
 # offset catches near-misses where price reverses just before exact mid.
 # Backtest Mar 23–May 1: +35.25% with offset vs +32.07% without (same DD).
 PREV_MID_OFFSET = 0.001       # 0.1%
+
+# TP mode (matches pine default).
+#   "prev_mid" — exit at prev_mid for all legs (legacy baseline, +32% 5w).
+#   "hybrid"   — prev_mid pre-DCA, then switch to first_entry × (1 ∓ TP_FIXED_PCT)
+#                once DCA fires. Tested best (+40.59% / 5w / Mar 23–May 3) paired
+#                with adaptive S/R range extend mode below.
+TP_MODE        = "hybrid"
+TP_FIXED_PCT   = 0.04         # 4% — used post-DCA in hybrid mode
+
+# Adaptive S/R range — when prev-day range is tight (e.g., 1% squeeze day),
+# prev_mid TP target sits ~0.5% from entry while SL is 2% → R:R 0.25, need
+# 80% WR to break even. Range filter widens the lookback to N-day rolling H/L
+# until the band exceeds the floor, restoring sane R:R.
+#   "off"    — always use prev_day H/L (legacy baseline).
+#   "skip"   — gate entries when prev_day range < floor (sit out tight days).
+#   "extend" — expand to 2..MAX_LOOKBACK_DAYS-day rolling H/L until range ≥ floor.
+RANGE_FILTER_MODE  = "extend"
+MIN_PREV_RANGE_PCT = 0.02     # 2% floor (R:R ~0.5 with default 2% SL)
+MAX_LOOKBACK_DAYS  = 2        # 2 tested best on 5w window — wider lookbacks left more days unfiltered
+
+# Breakeven SL — once favorable% from FIRST entry crosses BE_TRIGGER_PCT,
+# tighten SL to first_entry ± BE_BUFFER_PCT for the rest of this cycle.
+# Saves losers that round-trip from peak runup, leaves trade count unchanged.
+# Tested +43.18% / PF 4.42 vs +40.59% / PF 3.86 baseline (Mar 23–May 3, 5w).
+USE_BREAKEVEN  = True
+BE_TRIGGER_PCT = 0.01         # 1.0% favorable from first entry
+BE_BUFFER_PCT  = 0.0025       # 0.25% buffer — covers 2× taker fee (0.04%×2) + slippage
 
 CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries
 
@@ -96,21 +123,44 @@ def build_features(df_5m: pd.DataFrame, df_1d: pd.DataFrame) -> pd.DataFrame:
 
     df["bias_h"] = df["timestamp"].apply(prior_hour_bias).astype(int)
 
-    # ─── Prev-day H/L/mid (still from daily bars) ───
+    # ─── Prev-day H/L/mid (with optional range-floor fallback) ───
+    # Pre-compute rolling N-day H/L offsets for 1..MAX_LOOKBACK_DAYS, all
+    # shifted by 1 so today's bar never leaks into "prev". In extend mode,
+    # walk the cascade and pick the first lookback that meets the floor.
     d1 = df_1d.copy().reset_index(drop=True)
     d1["timestamp"] = pd.to_datetime(d1["timestamp"])
     d1["date"] = d1["timestamp"].dt.normalize()
-    d1["prev_H"]   = d1["high"].shift(1)
-    d1["prev_L"]   = d1["low"].shift(1)
+    for n in range(1, MAX_LOOKBACK_DAYS + 1):
+        d1[f"prev_H_{n}"] = d1["high"].rolling(n).max().shift(1)
+        d1[f"prev_L_{n}"] = d1["low"].rolling(n).min().shift(1)
+
+    if RANGE_FILTER_MODE == "extend":
+        h = d1["prev_H_1"].copy()
+        l = d1["prev_L_1"].copy()
+        lookback = pd.Series(1, index=d1.index)
+        for n in range(2, MAX_LOOKBACK_DAYS + 1):
+            need_extend = ((h - l) / l < MIN_PREV_RANGE_PCT)
+            h = h.where(~need_extend, d1[f"prev_H_{n}"])
+            l = l.where(~need_extend, d1[f"prev_L_{n}"])
+            lookback = lookback.where(~need_extend, n)
+        d1["prev_H"]   = h
+        d1["prev_L"]   = l
+        d1["prev_lookback"] = lookback
+    else:
+        d1["prev_H"] = d1["prev_H_1"]
+        d1["prev_L"] = d1["prev_L_1"]
+        d1["prev_lookback"] = 1
     d1["prev_mid"] = (d1["prev_H"] + d1["prev_L"]) / 2.0
 
     prev_h_map = dict(zip(d1["date"], d1["prev_H"]))
     prev_l_map = dict(zip(d1["date"], d1["prev_L"]))
     prev_m_map = dict(zip(d1["date"], d1["prev_mid"]))
+    prev_lb_map = dict(zip(d1["date"], d1["prev_lookback"]))
 
     df["prev_H"]   = df["date"].map(prev_h_map)
     df["prev_L"]   = df["date"].map(prev_l_map)
     df["prev_mid"] = df["date"].map(prev_m_map)
+    df["prev_lookback"] = df["date"].map(prev_lb_map)
     return df
 
 
@@ -140,6 +190,14 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
 
     # Incomplete data
     if pd.isna(prev_h) or pd.isna(prev_l) or pd.isna(rsi_v) or pd.isna(vol_avg):
+        return s
+
+    # Range-skip gate. In skip mode, block entries when active prev range <
+    # floor — sit out tight days entirely. In off/extend modes, build_features
+    # has already widened prev_H/prev_L if needed, so the gate passes.
+    prev_range_pct = (prev_h - prev_l) / prev_l if prev_l > 0 else 0.0
+    range_ok = RANGE_FILTER_MODE != "skip" or prev_range_pct >= MIN_PREV_RANGE_PCT
+    if not range_ok:
         return s
 
     # Volume filter (on THIS 5m bar)
@@ -177,8 +235,11 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
         "Touch prev high":    bool(touch_H),
         "In trade window":    bool(in_trade_window),
     }
+    lookback = row.get("prev_lookback", 1)
     s.raw = {
         "prev_H": float(prev_h), "prev_L": float(prev_l), "prev_mid": float(prev_mid),
+        "prev_range_pct": float(prev_range_pct),
+        "prev_lookback": int(lookback) if not pd.isna(lookback) else 1,
         "bias_h": bias,
         "rsi":    float(rsi_v) if not pd.isna(rsi_v) else None,
         "vol":    float(vol),
@@ -200,15 +261,36 @@ def dca_price(side: Side, worst_entry: float) -> float:
     return worst_entry * (1 - DCA_SPACING) if side == "LONG" else worst_entry * (1 + DCA_SPACING)
 
 
-def sl_price(side: Side, worst_entry: float) -> float:
-    """Current SL price: SL_BELOW_WORST (2%) below worst entry for longs, above for shorts."""
+def sl_price(side: Side, worst_entry: float, first_entry: float = None, be_activated: bool = False) -> float:
+    """SL price. Defaults to worst_entry × (1 ∓ SL_BELOW_WORST) (1.9%).
+    When USE_BREAKEVEN and be_activated, tightens to first_entry × (1 ± BE_BUFFER_PCT)
+    to lock in a small profit instead of the full SL distance.
+    """
+    if USE_BREAKEVEN and be_activated and first_entry is not None:
+        return first_entry * (1 + BE_BUFFER_PCT) if side == "LONG" else first_entry * (1 - BE_BUFFER_PCT)
     return worst_entry * (1 - SL_BELOW_WORST) if side == "LONG" else worst_entry * (1 + SL_BELOW_WORST)
 
 
-def tp_price(side: Side, prev_mid: float) -> float:
-    """TP = prev_mid shifted by PREV_MID_OFFSET toward current price for fill
-    reliability. LONG TP is above mark → lower it; SHORT TP is below mark →
-    raise it. Matches pine strategy's prevMidOffsetPct default (0.1%)."""
+def be_should_activate(side: Side, first_entry: float, current_price: float) -> bool:
+    """True if favorable% from first_entry has crossed BE_TRIGGER_PCT.
+    Caller is expected to OR this with prior `be_activated` and persist
+    (BE is sticky — once armed, stays armed for the cycle)."""
+    if not USE_BREAKEVEN or first_entry is None or first_entry <= 0:
+        return False
+    fav = (current_price - first_entry) / first_entry if side == "LONG" else (first_entry - current_price) / first_entry
+    return fav >= BE_TRIGGER_PCT
+
+
+def tp_price(side: Side, prev_mid: float, first_entry: float = None, filled_count: int = 1) -> float:
+    """TP target. Defaults to prev_mid (with PREV_MID_OFFSET shift toward
+    current price for fill reliability). In hybrid mode, switches to
+    first_entry × (1 ∓ TP_FIXED_PCT) once DCA has fired (filled_count ≥ 2),
+    matching the pine strategy's tested-best config (+40.59% / 5w).
+    """
+    if TP_MODE == "hybrid" and filled_count >= 2 and first_entry is not None:
+        if side == "LONG":
+            return float(first_entry) * (1 + TP_FIXED_PCT)
+        return float(first_entry) * (1 - TP_FIXED_PCT)
     if side == "LONG":
         return float(prev_mid) * (1 - PREV_MID_OFFSET)
     return float(prev_mid) * (1 + PREV_MID_OFFSET)
