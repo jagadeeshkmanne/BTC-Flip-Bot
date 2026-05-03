@@ -352,6 +352,26 @@ function renderPosition(price){
   $('posPnlUsd').innerHTML = `<span class="${cls}">${fmtUsd(pnlUsd)}</span>`;
   $('posPnlPct').innerHTML = `<span class="${cls}">${fmtPct(pnlPct)}</span>`;
 
+  // BE-locked pill — shown on the entry line whenever bot has armed BE-SL.
+  // Visual: gold/yellow pill matches the [BE] suffix in pine dashboard.
+  // Insert/remove from posMeta so it doesn't shift other layouts.
+  const posMetaEl = document.querySelector('#positionCard .pos-meta');
+  if (posMetaEl) {
+    const existing = posMetaEl.querySelector('.be-pill');
+    if (p.beActivated) {
+      if (!existing) {
+        const pill = document.createElement('span');
+        pill.className = 'be-pill';
+        pill.textContent = 'BE locked';
+        pill.title = 'Breakeven SL armed — SL tightened to entry + 0.25% buffer. Reversals exit at small profit instead of full SL.';
+        pill.style.cssText = 'margin-left:10px;padding:2px 8px;background:rgba(240,185,11,.15);border:1px solid var(--gold);color:var(--gold);font-size:11px;font-weight:600;letter-spacing:.5px;border-radius:3px;text-transform:uppercase';
+        posMetaEl.appendChild(pill);
+      }
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
   // Zone labels — for SHORT: profit = lower (left), loss = upper (right). LONG flipped.
   if (p.side === 'SHORT') { $('zoneLeft').textContent = 'PROFIT (TP)'; $('zoneRight').textContent = 'LOSS (SL)'; }
   else { $('zoneLeft').textContent = 'LOSS (SL)'; $('zoneRight').textContent = 'PROFIT (TP)'; }
@@ -436,7 +456,12 @@ function renderSetup(status){
   $('setupRsi').textContent = ind.rsi !== undefined ? ind.rsi.toFixed(1) : '--';
   $('setupVol').textContent = ind.vol && ind.vol_avg ? (ind.vol/ind.vol_avg).toFixed(2) + '×' : '--';
   const range = (ind.prev_H && ind.prev_L) ? ((ind.prev_H - ind.prev_L) / ind.prev_L * 100) : null;
-  $('setupRange').textContent = range !== null ? range.toFixed(2) + '%' : '--';
+  // Lookback suffix — shows "(2d)" when the adaptive S/R cascade fell
+  // back to a multi-day range because prev-day was below the 2% floor.
+  // 1d (the default) is omitted to keep the stat clean.
+  const lookback = ind.prev_lookback || 1;
+  const lbSuffix = lookback > 1 ? ` <span style="color:var(--gold);font-size:11px;font-weight:600">(${lookback}d)</span>` : '';
+  $('setupRange').innerHTML = (range !== null ? range.toFixed(2) + '%' : '--') + lbSuffix;
 
   const renderCondList = (defs, listEl) => {
     listEl.innerHTML = '';
@@ -583,6 +608,10 @@ async function refresh(){
       );
       const liveTp = liveTpOrder ? liveTpOrder.price : 0;
       const fallbackPrevMid = (status.indicators || {}).prev_mid || 0;
+      // BE-armed flag — surfaced from bot state so the dashboard can show
+      // when the SL has tightened to entry+buffer (locks in small wins on
+      // reversal). Bot sets pos.be_activated=true when fav% ≥ BE_TRIGGER_PCT.
+      const beActivated = state.position ? !!state.position.be_activated : false;
       positionSnapshot = livePos ? {
         side: livePos.side,
         entry: livePos.entry,
@@ -594,6 +623,7 @@ async function refresh(){
         leverage: livePos.leverage,
         marginType: livePos.marginType,
         liveUpnl: livePos.uPnL,
+        beActivated,
       } : {
         side: pos.side,
         entry: pos.first_entry || pos.entry_price || 0,
@@ -602,6 +632,7 @@ async function refresh(){
         worstEntry: pos.worst_entry || pos.first_entry || pos.entry_price || 0,
         filled: (pos.entries || [{}]).length,
         prevMid: liveTp || fallbackPrevMid,
+        beActivated,
       };
       $('positionCard').style.display = '';
       $('setupCard').style.display = 'none';
