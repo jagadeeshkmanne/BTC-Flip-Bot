@@ -1,42 +1,34 @@
 //@version=6
 // ─────────────────────────────────────────────────────────────────────
-// S/R DCA Day Trader (5m) — V2 (RSI divergence)
-//
-// 🆕 EXPERIMENTAL VARIANT — not yet ported to live bot.
-//    Sibling file: strategy_sr_dca_5m.pine = V1 (live bot config, no
-//    divergence). Both can run side-by-side on the same TV chart for
-//    comparison. To deploy V2 live, divergence detection must first be
-//    ported to bot.py (currently the bot only runs V1 logic).
-//
-// What V2 adds vs V1:
-//   - RSI divergence at S/R touch (DEFAULT ON, pivot 5/5, fresh 20 bars)
-//   - RSI anti-extreme filter (DEFAULT OFF — divergence subsumes it)
-//   - Breakeven SL (DEFAULT OFF — divergence subsumes it)
-//   - Volume × 20-bar avg lowered 1.2 → 1.1 (slightly more permissive)
+// S/R DCA Day Trader (5m)
 //
 // ⚠ DESIGNED FOR: BTCUSDT · 5-minute timeframe · ONLY.
+//   Tuned to BTC's daily range, RSI behavior, and S/R touch frequency.
+//   Other symbols and timeframes have NOT been validated.
+//   The strategy shows a wrong-TF warning on anything other than 5m.
 //
-// Logic (V2):
-//   - Entry: 5m low touches prev_L (LONG) or 5m high touches prev_H (SHORT)
-//     within a 0.05% zone, AND a fresh RSI divergence pivot was confirmed
-//     within the last 20 bars (DEFAULT). Adaptive S/R: when prev-day range
-//     < floor, expand lookback to N-day rolling H/L until range ≥ floor.
-//   - Filters: volume ≥ 1.1× SMA. RSI anti-extreme available but OFF by default.
-//   - RSI divergence: bearish for shorts at prev_H, bullish for longs at prev_L.
+// 5m support/resistance DCA day trader. Buys at prev_day low, shorts at
+// prev_day high, averages down once if price moves further against, exits
+// at prev_day midpoint (or fixed % from first entry post-DCA in hybrid mode).
+// Force-flattens at 20:00 UTC, never holds overnight. 1 cycle per UTC day max.
+//
+// Logic:
+//   - Entry: 5m low touches prev_L (LONG) or 5m high touches prev_H (SHORT),
+//     within a 0.05% zone. Adaptive S/R: when prev-day range < floor, expand
+//     lookback to N-day rolling H/L until range ≥ floor (avoids the bad-R:R
+//     entries on tight squeeze days that cost 3% live in the Apr 26→May 3 window).
+//   - Filters: RSI anti-extreme (skip LONG <25 / SHORT >75) + volume ≥ 1.2× SMA
 //   - DCA: 1 add at worst_entry × (1 ∓ 0.8%)
-//   - TP: hybrid — prev_mid pre-DCA, switches to first_entry × (1 ∓ 4%) post-DCA
-//   - SL: worst_entry × (1 ∓ 1.9%) — moves with each DCA leg
-//   - BE-stop available but OFF by default (was ON in V1)
+//   - TP: hybrid (DEFAULT) — prev_mid pre-DCA, switches to first_entry × (1 ∓ 4%)
+//     post-DCA so the worse-avg trade rides further. Other modes available.
+//   - SL: worst_entry × (1 ∓ 2%) — moves with each DCA leg
 //   - EOD: force flatten at configurable UTC hour (default 20:00)
 //
-// Backtest history (BTCUSDT 5m, Mar 30 – May 4 unless noted):
-//   - V2 minimal config (divergence ON, RSI off, BE off, vol 1.1):     +25.44% / PF 7.38 / DD 2.69% / 23 trades / WR 69.6%
-//   - V2 full filters (divergence ON + RSI on + BE on + vol 1.2):      +25.38% / PF 7.39 / DD 2.91% / 25 trades / WR 72%
-//   - V1 baseline (no divergence):                                     +25.18% / PF 3.27 / DD 4.61% / 43 trades / WR 60.5%
-//   - V1 on Mar 23–May 3 (larger window):                              +43.18% / PF 4.42 / DD 4.61% / 47 trades / WR 66%
-// Divergence trades less but with PF 2× and DD halved vs V1.
-// Multi-RSI variants (fast 7 / slow 21) tested and rejected: noise on fast,
-// stale on slow. Standard RSI(14) at 5/5/20 is the validated config.
+// Backtest history (BTCUSDT 5m):
+//   - Mar 23–May 3 (5w, current defaults: extend 2d / hybrid TP / BE 1.0%/0.25%): +43.18% / PF 4.42 / DD 4.61% / 47 trades / WR 65.96%
+//   - Same window without BE-SL (extend 2d / hybrid TP):                          +40.59% / PF 3.86 / DD 4.80% / 47 trades / WR 61.7%
+//   - Mar 23–May 1 (legacy baseline: range_off / prev_mid):                       +32.07% / PF 3.32 / DD 4.80% / 43 trades / WR ~65%
+//   - Same window with fixed-4% TP only:                                          +35.20%
 //
 // ⚠ Regime warning: a 2.3-year python backtest returned -72.78% / DD 82%.
 // The strategy is regime-favorable (works in mean-reverting markets) but
@@ -47,7 +39,7 @@
 
 leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5)
 
-strategy("S/R DCA Day Trader (5m) V2 — divergence", overlay=true, initial_capital=5000,
+strategy("S/R DCA Day Trader (5m)", overlay=true, initial_capital=5000,
      default_qty_type=strategy.percent_of_equity, default_qty_value=95,
      pyramiding=3, calc_on_order_fills=false, calc_on_every_tick=false,
      process_orders_on_close=true, commission_type=strategy.commission.percent,
@@ -63,10 +55,10 @@ riskPct = input.float(6.0, "Total risk per cycle (%)", minval=0.1, maxval=15, st
 grpDCA = "📊 S/R DCA"
 dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
      tooltip="5m uses 2 levels. Each DCA adds 1 leg at worst_entry × (1 ± dcaSpacing).")
-dcaSpacing   = input.float(0.85, "DCA spacing (%)", minval=0.3, maxval=3, step=0.05, group=grpDCA,
-     tooltip="V2 DEFAULT 0.85 (V1 was 0.8). Tested better paired with the tighter 1.4% SL — gives DCA leg a hair more breathing room before SL distance shortens past it.") / 100
-slBelowWorst = input.float(1.4, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA,
-     tooltip="V2 DEFAULT 1.4 (V1 was 1.9). With divergence-confirmed entries (72% WR), tighter SL works — losses are smaller when wrong, and noise-stops are rare because divergence picks structurally exhausted moves. V1's 1.9% was needed when entries had no momentum confirmation.") / 100
+dcaSpacing   = input.float(0.8, "DCA spacing (%)", minval=0.3, maxval=3, step=0.1, group=grpDCA,
+     tooltip="Distance between DCA legs. Tighter spacing fills DCA more often with a tighter avg entry.") / 100
+slBelowWorst = input.float(1.9, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA,
+     tooltip="1.9 (DEFAULT) tested marginally better than 2.0 on 5w window. Goes below 1.5% and noise stops dominate; above 2.5% and the per-loss bite dominates.") / 100
 supportZone  = input.float(0.05, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA,
      tooltip="How close to prev_H/prev_L the bar high/low must be to count as a touch. 0.05% = direct touch only, very selective. Wider zones fire on near-misses but hurt win rate.") / 100
 useEodFlatten = input.bool(true, "Force flatten at EOD UTC hour", group=grpDCA,
@@ -82,44 +74,20 @@ maxCyclesPerDay = input.int(1, "Max cycles per UTC day", minval=1, maxval=5, gro
 // ─── Quality filters ───
 grpFilter = "🎯 Entry Quality Filters"
 useVolumeFilter  = input.bool(true, "Require volume confirmation at entry", group=grpFilter)
-volMult          = input.float(1.1, "Volume × 20-bar avg", minval=0.5, maxval=3.0, step=0.1, group=grpFilter,
-     tooltip="V2 DEFAULT 1.1 (was 1.2 in V1). With divergence ON, volume filter is mostly redundant; 1.1 lets a few more high-quality entries through that 1.2 was blocking.")
+volMult          = input.float(1.2, "Volume × 20-bar avg", minval=0.5, maxval=3.0, step=0.1, group=grpFilter,
+     tooltip="Entry bar volume must exceed this × 20-bar SMA volume.")
 
 // RSI filter — anti-extreme protection:
 //   Skip LONG if RSI < 25 (don't catch falling knives)
 //   Skip SHORT if RSI > 75 (don't catch flying knives)
 // Inverted logic (require extremes) was tested and rejected — backtest worse.
-// V2: default OFF — divergence subsumes this. Filter caught knives BEFORE
-// divergence existed; with divergence ON, both filters reject the same
-// entries → vol+RSI is no-op overhead. Tested Mar 30–May 4: identical
-// return at slightly lower DD with this OFF.
-useRsiFilter     = input.bool(false, "Skip extreme RSI (falling/flying knives)", group=grpFilter)
+useRsiFilter     = input.bool(true, "Skip extreme RSI (falling/flying knives)", group=grpFilter)
 rsiPeriod        = input.int(14, "RSI period", minval=5, maxval=30, step=1, group=grpFilter,
      tooltip="14 = 70-min lookback on 5m. Standard.")
 rsiLow           = input.float(25.0, "Skip long if RSI <", minval=10, maxval=40, step=1, group=grpFilter)
 rsiHigh          = input.float(75.0, "Skip short if RSI >", minval=60, maxval=90, step=1, group=grpFilter)
 
 useCloseConfirm = false  // close confirm — kept off in user's tested config
-
-// ─── RSI Divergence (DEFAULT ON — proven on 5w window) ───
-// At the prev_H / prev_L touch where we'd normally enter, require a recent
-// momentum divergence as confirmation that the move is exhausting:
-//   - SHORT at prev_H: bearish divergence (price HH, RSI LH) → upside weakening
-//   - LONG  at prev_L: bullish divergence (price LL, RSI HL) → downside weakening
-// Mar 30 – May 4: +25.38% / DD 2.91% / 25 trades / WR 72% / PF 7.39 — strictly
-// better risk-adjusted than the no-div baseline (+25.18% / DD 4.61% / 43 trades).
-// Multi-RSI variants (fast 7 / slow 21) tested and rejected: trade count
-// dropped, DD worsened — fast RSI fired on noise, slow on stale moves.
-// 5/5/20 with standard RSI(14) is the validated config.
-grpDiv = "📉 RSI Divergence"
-useRsiDivergence = input.bool(true, "Require RSI divergence at S/R", group=grpDiv,
-     tooltip="DEFAULT ON. Only fires L1 entry if a fresh divergence pivot was confirmed within divFreshBars. Bearish for shorts at prev_H; bullish for longs at prev_L. Filter cuts trade count ~45% but PF more than doubles and DD halves — the highest-EV edit on the 5w window.")
-divPivotL    = input.int(5, "Pivot left bars",  minval=1, maxval=10, group=grpDiv,
-     tooltip="Bars on the left of the pivot that must be lower (for highs) / higher (for lows) for it to count. 5 (DEFAULT) catches real swing turning points; 3 catches noise.")
-divPivotR    = input.int(5, "Pivot right bars", minval=1, maxval=10, group=grpDiv,
-     tooltip="Bars on the right that confirm the pivot. 5 (DEFAULT) = 25 min lag. Lower (3) confirms faster but pivots can fail to fully form. Tested: 5 best on 5w window.")
-divFreshBars = input.int(20, "Divergence valid for N bars", minval=1, maxval=50, group=grpDiv,
-     tooltip="How long after a divergence pivot fires the signal stays usable. 20 (DEFAULT) = ~100 min on 5m. 10 was too tight (lots of misses); 50 added stale entries that hurt DD with no return upside.")
 
 // ─── Adaptive S/R range ───
 // Problem this fixes: when prev_day range is tight (e.g., 1% squeeze day),
@@ -162,8 +130,8 @@ prevMidOffsetPct = input.float(0.1, "Prev_mid TP offset (%)", minval=-1.0, maxva
 //   on the OLD config (range_off / prev_mid TP) where targets were tighter
 //   so less runup to give back. With hybrid 4% TP, BE has more to add.
 grpBE = "🛡️ Breakeven SL"
-useBreakeven = input.bool(false, "Enable breakeven SL after favorable threshold", group=grpBE,
-     tooltip="V2 DEFAULT OFF — divergence subsumes BE-stop's value (high-WR entries reverse less). Tested Mar 30–May 4: with divergence ON, BE OFF gives same return at slightly lower DD. V1 had BE ON which earned +43.18% / DD 4.61% on Mar 23–May 3 — keep ON if you remove divergence.")
+useBreakeven = input.bool(true, "Enable breakeven SL after favorable threshold", group=grpBE,
+     tooltip="ON (DEFAULT, +43.18% / PF 4.42 on 5w window with trigger=1.0% buffer=0.25%). Once favorable% from FIRST entry crosses the trigger, SL moves to entry ± buffer. Locks in runups that would otherwise reverse to losses. WR jumped from 61.7% → 65.96% with same trade count — strictly better exits.")
 breakevenTriggerPct = input.float(1.0, "BE trigger: favorable % from first entry", minval=0.3, maxval=3.0, step=0.1, group=grpBE,
      tooltip="Once price moves this far in our favor (vs first entry), SL tightens to entry ± buffer. 1.0% (DEFAULT) = aggressive lock-in (proven on 5w window). 1.5% = patient (fewer BE-stops, lets winners breathe).") / 100
 breakevenBufferPct = input.float(0.25, "BE buffer above/below entry (%)", minval=0.0, maxval=0.5, step=0.05, group=grpBE,
@@ -229,46 +197,6 @@ rsiVal = ta.rsi(close, rsiPeriod)
 rsiOkLong  = not useRsiFilter or rsiVal >= rsiLow
 rsiOkShort = not useRsiFilter or rsiVal <= rsiHigh
 
-// ─── RSI Divergence detection ───
-// Track last 2 confirmed price-pivots (hi/lo) and the RSI value AT that pivot
-// bar (which is divPivotR bars behind the confirmation bar). Bearish div =
-// price made a higher high while RSI made a lower high. Bullish = opposite.
-priceHiPivot = ta.pivothigh(high, divPivotL, divPivotR)
-priceLoPivot = ta.pivotlow(low,  divPivotL, divPivotR)
-
-var float lastPHigh = na
-var float prevPHigh = na
-var float lastRAtH  = na
-var float prevRAtH  = na
-var float lastPLow  = na
-var float prevPLow  = na
-var float lastRAtL  = na
-var float prevRAtL  = na
-
-if not na(priceHiPivot)
-    prevPHigh := lastPHigh
-    prevRAtH  := lastRAtH
-    lastPHigh := priceHiPivot
-    lastRAtH  := rsiVal[divPivotR]
-
-if not na(priceLoPivot)
-    prevPLow := lastPLow
-    prevRAtL := lastRAtL
-    lastPLow := priceLoPivot
-    lastRAtL := rsiVal[divPivotR]
-
-bearishDivFired = not na(prevPHigh) and not na(priceHiPivot) and lastPHigh > prevPHigh and lastRAtH < prevRAtH
-bullishDivFired = not na(prevPLow)  and not na(priceLoPivot) and lastPLow  < prevPLow  and lastRAtL > prevRAtL
-
-// Bars-since-fire trackers — divergence stays "fresh" for divFreshBars
-var int barsSinceBearDiv = 9999
-var int barsSinceBullDiv = 9999
-barsSinceBearDiv := bearishDivFired ? 0 : barsSinceBearDiv + 1
-barsSinceBullDiv := bullishDivFired ? 0 : barsSinceBullDiv + 1
-
-bearDivOk = not useRsiDivergence or barsSinceBearDiv <= divFreshBars
-bullDivOk = not useRsiDivergence or barsSinceBullDiv <= divFreshBars
-
 // Range gate. In skip mode, block entries when active range < floor.
 // In off/extend mode, the cascade above has already picked the widest
 // usable band, so the gate passes (entries fire, possibly fewer of them).
@@ -313,13 +241,11 @@ l1LongOk = not cycleDone and strategy.position_size == 0 and inEntryWindow
      and low <= prevL * (1 + supportZone) and low > prevL * (1 - 0.01)
      and volOk and rsiOkLong
      and rangeOk and closeOkLong
-     and bullDivOk
 
 l1ShortOk = not cycleDone and strategy.position_size == 0 and inEntryWindow
      and high >= prevH * (1 - supportZone) and high < prevH * (1 + 0.01)
      and volOk and rsiOkShort
      and rangeOk and closeOkShort
-     and bearDivOk
 
 if l1LongOk and perLevelQty > 0
     entryPx = prevL * (1 + supportZone / 2)
@@ -481,10 +407,6 @@ plot(hourEma, "1h EMA", color=color.new(color.purple, 20), linewidth=2)
 plotshape(l1LongOk,  "L1",  shape.triangleup,   location.belowbar, color.green, size=size.small)
 plotshape(l1ShortOk, "S1",  shape.triangledown, location.abovebar, color.red,   size=size.small)
 
-// Divergence markers — diamonds at the pivot bar where divergence fires
-plotshape(useRsiDivergence and bullishDivFired, "Bull div", shape.diamond, location.belowbar, color.lime,   size=size.tiny, offset=-divPivotR)
-plotshape(useRsiDivergence and bearishDivFired, "Bear div", shape.diamond, location.abovebar, color.orange, size=size.tiny, offset=-divPivotR)
-
 wrongTf = timeframe.period != "5"
 if barstate.islast and wrongTf
     var table tfWarn = table.new(position.bottom_center, 1, 1, border_width=2, border_color=color.red)
@@ -494,7 +416,7 @@ if barstate.islast and wrongTf
 
 // Dashboard
 if barstate.islast
-    var table dash = table.new(position.top_right, 2, 13, border_width=1)
+    var table dash = table.new(position.top_right, 2, 12, border_width=1)
     table.cell(dash, 0, 0, "S/R DCA Day", bgcolor=color.gray, text_color=color.white)
     table.cell(dash, 1, 0, "5m", bgcolor=color.teal, text_color=color.white)
     table.cell(dash, 0, 1, "EOD")
@@ -520,10 +442,5 @@ if barstate.islast
     table.cell(dash, 1, 9, tpStr + slSrc, text_color=(useBreakeven and beActivated) ? color.yellow : color.aqua)
     table.cell(dash, 0, 10, "Cycles today")
     table.cell(dash, 1, 10, str.tostring(cyclesToday) + "/" + str.tostring(maxCyclesPerDay) + (cycleDone ? " (done)" : ""))
-    bearAge = barsSinceBearDiv > divFreshBars ? "—" : str.tostring(barsSinceBearDiv) + "b"
-    bullAge = barsSinceBullDiv > divFreshBars ? "—" : str.tostring(barsSinceBullDiv) + "b"
-    table.cell(dash, 0, 11, "RSI div (bear/bull)")
-    table.cell(dash, 1, 11, useRsiDivergence ? bearAge + " / " + bullAge : "OFF",
-         text_color=useRsiDivergence ? color.aqua : color.gray)
-    table.cell(dash, 0, 12, "Equity")
-    table.cell(dash, 1, 12, "$" + str.tostring(strategy.equity, "#,###"))
+    table.cell(dash, 0, 11, "Equity")
+    table.cell(dash, 1, 11, "$" + str.tostring(strategy.equity, "#,###"))

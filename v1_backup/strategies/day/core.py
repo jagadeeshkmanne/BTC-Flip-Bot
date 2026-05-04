@@ -28,45 +28,54 @@ from typing import Optional, Literal, Dict, Any
 import pandas as pd
 import numpy as np
 
-# ═════ V2 Constants (match pine V2 defaults) ═════
+# ═════ Constants (match pine defaults) ═════
 LEVERAGE       = 2.0
 RISK_PCT       = 0.06         # 6% total risk per cycle
 
 DCA_LEVELS     = 2
-DCA_SPACING    = 0.0085       # V2: 0.85% (V1 was 0.8%) — paired with tighter SL
-SL_BELOW_WORST = 0.014        # V2: 1.4% (V1 was 1.9%) — high-WR divergence entries → smaller losses on misses
+DCA_SPACING    = 0.008        # 0.8% between DCA legs
+SL_BELOW_WORST = 0.019        # 1.9% below worst entry (above for shorts) — tested better than 2.0% on 5w window
 SUPPORT_ZONE   = 0.0005       # 0.05% zone around prev H/L — only direct touches qualify
 
 # TP offset: shift prev_mid TP slightly toward current price for reliable fills.
+# prev_mid sits at a thin-liquidity zone where exact-fill is unreliable; the
+# offset catches near-misses where price reverses just before exact mid.
+# Backtest Mar 23–May 1: +35.25% with offset vs +32.07% without (same DD).
 PREV_MID_OFFSET = 0.001       # 0.1%
 
-# TP mode — hybrid: prev_mid pre-DCA, switches to first_entry × (1 ∓ TP_FIXED_PCT) post-DCA.
+# TP mode (matches pine default).
+#   "prev_mid" — exit at prev_mid for all legs (legacy baseline, +32% 5w).
+#   "hybrid"   — prev_mid pre-DCA, then switch to first_entry × (1 ∓ TP_FIXED_PCT)
+#                once DCA fires. Tested best (+40.59% / 5w / Mar 23–May 3) paired
+#                with adaptive S/R range extend mode below.
 TP_MODE        = "hybrid"
 TP_FIXED_PCT   = 0.04         # 4% — used post-DCA in hybrid mode
 
-# Adaptive S/R range
+# Adaptive S/R range — when prev-day range is tight (e.g., 1% squeeze day),
+# prev_mid TP target sits ~0.5% from entry while SL is 2% → R:R 0.25, need
+# 80% WR to break even. Range filter widens the lookback to N-day rolling H/L
+# until the band exceeds the floor, restoring sane R:R.
+#   "off"    — always use prev_day H/L (legacy baseline).
+#   "skip"   — gate entries when prev_day range < floor (sit out tight days).
+#   "extend" — expand to 2..MAX_LOOKBACK_DAYS-day rolling H/L until range ≥ floor.
 RANGE_FILTER_MODE  = "extend"
-MIN_PREV_RANGE_PCT = 0.02     # 2% floor
-MAX_LOOKBACK_DAYS  = 2
+MIN_PREV_RANGE_PCT = 0.02     # 2% floor (R:R ~0.5 with default 2% SL)
+MAX_LOOKBACK_DAYS  = 2        # 2 tested best on 5w window — wider lookbacks left more days unfiltered
 
-# Breakeven SL — V2 OFF (subsumed by divergence). V1 had this ON.
-USE_BREAKEVEN  = False
-BE_TRIGGER_PCT = 0.01
-BE_BUFFER_PCT  = 0.0025
+# Breakeven SL — once favorable% from FIRST entry crosses BE_TRIGGER_PCT,
+# tighten SL to first_entry ± BE_BUFFER_PCT for the rest of this cycle.
+# Saves losers that round-trip from peak runup, leaves trade count unchanged.
+# Tested +43.18% / PF 4.42 vs +40.59% / PF 3.86 baseline (Mar 23–May 3, 5w).
+USE_BREAKEVEN  = True
+BE_TRIGGER_PCT = 0.01         # 1.0% favorable from first entry
+BE_BUFFER_PCT  = 0.0025       # 0.25% buffer — covers 2× taker fee (0.04%×2) + slippage
 
 CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries
 
 # Entry filters
-VOL_MULT       = 1.1          # V2: 1.1× (V1 was 1.2×) — slightly more permissive given divergence gate
-USE_RSI_FILTER = False        # V2: RSI anti-extreme OFF (subsumed by divergence). V1 had this True.
-RSI_LOW        = 25           # skip long if RSI < (only used when USE_RSI_FILTER)
-RSI_HIGH       = 75           # skip short if RSI > (only used when USE_RSI_FILTER)
-
-# RSI Divergence (V2 — required at S/R touch)
-USE_RSI_DIVERGENCE = True
-DIV_PIVOT_L  = 5              # 5 bars left for pivot confirmation
-DIV_PIVOT_R  = 5              # 5 bars right (= 25 min confirmation lag on 5m)
-DIV_FRESH_BARS = 20           # divergence stays usable for 20 bars (~100 min)
+VOL_MULT       = 1.2          # volume > 1.2× 20-bar avg
+RSI_LOW        = 25           # skip long if RSI < 25
+RSI_HIGH       = 75           # skip short if RSI > 75
 
 RSI_PERIOD     = 14
 VOL_AVG_LEN    = 20
@@ -161,81 +170,6 @@ def build_features(df_5m: pd.DataFrame, df_1d: pd.DataFrame) -> pd.DataFrame:
     df["prev_L"]   = df["date"].map(prev_l_map)
     df["prev_mid"] = df["date"].map(prev_m_map)
     df["prev_lookback"] = df["date"].map(prev_lb_map)
-
-    # ─── V2: RSI divergence detection ───
-    # Mirrors strategy_sr_dca_5m.pine. A pivot at index i is confirmed at
-    # i+DIV_PIVOT_R (when both left and right windows are fully visible).
-    # Bearish div = price HH + RSI LH between two confirmed pivot highs.
-    # Bullish div = price LL + RSI HL between two confirmed pivot lows.
-    # bars_since_*_div counts forward from the confirmation bar; entries
-    # gate on that counter ≤ DIV_FRESH_BARS.
-    df = detect_divergence(df, DIV_PIVOT_L, DIV_PIVOT_R)
-    return df
-
-
-def detect_divergence(df: pd.DataFrame, pivot_l: int = 5, pivot_r: int = 5) -> pd.DataFrame:
-    """Add bear_div_fired, bull_div_fired, bars_since_bear_div, bars_since_bull_div columns.
-    Pivots use strict greater-than on left and right windows (matching pine ta.pivothigh/pivotlow).
-    """
-    n = len(df)
-    bear_fired = np.zeros(n, dtype=bool)
-    bull_fired = np.zeros(n, dtype=bool)
-
-    last_phigh = np.nan
-    last_r_at_h = np.nan
-    last_plow = np.nan
-    last_r_at_l = np.nan
-
-    highs = df["high"].values
-    lows  = df["low"].values
-    rsis  = df["rsi"].values
-
-    # i is the pivot bar; confirmed at i+pivot_r once we've seen all right-side bars.
-    for i in range(pivot_l, n - pivot_r):
-        bar_rsi = rsis[i]
-        if pd.isna(bar_rsi):
-            continue
-
-        bar_high = highs[i]
-        bar_low  = lows[i]
-
-        left_max_h  = highs[i-pivot_l:i].max() if pivot_l > 0 else -np.inf
-        right_max_h = highs[i+1:i+pivot_r+1].max()
-        is_phigh = bar_high > left_max_h and bar_high > right_max_h
-
-        left_min_l  = lows[i-pivot_l:i].min() if pivot_l > 0 else np.inf
-        right_min_l = lows[i+1:i+pivot_r+1].min()
-        is_plow = bar_low < left_min_l and bar_low < right_min_l
-
-        confirm_idx = i + pivot_r
-
-        if is_phigh:
-            if not pd.isna(last_phigh) and bar_high > last_phigh and bar_rsi < last_r_at_h:
-                bear_fired[confirm_idx] = True
-            last_phigh = bar_high
-            last_r_at_h = bar_rsi
-
-        if is_plow:
-            if not pd.isna(last_plow) and bar_low < last_plow and bar_rsi > last_r_at_l:
-                bull_fired[confirm_idx] = True
-            last_plow = bar_low
-            last_r_at_l = bar_rsi
-
-    bars_since_bear = np.full(n, 9999, dtype=int)
-    bars_since_bull = np.full(n, 9999, dtype=int)
-    cb = 9999
-    cu = 9999
-    for i in range(n):
-        cb = 0 if bear_fired[i] else cb + 1
-        cu = 0 if bull_fired[i] else cu + 1
-        bars_since_bear[i] = cb
-        bars_since_bull[i] = cu
-
-    df = df.copy()
-    df["bear_div_fired"] = bear_fired
-    df["bull_div_fired"] = bull_fired
-    df["bars_since_bear_div"] = bars_since_bear
-    df["bars_since_bull_div"] = bars_since_bull
     return df
 
 
@@ -278,17 +212,9 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
     # Volume filter (on THIS 5m bar)
     vol_ok = vol >= VOL_MULT * vol_avg if vol_avg > 0 else False
 
-    # RSI anti-extreme filter (V2: OFF by default — divergence subsumes it).
-    rsi_ok_long  = (not USE_RSI_FILTER) or rsi_v >= RSI_LOW
-    rsi_ok_short = (not USE_RSI_FILTER) or rsi_v <= RSI_HIGH
-
-    # V2: RSI divergence gate — require a fresh divergence pivot within
-    # DIV_FRESH_BARS bars before entry. Bearish for shorts at prev_H,
-    # bullish for longs at prev_L.
-    bars_since_bear = row.get("bars_since_bear_div", 9999)
-    bars_since_bull = row.get("bars_since_bull_div", 9999)
-    div_ok_long  = (not USE_RSI_DIVERGENCE) or (not pd.isna(bars_since_bull) and bars_since_bull <= DIV_FRESH_BARS)
-    div_ok_short = (not USE_RSI_DIVERGENCE) or (not pd.isna(bars_since_bear) and bars_since_bear <= DIV_FRESH_BARS)
+    # RSI filter
+    rsi_ok_long  = rsi_v >= RSI_LOW
+    rsi_ok_short = rsi_v <= RSI_HIGH
 
     # Touch conditions
     touch_L = row["low"] <= prev_l * (1 + SUPPORT_ZONE) and row["low"] > prev_l * (1 - 0.01)
@@ -297,8 +223,11 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
     in_trade_window = utc_h < CLOSE_HOUR
 
     # NO BIAS GATE. Both directions allowed regardless of trend bias.
-    long_ok  = (rsi_ok_long  and vol_ok and touch_L and in_trade_window and div_ok_long)
-    short_ok = (rsi_ok_short and vol_ok and touch_H and in_trade_window and div_ok_short)
+    # The bias filter was tested and removed — it blocked 60%+ of valid
+    # entries because bias flips BEAR right when price reaches prev_L
+    # (likewise BULL when price reaches prev_H).
+    long_ok  = (rsi_ok_long  and vol_ok and touch_L and in_trade_window)
+    short_ok = (rsi_ok_short and vol_ok and touch_H and in_trade_window)
 
     if long_ok:
         s.side = "LONG"
@@ -308,12 +237,12 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
     s.conditions = {
         "1h bias BULL":       bool(bias == 1),
         "1h bias BEAR":       bool(bias == -1),
-        f"Volume > {VOL_MULT}× avg": bool(vol_ok),
+        "Volume > 1.2× avg":  bool(vol_ok),
+        "RSI long ok (>25)":  bool(rsi_ok_long),
+        "RSI short ok (<75)": bool(rsi_ok_short),
         "Touch prev low":     bool(touch_L),
         "Touch prev high":    bool(touch_H),
         "In trade window":    bool(in_trade_window),
-        "Bull div fresh":     bool(div_ok_long),
-        "Bear div fresh":     bool(div_ok_short),
     }
     lookback = row.get("prev_lookback", 1)
     s.raw = {
@@ -326,8 +255,6 @@ def evaluate_signal(df: pd.DataFrame, last_idx: int) -> SignalState:
         "vol_avg": float(vol_avg) if not pd.isna(vol_avg) else None,
         "utc_hour": utc_h,
         "price": s.price,
-        "bars_since_bear_div": int(bars_since_bear) if not pd.isna(bars_since_bear) else 9999,
-        "bars_since_bull_div": int(bars_since_bull) if not pd.isna(bars_since_bull) else 9999,
     }
     return s
 

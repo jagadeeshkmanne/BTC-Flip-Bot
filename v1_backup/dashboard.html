@@ -301,25 +301,16 @@ const fmtPct = v => (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
 const isT = v => v === true || v === 'True' || v === 'true';
 const START_BALANCE = 5000;
 
-// Entry conditions — V2: Touch + Volume + RSI Divergence (3 per side).
-// Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
-// is encoded into the dict key by the bot. Falls back to 1.1× (V2 default).
-const volKey = d => Object.keys(d.conditions || {}).find(k => k.startsWith('Volume >')) || 'Volume > 1.1× avg';
-const divFreshAge = (d, side) => {
-  const k = side === 'LONG' ? 'bars_since_bull_div' : 'bars_since_bear_div';
-  const v = d?.[k];
-  if (v == null || v >= 9999) return '—';
-  return v + 'b';
-};
+// Entry conditions — 3 per side (RSI + Volume + Touch)
 const LONG_CONDS = [
-  {key: 'Touch prev_L',          check: d => isT(d.conditions?.['Touch prev low']),  val: d => d.prev_L ? '$' + Number(d.prev_L).toFixed(0) : '--'},
-  {key: 'Volume ≥ 1.1× avg',     check: d => isT(d.conditions?.[volKey(d)]),         val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
-  {key: 'Bull div fresh (≤20b)', check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
+  {key: 'RSI > 25',         check: d => isT(d.conditions?.['RSI long ok (>25)']),  val: d => d.rsi?.toFixed(1) || '--'},
+  {key: 'Volume ≥ 1.2× avg',check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
+  {key: 'Touch prev_L',     check: d => isT(d.conditions?.['Touch prev low']),     val: d => d.prev_L ? '$' + Number(d.prev_L).toFixed(0) : '--'},
 ];
 const SHORT_CONDS = [
-  {key: 'Touch prev_H',          check: d => isT(d.conditions?.['Touch prev high']), val: d => d.prev_H ? '$' + Number(d.prev_H).toFixed(0) : '--'},
-  {key: 'Volume ≥ 1.1× avg',     check: d => isT(d.conditions?.[volKey(d)]),         val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
-  {key: 'Bear div fresh (≤20b)', check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
+  {key: 'RSI < 75',         check: d => isT(d.conditions?.['RSI short ok (<75)']), val: d => d.rsi?.toFixed(1) || '--'},
+  {key: 'Volume ≥ 1.2× avg',check: d => isT(d.conditions?.['Volume > 1.2× avg']),  val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
+  {key: 'Touch prev_H',     check: d => isT(d.conditions?.['Touch prev high']),    val: d => d.prev_H ? '$' + Number(d.prev_H).toFixed(0) : '--'},
 ];
 
 // ── State caches (used by both refresh() and live WS updates) ───
@@ -503,13 +494,11 @@ function renderSetup(status){
   const px = ind.price || 0;
   const distToL = (ind.prev_L && px) ? Math.abs((px - ind.prev_L) / ind.prev_L) * 100 : 999;
   const distToH = (ind.prev_H && px) ? Math.abs((ind.prev_H - px) / ind.prev_H) * 100 : 999;
-  // V2: RSI anti-extreme is OFF; "RSI long/short ok" keys may be absent.
-  // Treat divergence as the third gate alongside volume and touch.
-  const bullDivOk  = isT(condData.conditions['Bull div fresh']) ? 1 : 0;
-  const bearDivOk  = isT(condData.conditions['Bear div fresh']) ? 1 : 0;
-  const volOk      = isT(condData.conditions[volKey(condData)]) ? 1 : 0;
-  const longScore  = bullDivOk + volOk + touchProgress(distToL);
-  const shortScore = bearDivOk + volOk + touchProgress(distToH);
+  const rsiOkLong  = isT(condData.conditions['RSI long ok (>25)'])  ? 1 : 0;
+  const rsiOkShort = isT(condData.conditions['RSI short ok (<75)']) ? 1 : 0;
+  const volOk      = isT(condData.conditions['Volume > 1.2× avg'])  ? 1 : 0;
+  const longScore  = rsiOkLong  + volOk + touchProgress(distToL);
+  const shortScore = rsiOkShort + volOk + touchProgress(distToH);
   const lMet = LONG_CONDS.filter(c => c.check(condData)).length;
   const sMet = SHORT_CONDS.filter(c => c.check(condData)).length;
   $('longCnt').textContent = `${lMet}/${LONG_CONDS.length}`;
@@ -992,7 +981,7 @@ setInterval(() => {
     // touches prev_H/prev_L AND RSI + volume align. So the countdown is
     // "next window opens" not "next trade".
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()+1, 0, 0, 0));
-    titleEl.innerHTML = `Cycle Done — Next window opens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span><div style="font-size:14px;font-weight:500;color:var(--muted);margin-top:10px;line-height:1.55">V2: trade fires only when all align — touch prev_H/prev_L + volume ≥ 1.1× avg + fresh RSI divergence (≤20 bars)</div>`;
+    titleEl.innerHTML = `Cycle Done — Next window opens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span><div style="font-size:14px;font-weight:500;color:var(--muted);margin-top:10px;line-height:1.55">Trade fires only when conditions align — touch prev_H/prev_L + RSI 25-75 + volume ≥ 1.2× avg</div>`;
   } else if (utcH >= 20) {
     // Past EOD cutoff — same as cycle done
     const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()+1, 0, 0, 0));

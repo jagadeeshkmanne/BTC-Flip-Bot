@@ -296,7 +296,7 @@ def cancel_all_orders_and_algos(client, pair):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"S/R DCA Day Bot V2 (5m + 1d S/R + RSI div) — env={ENV} dry={ARGS.dry}")
+    log.info(f"S/R DCA Day Bot (5m + 1d S/R) — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
@@ -424,11 +424,6 @@ def main():
     log.info(f"  Signal: {sig.side or 'NONE'}  | "
              f"prev_H {sig.raw.get('prev_H', 0):.2f} / prev_L {sig.raw.get('prev_L', 0):.2f} / mid {sig.raw.get('prev_mid', 0):.2f} "
              f"({sig.raw.get('prev_lookback', 1)}d, {sig.raw.get('prev_range_pct', 0)*100:.2f}%)")
-    bsb = sig.raw.get("bars_since_bear_div", 9999)
-    bsu = sig.raw.get("bars_since_bull_div", 9999)
-    bsb_str = f"{bsb}b" if bsb <= 50 else "—"
-    bsu_str = f"{bsu}b" if bsu <= 50 else "—"
-    log.info(f"  RSI div: bear={bsb_str} / bull={bsu_str}  (fresh ≤ {20}b)")
     log.info(f"  Conditions: {sum(sig.conditions.values())}/{len(sig.conditions)} met")
 
     status = {
@@ -436,7 +431,7 @@ def main():
         "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos, "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "S/R DCA Day V2 (5m + 1d S/R + RSI div)",
+        "strategy": "S/R DCA Day (5m exec + 1d S/R)",
         "cycle_closed_day": state.get("cycle_closed_day", ""),
     }
 
