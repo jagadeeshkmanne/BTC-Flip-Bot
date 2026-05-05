@@ -135,9 +135,14 @@
 
   /* ── Trades + recent ───────────────────────────────────── */
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
-  .panel-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)}
+  .panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border);min-width:0}
+  .panel-head .panel-title{flex:0 0 auto;min-width:0}
+  .panel-head .panel-meta{flex:1 1 auto;min-width:0;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .panel-title{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
   .panel-meta{font-size:12px;color:var(--muted)}
+  .chart-btn{padding:4px 10px;background:rgba(255,255,255,0.06);border:1px solid var(--border);color:var(--text);border-radius:6px;cursor:pointer;font-size:12px;line-height:1;font-family:inherit;min-width:30px}
+  .chart-btn:hover{background:rgba(76,201,255,0.15);border-color:#4cc9ff;color:#4cc9ff}
+  .chart-btn:active{background:rgba(76,201,255,0.25)}
   .empty{padding:24px;text-align:center;color:var(--muted);font-size:13px}
   /* Horizontal scroll on mobile so the 8-col trades table doesn't squish. */
   .trades-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
@@ -249,7 +254,7 @@
   <!-- Waiting / setup tracker (when no position) -->
   <section class="setup" id="setupCard">
     <div class="setup-title" id="setupTitle">Waiting for Setup</div>
-    <div class="setup-sub" id="setupSub">Bot fires when 5m volume + RSI + price-touch align. Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
+    <div class="setup-sub" id="setupSub">V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.</div>
     <div class="waiting-box" id="waitingReason" style="margin:14px 0;padding:16px 18px;background:rgba(248,81,73,.06);border-left:3px solid var(--red);border-radius:4px;font-size:15px;line-height:1.7">--</div>
     <div class="setup-stats">
       <span>RSI <b class="num" id="setupRsi">--</b></span>
@@ -276,6 +281,24 @@
       <span class="panel-title">Equity Curve</span>
     </div>
     <div id="equityChart"></div>
+  </section>
+
+  <!-- 5m chart with S/R levels + divergence markers -->
+  <section class="panel">
+    <div class="panel-head">
+      <span class="panel-title">BTCUSDT 5m — last 3 days</span>
+      <span class="panel-meta" id="priceChartMeta">prev_H · prev_L · prev_mid + divergence markers</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--border);font-size:12px;flex-wrap:wrap">
+      <button class="chart-btn" data-act="zoomIn"  title="Zoom in">  +  </button>
+      <button class="chart-btn" data-act="zoomOut" title="Zoom out"> −  </button>
+      <span style="width:1px;height:18px;background:var(--border);margin:0 4px"></span>
+      <button class="chart-btn" data-act="panL" title="Pan left">◀</button>
+      <button class="chart-btn" data-act="panR" title="Pan right">▶</button>
+      <button class="chart-btn" data-act="now"  title="Jump to latest">Now</button>
+      <span style="margin-left:auto;color:var(--muted);font-size:11px">scroll wheel zoom · drag to pan</span>
+    </div>
+    <div id="priceChart" style="width:100%;height:440px"></div>
   </section>
 
   <!-- Recent trades — moved to bottom, last section. Horizontally
@@ -305,21 +328,66 @@ const START_BALANCE = 5000;
 // Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
 // is encoded into the dict key by the bot. Falls back to 1.1× (V2 default).
 const volKey = d => Object.keys(d.conditions || {}).find(k => k.startsWith('Volume >')) || 'Volume > 1.1× avg';
+// Format divergence freshness as "current age / required threshold" in
+// human-readable time. 1 bar = 5 min on the 5m TF; threshold is 20 bars
+// (100 min). Within threshold → green, beyond → red ✗ (caller decides via
+// .met). When no divergence ever fired (count >= 9999), show "none".
+const fmtMins = m => {
+  if (m < 60) return Math.round(m) + 'm';
+  const h = Math.floor(m / 60), mm = Math.round(m % 60);
+  return mm === 0 ? h + 'h' : h + 'h ' + mm + 'm';
+};
 const divFreshAge = (d, side) => {
   const k = side === 'LONG' ? 'bars_since_bull_div' : 'bars_since_bear_div';
   const v = d?.[k];
-  if (v == null || v >= 9999) return '—';
-  return v + 'b';
+  if (v == null || v >= 9999) return 'none / 100m max';
+  const ageMin = v * 5;
+  return fmtMins(ageMin) + ' / 100m max';
+};
+// "Current value / required threshold" pattern so users see why a row is ✗.
+const fmtVolRatio = d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '× / 1.1× min' : '-- / 1.1× min';
+// Touch row — shows the level + signed distance with direction.
+// For SHORT @ prev_H: price BELOW means approaching (good), ABOVE means
+//                     past it (still valid up to +1%, then overshoot).
+// For LONG @ prev_L:  price ABOVE means approaching, BELOW means past it.
+// Uses the LIVE WS price (window.__livePrice) — not the bot's status price
+// (which is up to 5 min stale between cron ticks). Falls back to status if
+// WS hasn't connected yet.
+const fmtTouchDist = (d, side) => {
+  const px = window.__livePrice || d.price;
+  const lvl = side === 'LONG' ? d.prev_L : d.prev_H;
+  if (!px || !lvl) return '--';
+  const lvlStr = '$' + Number(lvl).toFixed(0);
+  const distPct = ((px - lvl) / lvl) * 100; // signed
+  const absPct = Math.abs(distPct);
+  if (absPct <= 0.05) return lvlStr + ' · TOUCHED';
+  if (side === 'SHORT') {
+    // SHORT entry needs bar high to reach prev_H. Price below = approaching.
+    return lvlStr + ' · ' + absPct.toFixed(2) + '% ' + (distPct < 0 ? 'below (need ↑)' : 'above');
+  }
+  // LONG entry needs bar low to reach prev_L. Price above = approaching.
+  return lvlStr + ' · ' + absPct.toFixed(2) + '% ' + (distPct > 0 ? 'above (need ↓)' : 'below');
+};
+// Touch ✓/✗ using LIVE price (matches bot's bar-high/low check on a 5m bar
+// once that bar closes; in-between, the live price is the best signal).
+// Bot logic: bar.high in [prev_H * 0.9995, prev_H * 1.01) for short touch,
+// bar.low in (prev_L * 0.99, prev_L * 1.0005] for long touch.
+const liveTouchOk = (d, side) => {
+  const px = window.__livePrice || d.price;
+  const lvl = side === 'LONG' ? d.prev_L : d.prev_H;
+  if (!px || !lvl) return false;
+  if (side === 'LONG')  return px <= lvl * 1.0005 && px > lvl * 0.99;
+  return px >= lvl * 0.9995 && px < lvl * 1.01;
 };
 const LONG_CONDS = [
-  {key: 'Touch prev_L',          check: d => isT(d.conditions?.['Touch prev low']),  val: d => d.prev_L ? '$' + Number(d.prev_L).toFixed(0) : '--'},
-  {key: 'Volume ≥ 1.1× avg',     check: d => isT(d.conditions?.[volKey(d)]),         val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
-  {key: 'Bull div fresh (≤20b)', check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
+  {key: 'Touch prev_L',     check: d => liveTouchOk(d, 'LONG'),                 val: d => fmtTouchDist(d, 'LONG')},
+  {key: 'Volume ≥ 1.1× avg',check: d => isT(d.conditions?.[volKey(d)]),         val: d => fmtVolRatio(d)},
+  {key: 'Bull div fresh',   check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
 ];
 const SHORT_CONDS = [
-  {key: 'Touch prev_H',          check: d => isT(d.conditions?.['Touch prev high']), val: d => d.prev_H ? '$' + Number(d.prev_H).toFixed(0) : '--'},
-  {key: 'Volume ≥ 1.1× avg',     check: d => isT(d.conditions?.[volKey(d)]),         val: d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '×' : '--'},
-  {key: 'Bear div fresh (≤20b)', check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
+  {key: 'Touch prev_H',     check: d => liveTouchOk(d, 'SHORT'),                val: d => fmtTouchDist(d, 'SHORT')},
+  {key: 'Volume ≥ 1.1× avg',check: d => isT(d.conditions?.[volKey(d)]),         val: d => fmtVolRatio(d)},
+  {key: 'Bear div fresh',   check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
 ];
 
 // ── State caches (used by both refresh() and live WS updates) ───
@@ -531,14 +599,16 @@ function renderSetup(status){
     // Check time window (UTC < 20)
     const utcHr = new Date().getUTCHours();
     if (utcHr >= 20) reasons.push(`outside trading window (${utcHr}:00 UTC ≥ 20:00 cutoff)`);
-    // Volume
+    // Volume — V2 threshold is 1.1×
     const volRatio = ind.vol && ind.vol_avg ? ind.vol/ind.vol_avg : null;
-    if (volRatio !== null && volRatio < 1.2) reasons.push(`volume ${volRatio.toFixed(2)}× < 1.2× required`);
-    // RSI extremes
-    if (ind.rsi !== undefined) {
-      if (ind.rsi < 25) reasons.push(`RSI ${ind.rsi.toFixed(1)} < 25 (LONG blocked, oversold)`);
-      if (ind.rsi > 75) reasons.push(`RSI ${ind.rsi.toFixed(1)} > 75 (SHORT blocked, overbought)`);
-    }
+    if (volRatio !== null && volRatio < 1.1) reasons.push(`volume ${volRatio.toFixed(2)}× < 1.1× required`);
+    // V2: divergence freshness
+    const bullAge = ind.bars_since_bull_div;
+    const bearAge = ind.bars_since_bear_div;
+    const longTouch  = isT(condData.conditions?.['Touch prev low']);
+    const shortTouch = isT(condData.conditions?.['Touch prev high']);
+    if (longTouch && (bullAge == null || bullAge > 20)) reasons.push(`bull div stale (${bullAge != null && bullAge < 9999 ? bullAge + 'b' : 'none'} vs ≤20b for LONG)`);
+    if (shortTouch && (bearAge == null || bearAge > 20)) reasons.push(`bear div stale (${bearAge != null && bearAge < 9999 ? bearAge + 'b' : 'none'} vs ≤20b for SHORT)`);
     // Touch — closest level
     if (ind.prev_H && ind.prev_L && ind.price) {
       const distToH = ((ind.prev_H - ind.price) / ind.price) * 100;
@@ -602,6 +672,14 @@ async function refresh(){
     // Cache cycle-cap state so the per-second countdown ticker can use it
     // without needing to call refresh() (which only runs every 2-15s).
     lastHeroState.cycleClosedDay = state.cycle_closed_day || status.cycle_closed_day || '';
+    // Cache indicators for the price chart (prev_H/prev_L/prev_mid + divergence ages).
+    const prevIndKey = JSON.stringify(lastHeroState.indicators || {});
+    lastHeroState.indicators = status.indicators || {};
+    lastHeroState.tradeLog = state.trade_log || [];
+    // If the prev-day levels just changed (or just arrived), re-render the
+    // price chart so the markLines update / appear. Cheap when nothing changed.
+    const newIndKey = JSON.stringify(lastHeroState.indicators);
+    if (prevIndKey !== newIndKey && priceChartKlines.length) renderPriceChart();
 
     // Position — trust the live Binance proxy. If proxy returns position=null,
     // the position is flat on Binance regardless of what bot's state.json says
@@ -864,6 +942,9 @@ async function refresh(){
 
 // ── Mark price (header) and live broadcasts to position ────────
 function updateMark(price, bar){
+  // Cache the live price for any UI that needs sub-cron-tick freshness
+  // (conditions panel, distance % to S/R, etc.).
+  window.__livePrice = price;
   $('priceValue').textContent = fmt$(price);
   if (bar) {
     const change = ((bar.c - bar.o) / bar.o) * 100;
@@ -951,6 +1032,349 @@ setInterval(async () => {
     }
   } catch(e) {}
 }, 3000);
+
+// ─── 5m candlestick chart: 3 days, scrollable, live updates ────
+// Fetches 864 5m bars (3 days). Computes RSI(14) + pivot-based divergences
+// in JS using the same 5/5 spec as bot/pine. Marks ALL divergences in the
+// window (not just the latest). Live last-candle updates via the existing
+// kline WebSocket. Scroll/zoom via echarts dataZoom.
+let priceChart = null;
+let priceChartKlines = [];
+function ensurePriceChart(){
+  if (!priceChart) priceChart = echarts.init($('priceChart'), null, {renderer: 'canvas'});
+  return priceChart;
+}
+
+// Wilder RSI(14) — matches pandas/pine.
+function computeRSI(closes, period = 14) {
+  const n = closes.length;
+  const rsi = new Array(n).fill(NaN);
+  if (n < period + 1) return rsi;
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i-1];
+    if (d > 0) avgGain += d; else avgLoss -= d;
+  }
+  avgGain /= period; avgLoss /= period;
+  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  for (let i = period + 1; i < n; i++) {
+    const d = closes[i] - closes[i-1];
+    const g = d > 0 ? d : 0, l = d < 0 ? -d : 0;
+    avgGain = (avgGain * (period - 1) + g) / period;
+    avgLoss = (avgLoss * (period - 1) + l) / period;
+    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+  return rsi;
+}
+
+// Detect pivot-based divergences (5/5 spec). Returns
+// { bear: [confirmIdx,...], bull: [confirmIdx,...] }.
+function detectDivergences(highs, lows, rsi, pivotL = 5, pivotR = 5) {
+  const n = highs.length;
+  const bear = [], bull = [];
+  let lastPH = null, lastRH = null, lastPL = null, lastRL = null;
+  for (let i = pivotL; i < n - pivotR; i++) {
+    if (isNaN(rsi[i])) continue;
+    let leftMaxH = -Infinity, leftMinL = Infinity, rightMaxH = -Infinity, rightMinL = Infinity;
+    for (let j = i - pivotL; j < i; j++) { if (highs[j] > leftMaxH) leftMaxH = highs[j]; if (lows[j] < leftMinL) leftMinL = lows[j]; }
+    for (let j = i + 1; j <= i + pivotR; j++) { if (highs[j] > rightMaxH) rightMaxH = highs[j]; if (lows[j] < rightMinL) rightMinL = lows[j]; }
+    const isPHigh = highs[i] > leftMaxH && highs[i] > rightMaxH;
+    const isPLow  = lows[i]  < leftMinL && lows[i]  < rightMinL;
+    const confirmIdx = i + pivotR;
+    if (isPHigh) {
+      if (lastPH != null && highs[i] > lastPH && rsi[i] < lastRH) bear.push(confirmIdx);
+      lastPH = highs[i]; lastRH = rsi[i];
+    }
+    if (isPLow) {
+      if (lastPL != null && lows[i] < lastPL && rsi[i] > lastRL) bull.push(confirmIdx);
+      lastPL = lows[i]; lastRL = rsi[i];
+    }
+  }
+  return { bear, bull };
+}
+
+function renderPriceChart() {
+  const klines = priceChartKlines;
+  if (!klines.length) return;
+
+  const times = klines.map(k => new Date(k[0]).toISOString().slice(5, 16).replace('T', ' ') + 'Z');
+  const candles = klines.map(k => [+k[1], +k[4], +k[3], +k[2]]);
+  const highs = klines.map(k => +k[2]);
+  const lows  = klines.map(k => +k[3]);
+  const closes = klines.map(k => +k[4]);
+  const rsi = computeRSI(closes, 14);
+  const divs = detectDivergences(highs, lows, rsi, 5, 5);
+
+  // S/R levels — prefer bot status (matches live bot's adaptive range).
+  // If bot indicators aren't loaded yet, fall back to computing prev_H/L
+  // from the most recent COMPLETED UTC day in the kline data so the chart
+  // always shows reference lines even before the first refresh() succeeds.
+  const ind = lastHeroState.indicators || {};
+  let prevH = ind.prev_H || null;
+  let prevL = ind.prev_L || null;
+  let prevMid = ind.prev_mid || null;
+  if (!prevH || !prevL) {
+    // Find yesterday's UTC date range in the klines.
+    const nowUtc = new Date();
+    const todayMs = Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth(), nowUtc.getUTCDate());
+    const yMs = todayMs - 24 * 3600 * 1000;
+    let h = -Infinity, l = Infinity;
+    for (const k of klines) {
+      const t = +k[0];
+      if (t >= yMs && t < todayMs) {
+        if (+k[2] > h) h = +k[2];
+        if (+k[3] < l) l = +k[3];
+      }
+    }
+    if (h > 0 && l < Infinity) {
+      prevH = prevH || h;
+      prevL = prevL || l;
+      prevMid = prevMid || (h + l) / 2;
+    }
+  }
+
+  // Markers — triangles ABOVE bearish pivots and BELOW bullish pivots.
+  // Triangles are directional (point down at top = "drop expected", point up
+  // at bottom = "rise expected"), high-contrast colors, with text labels.
+  const markers = [];
+  divs.bear.forEach(i => { if (i < klines.length) markers.push({
+    coord: [times[i], highs[i]],
+    symbol: 'triangle', symbolSize: 16, symbolRotate: 180, symbolOffset: [0, '-90%'],
+    itemStyle: { color: '#ff5b6e', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
+    label: { show: true, position: 'top', formatter: 'BEAR', fontSize: 9, fontWeight: 'bold', color: '#ff5b6e', distance: 6, textBorderColor: '#0d1117', textBorderWidth: 2 }
+  }); });
+  divs.bull.forEach(i => { if (i < klines.length) markers.push({
+    coord: [times[i], lows[i]],
+    symbol: 'triangle', symbolSize: 16, symbolOffset: [0, '90%'],
+    itemStyle: { color: '#2ecc6f', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
+    label: { show: true, position: 'bottom', formatter: 'BULL', fontSize: 9, fontWeight: 'bold', color: '#2ecc6f', distance: 6, textBorderColor: '#0d1117', textBorderWidth: 2 }
+  }); });
+
+  // Trade markers — entry (●) at the trade's first_entry, exit (■) at the
+  // trade's exit. Colored by side: blue for LONG entries, purple for SHORT
+  // entries. Exit is colored by P&L: green if won, red if lost. PnL label.
+  const tradeLog = lastHeroState.tradeLog || [];
+  const findBarIdx = (isoStr) => {
+    if (!isoStr) return -1;
+    const t = new Date(isoStr).getTime();
+    let best = -1, bestDiff = Infinity;
+    for (let i = 0; i < klines.length; i++) {
+      const diff = Math.abs(+klines[i][0] - t);
+      if (diff < bestDiff) { bestDiff = diff; best = i; }
+    }
+    return bestDiff < 5 * 60 * 1000 ? best : -1; // within 5 min
+  };
+  // Trade markers — BIG, with readable label pills (background + padding)
+  // so the text is legible regardless of which candle is behind it.
+  // Entry: arrow at price (LONG → up arrow below bar; SHORT → down arrow above).
+  // Exit: filled circle AT the actual exit price (so user sees TP/SL fill).
+  // Labels are rendered with a dark background pill + colored text + border.
+  tradeLog.forEach(tr => {
+    const entryIdx = findBarIdx(tr.entry_time);
+    const exitIdx  = findBarIdx(tr.time);
+    const isLong = tr.side === 'LONG';
+    const won = (tr.pnl_usd || 0) > 0;
+    if (entryIdx >= 0 && tr.first_entry) {
+      const eHigh = +klines[entryIdx][2], eLow = +klines[entryIdx][3];
+      const sideColor = isLong ? '#4cc9ff' : '#c084fc';
+      // Arrow placed slightly outside the bar so it visibly "points" at it.
+      const yPos = isLong ? eLow * 0.998 : eHigh * 1.002;
+      markers.push({
+        coord: [times[entryIdx], yPos],
+        symbol: 'arrow', symbolSize: [22, 26],
+        symbolRotate: isLong ? 0 : 180,
+        itemStyle: { color: sideColor, borderColor: '#fff', borderWidth: 2, shadowColor: 'rgba(0,0,0,0.7)', shadowBlur: 6 },
+        label: { show: true,
+          position: isLong ? 'bottom' : 'top', distance: 12,
+          // Dark pill + bright colored text + matching colored border for
+          // high readability (white-on-bright was washing out).
+          formatter: ` ${isLong ? 'LONG' : 'SHORT'} ENTRY  $${Math.round(tr.first_entry)} `,
+          fontSize: 12, fontWeight: 'bold', color: sideColor,
+          backgroundColor: 'rgba(13, 17, 23, 0.92)',
+          borderColor: sideColor, borderWidth: 1.5,
+          padding: [5, 10], borderRadius: 5,
+          shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 6 }
+      });
+    }
+    if (exitIdx >= 0 && tr.exit) {
+      const exitColor = won ? '#2ecc6f' : '#ff5b6e';
+      markers.push({
+        coord: [times[exitIdx], +tr.exit],
+        symbol: 'circle', symbolSize: 22,
+        itemStyle: { color: exitColor, borderColor: '#fff', borderWidth: 3, shadowColor: 'rgba(0,0,0,0.7)', shadowBlur: 8 },
+        label: { show: true,
+          position: isLong ? 'top' : 'bottom', distance: 12,
+          formatter: ` EXIT  $${Math.round(+tr.exit)}  ${won ? '+' : ''}${(tr.pnl_pct || 0).toFixed(2)}% `,
+          fontSize: 12, fontWeight: 'bold', color: exitColor,
+          backgroundColor: 'rgba(13, 17, 23, 0.92)',
+          borderColor: exitColor, borderWidth: 1.5,
+          padding: [5, 10], borderRadius: 5,
+          shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 6 }
+      });
+    }
+  });
+
+  // Horizontal lines for prev_H / prev_L / prev_mid only — trade levels are
+  // shown by the inline pill labels at the entry/exit markers (no extra lines).
+  const markLine = { silent: true, symbol: 'none', label: { fontSize: 10, color: '#cdd5e0', formatter: p => p.name, position: 'insideEndTop' }, data: [] };
+  if (prevH)   markLine.data.push({ name: `prev_H $${Math.round(prevH)}`, yAxis: prevH, lineStyle: { color: '#ff5b6e', type: 'dashed', width: 1.5 } });
+  if (prevL)   markLine.data.push({ name: `prev_L $${Math.round(prevL)}`, yAxis: prevL, lineStyle: { color: '#2ecc6f', type: 'dashed', width: 1.5 } });
+  if (prevMid) markLine.data.push({ name: `mid $${Math.round(prevMid)}`,  yAxis: prevMid, lineStyle: { color: '#4cc9ff', type: 'dotted', width: 1.5 } });
+
+  // Default zoom: last ~1 day (288 bars) so candles are visible at usable size.
+  const zoomStart = Math.max(0, 100 - Math.round(100 * (288 / klines.length)));
+
+  // Y-axis range — include all candles in the VISIBLE window AND all markLines
+  // (prev_H/prev_L/prev_mid) so levels are never cut off. 1% padding.
+  const visibleStartIdx = Math.floor(klines.length * (zoomStart / 100));
+  let yMin = Infinity, yMax = -Infinity;
+  for (let i = visibleStartIdx; i < klines.length; i++) {
+    if (lows[i] < yMin) yMin = lows[i];
+    if (highs[i] > yMax) yMax = highs[i];
+  }
+  if (prevH)   { yMax = Math.max(yMax, prevH); yMin = Math.min(yMin, prevH); }
+  if (prevL)   { yMax = Math.max(yMax, prevL); yMin = Math.min(yMin, prevL); }
+  if (prevMid) { yMax = Math.max(yMax, prevMid); yMin = Math.min(yMin, prevMid); }
+  const yPad = (yMax - yMin) * 0.05;
+  yMin -= yPad; yMax += yPad;
+
+  const chart = ensurePriceChart();
+  chart.setOption({
+    grid: { left: 60, right: 100, top: 16, bottom: 86 },
+    xAxis: { type: 'category', data: times, axisLabel: { fontSize: 9, color: '#9aa4b2', interval: Math.floor(klines.length / 12) }, splitLine: { show: false } },
+    yAxis: { scale: true, min: yMin, max: yMax, axisLabel: { fontSize: 10, color: '#9aa4b2', formatter: v => '$' + (v >= 1000 ? (v/1000).toFixed(1)+'k' : v) }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: params => {
+      if (!params.length) return '';
+      const k = params.find(p => p.seriesType === 'candlestick');
+      if (!k) return params[0].axisValue || '';
+      const [o, c, l, h] = k.data; const isUp = c >= o;
+      return `${k.axisValue}<br><b style="color:${isUp?'#2ecc6f':'#ff5b6e'}">${isUp?'▲':'▼'}</b> O ${o.toFixed(1)} H ${h.toFixed(1)} L ${l.toFixed(1)} C <b>${c.toFixed(1)}</b>`;
+    } },
+    dataZoom: [
+      // Inside: mouse wheel zooms; click-drag inside chart pans (left/right).
+      { type: 'inside', start: zoomStart, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true, preventDefaultMouseMove: true },
+      // Slider with VISIBLE move handle (the bar between the two end-handles)
+      // so users can grab the middle to pan, edges to resize zoom.
+      { type: 'slider', start: zoomStart, end: 100, height: 36, bottom: 14,
+        borderColor: 'transparent', backgroundColor: 'rgba(255,255,255,0.04)',
+        dataBackground: { lineStyle: { color: 'rgba(255,255,255,0.15)' }, areaStyle: { color: 'rgba(255,255,255,0.04)' } },
+        fillerColor: 'rgba(76,201,255,0.22)',
+        handleStyle: { color: '#4cc9ff', borderColor: '#4cc9ff' },
+        moveHandleSize: 8,
+        moveHandleStyle: { color: '#4cc9ff', opacity: 0.9 },
+        emphasis: { handleStyle: { color: '#7dd9ff' }, moveHandleStyle: { color: '#7dd9ff' } },
+        textStyle: { color: '#9aa4b2', fontSize: 10 },
+        brushSelect: false }
+    ],
+    series: [{
+      type: 'candlestick', data: candles,
+      // Don't set large:true — it disables drag-pan and tooltip on the chart.
+      // largeThreshold prevents auto-large mode kicking in at 864 bars.
+      largeThreshold: 2000,
+      itemStyle: { color: '#2ecc6f', color0: '#ff5b6e', borderColor: '#2ecc6f', borderColor0: '#ff5b6e' },
+      markLine, markPoint: { data: markers, label: { show: false }, silent: true }
+    }]
+  }, true);
+
+  // Update meta line with divergence count.
+  const meta = $('priceChartMeta');
+  if (meta) meta.textContent = `${klines.length} bars · ${divs.bull.length} bull / ${divs.bear.length} bear divergences`;
+
+}
+
+async function refreshPriceChart() {
+  try {
+    const url = `${REST_HOST}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=864`;
+    const r = await fetch(url);
+    const klines = await r.json();
+    if (!Array.isArray(klines) || klines.length === 0) return;
+    priceChartKlines = klines;
+    renderPriceChart();
+  } catch (e) { console.warn('priceChart refresh failed', e); }
+}
+
+// Read current zoom range, return {start, end} as percentages 0-100.
+function _getZoom() {
+  if (!priceChart) return { start: 0, end: 100 };
+  const opt = priceChart.getOption();
+  const dz = (opt.dataZoom && opt.dataZoom[0]) || {};
+  return { start: +dz.start || 0, end: +dz.end || 100 };
+}
+function _setZoom(start, end) {
+  if (!priceChart) return;
+  start = Math.max(0, Math.min(100, start));
+  end = Math.max(0, Math.min(100, end));
+  if (end - start < 2) end = start + 2; // min visible window
+  priceChart.dispatchAction({ type: 'dataZoom', dataZoomIndex: 0, start, end });
+  priceChart.dispatchAction({ type: 'dataZoom', dataZoomIndex: 1, start, end });
+}
+// Set the visible window to the LAST N bars (out of total bars in chart).
+function _showLastN(n) {
+  const total = priceChartKlines.length || 864;
+  const startPct = Math.max(0, ((total - n) / total) * 100);
+  _setZoom(startPct, 100);
+}
+function _onChartBtn(act) {
+  const z = _getZoom(), w = z.end - z.start;
+  switch (act) {
+    case 'zoomIn':  _setZoom(z.start + w * 0.15, z.end - w * 0.15); break;
+    case 'zoomOut': _setZoom(z.start - w * 0.30, z.end + w * 0.30); break;
+    case 'panL':    _setZoom(z.start - w * 0.25, z.end - w * 0.25); break;
+    case 'panR':    _setZoom(z.start + w * 0.25, z.end + w * 0.25); break;
+    case 'now':     _showLastN(288); break;
+    case 'span1h':  _showLastN(12);  break;
+    case 'span4h':  _showLastN(48);  break;
+    case 'span1d':  _showLastN(288); break;
+    case 'span3d':  _setZoom(0, 100); break;
+  }
+}
+// Bind clicks on chart-btn buttons via event delegation.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.chart-btn');
+  if (!btn) return;
+  e.preventDefault();
+  _onChartBtn(btn.dataset.act);
+});
+
+// Initial render — wait briefly for status indicators to load, then render.
+setTimeout(refreshPriceChart, 800);
+// Full re-fetch every 5 min (catches new closed candles + state changes).
+setInterval(refreshPriceChart, 5 * 60 * 1000);
+// Live update of the last (in-progress) candle from the existing WS feed.
+// updateMark() is the WS handler — hook in to also update our chart.
+// Throttled to max ~2 Hz so high-frequency WS ticks don't thrash setOption.
+let _lastChartTickRenderMs = 0;
+const _origUpdateMark = updateMark;
+updateMark = function(price, kbar) {
+  _origUpdateMark(price, kbar);
+  if (!priceChartKlines.length || !kbar) return;
+  const lastT = +priceChartKlines[priceChartKlines.length - 1][0];
+  const incomingT = kbar.t * 1000;
+  if (incomingT === lastT) {
+    // In-progress candle: update OHLC in place. setOption is throttled.
+    const k = priceChartKlines[priceChartKlines.length - 1];
+    k[1] = kbar.o; k[2] = Math.max(+k[2], kbar.h); k[3] = Math.min(+k[3], kbar.l); k[4] = kbar.c;
+    const now = Date.now();
+    if (priceChart && now - _lastChartTickRenderMs >= 500) {
+      _lastChartTickRenderMs = now;
+      // Patch ONLY the last candle, not the entire 864-element array.
+      // setOption with merge mode + replaceMerge:false only updates supplied data points.
+      const lastIdx = priceChartKlines.length - 1;
+      const patchedCandle = [+k[1], +k[4], +k[3], +k[2]];
+      priceChart.setOption({
+        series: [{
+          data: priceChart.getOption().series[0].data.map((d, i) => i === lastIdx ? patchedCandle : d)
+        }]
+      });
+    }
+  } else if (incomingT > lastT) {
+    // New 5m bar — append, trim window to 864, full re-render (once per 5 min).
+    priceChartKlines.push([incomingT, kbar.o, kbar.h, kbar.l, kbar.c, kbar.v, incomingT + 5*60*1000 - 1]);
+    if (priceChartKlines.length > 864) priceChartKlines.shift();
+    renderPriceChart();
+  }
+};
+window.addEventListener('resize', () => { if (priceChart) priceChart.resize(); });
 
 // Format milliseconds as Hh MMm SSs
 function fmtHMS(ms) {
