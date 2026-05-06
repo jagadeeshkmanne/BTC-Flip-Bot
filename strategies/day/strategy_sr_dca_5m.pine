@@ -283,8 +283,12 @@ avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
 var int   cycleClosedOnDay = -1
 var int   cyclesToday = 0
 var bool  beActivated = false
-// Hold-past-EOD state — eodHeldOnDay records the dayofmonth on which we
-// chose to skip the EOD close. On any LATER day's EOD, force-close (24h cap).
+// Hold-past-EOD state — eodHeldOnDay records the calendar date (encoded as
+// year*10000 + month*100 + day, unique per UTC date e.g. 20260506) on which
+// we chose to skip the EOD close. On any LATER day's EOD, force-close (24h cap).
+// Why not dayofmonth: a held trade that rides past a month boundary back to
+// the same dayofmonth (May 5 → June 5) would falsely match. Full date is
+// unique across months and years.
 var int   eodHeldOnDay = -1
 
 if newDay
@@ -415,13 +419,14 @@ if strategy.position_size < 0 and not na(worstEntryPx)
 // trade past one EOD (24h cap). On the day-after-hold, sameDayAsHold becomes
 // false (date changed), eodHeldOnDay is no longer -1, so canHold is false →
 // force close.
+todayKey = year(time, "UTC") * 10000 + month(time, "UTC") * 100 + dayofmonth(time, "UTC")
 if useEodFlatten and utcH >= closeHour and strategy.position_size != 0
-    sameDayAsHold = eodHeldOnDay == dayofmonth
+    sameDayAsHold = eodHeldOnDay == todayKey
     if not sameDayAsHold
         canHold = holdPastEodIfFav and eodHeldOnDay == -1 and not na(firstEntryPx)
         favPct = na(firstEntryPx) ? 0.0 : (strategy.position_size > 0 ? (close - firstEntryPx) / firstEntryPx : (firstEntryPx - close) / firstEntryPx)
         if canHold and favPct >= holdMinFavPct
-            eodHeldOnDay := dayofmonth
+            eodHeldOnDay := todayKey
         else
             strategy.close_all(comment="EOD flatten")
 
