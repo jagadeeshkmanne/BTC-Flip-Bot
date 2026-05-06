@@ -1,18 +1,22 @@
 //@version=6
 // ─────────────────────────────────────────────────────────────────────
-// S/R DCA Day Trader (5m) — V2 (RSI divergence)
+// S/R DCA Day Trader (5m) — V2.1 (RSI divergence + BE-stop + 2% SL)
 //
-// 🆕 EXPERIMENTAL VARIANT — not yet ported to live bot.
-//    Sibling file: strategy_sr_dca_5m.pine = V1 (live bot config, no
-//    divergence). Both can run side-by-side on the same TV chart for
-//    comparison. To deploy V2 live, divergence detection must first be
-//    ported to bot.py (currently the bot only runs V1 logic).
+// V2.1 = V2's RSI divergence entry + V1's BE-stop concept tuned for the
+// new entry quality. Live on GCP testnet bot since 2026-05-06.
 //
-// What V2 adds vs V1:
+// What V2.1 changes vs V2 (2026-05-06):
+//   - SL below worst entry: 1.4% → 2.0% (BE-stop now rescues borderline
+//     trades that would have noise-stopped at 1.4%)
+//   - Breakeven SL: OFF → ON (1.0% trigger / 0.25% buffer) — V2 testing
+//     said BE was redundant with divergence, but Mar 30–May 6 data showed
+//     it adds clean +1.3% return + +2.0 PF when paired with 2.0% SL.
+//
+// What V2 added vs V1 (still in V2.1):
 //   - RSI divergence at S/R touch (DEFAULT ON, pivot 5/5, fresh 20 bars)
 //   - RSI anti-extreme filter (DEFAULT OFF — divergence subsumes it)
-//   - Breakeven SL (DEFAULT OFF — divergence subsumes it)
 //   - Volume × 20-bar avg lowered 1.2 → 1.1 (slightly more permissive)
+//   - DCA spacing 0.8% → 0.85%
 //
 // ⚠ DESIGNED FOR: BTCUSDT · 5-minute timeframe · ONLY.
 //
@@ -29,14 +33,21 @@
 //   - BE-stop available but OFF by default (was ON in V1)
 //   - EOD: force flatten at configurable UTC hour (default 20:00)
 //
-// Backtest history (BTCUSDT 5m, Mar 30 – May 4 unless noted):
-//   - V2 minimal config (divergence ON, RSI off, BE off, vol 1.1):     +25.44% / PF 7.38 / DD 2.69% / 23 trades / WR 69.6%
-//   - V2 full filters (divergence ON + RSI on + BE on + vol 1.2):      +25.38% / PF 7.39 / DD 2.91% / 25 trades / WR 72%
-//   - V1 baseline (no divergence):                                     +25.18% / PF 3.27 / DD 4.61% / 43 trades / WR 60.5%
-//   - V1 on Mar 23–May 3 (larger window):                              +43.18% / PF 4.42 / DD 4.61% / 47 trades / WR 66%
-// Divergence trades less but with PF 2× and DD halved vs V1.
+// Backtest history (BTCUSDT 5m):
+//   Mar 30 – May 6:
+//     - V2.1 (DEFAULT, hybrid TP, BE ON, SL 2.0):                       +28.31% / PF 12.41 / DD 2.56% / 26 trades / WR 76.92%
+//     - V2 (hybrid TP, BE off, SL 1.4) on same window (estimate):       ~+24.65% / PF ~7.3
+//     - fixed_pct + BE on + trail @ 2% post-DCA:                        +24.75% / PF 9.66  / DD 2.56% / 25 trades / WR 76%
+//     - fixed_pct + BE on + no trail:                                   +23.95% / PF 7.73  / DD 2.64% / 25 trades / WR 68%
+//   Mar 30 – May 4:
+//     - V2 minimal config (divergence ON, RSI off, BE off, vol 1.1):    +25.44% / PF 7.38  / DD 2.69% / 23 trades / WR 69.6%
+//     - V1 baseline (no divergence):                                    +25.18% / PF 3.27  / DD 4.61% / 43 trades / WR 60.5%
+//   Mar 23 – May 3 (larger window):
+//     - V1 (no divergence):                                             +43.18% / PF 4.42  / DD 4.61% / 47 trades / WR 66%
 // Multi-RSI variants (fast 7 / slow 21) tested and rejected: noise on fast,
 // stale on slow. Standard RSI(14) at 5/5/20 is the validated config.
+// Post-DCA trail and full trail tested and rejected: BE-stop already provides
+// the same protection cleaner.
 //
 // ⚠ Regime warning: a 2.3-year python backtest returned -72.78% / DD 82%.
 // The strategy is regime-favorable (works in mean-reverting markets) but
@@ -65,8 +76,8 @@ dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
      tooltip="5m uses 2 levels. Each DCA adds 1 leg at worst_entry × (1 ± dcaSpacing).")
 dcaSpacing   = input.float(0.85, "DCA spacing (%)", minval=0.3, maxval=3, step=0.05, group=grpDCA,
      tooltip="V2 DEFAULT 0.85 (V1 was 0.8). Tested better paired with the tighter 1.4% SL — gives DCA leg a hair more breathing room before SL distance shortens past it.") / 100
-slBelowWorst = input.float(1.4, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA,
-     tooltip="V2 DEFAULT 1.4 (V1 was 1.9). With divergence-confirmed entries (72% WR), tighter SL works — losses are smaller when wrong, and noise-stops are rare because divergence picks structurally exhausted moves. V1's 1.9% was needed when entries had no momentum confirmation.") / 100
+slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA,
+     tooltip="V2.1 DEFAULT 2.0 (was 1.4). With BE-stop ON, looser SL outperforms tight — BE rescues trades that would have noise-stopped at 1.4%. Tested Mar 30–May 6: 2.0% gives +28.31% / PF 12.41 vs 1.4% +27.02% / PF 10.45.") / 100
 supportZone  = input.float(0.05, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA,
      tooltip="How close to prev_H/prev_L the bar high/low must be to count as a touch. 0.05% = direct touch only, very selective. Wider zones fire on near-misses but hurt win rate.") / 100
 useEodFlatten = input.bool(true, "Force flatten at EOD UTC hour", group=grpDCA,
@@ -162,12 +173,32 @@ prevMidOffsetPct = input.float(0.1, "Prev_mid TP offset (%)", minval=-1.0, maxva
 //   on the OLD config (range_off / prev_mid TP) where targets were tighter
 //   so less runup to give back. With hybrid 4% TP, BE has more to add.
 grpBE = "🛡️ Breakeven SL"
-useBreakeven = input.bool(false, "Enable breakeven SL after favorable threshold", group=grpBE,
-     tooltip="V2 DEFAULT OFF — divergence subsumes BE-stop's value (high-WR entries reverse less). Tested Mar 30–May 4: with divergence ON, BE OFF gives same return at slightly lower DD. V1 had BE ON which earned +43.18% / DD 4.61% on Mar 23–May 3 — keep ON if you remove divergence.")
+useBreakeven = input.bool(true, "Enable breakeven SL after favorable threshold", group=grpBE,
+     tooltip="V2.1 DEFAULT ON. Locks in profit when fav% > 1% from first entry → SL tightens to entry × (1 ± 0.25%). With looser 2.0% SL, BE provides the second protection layer that rescues trades hitting +1% favorable then reversing. Tested Mar 30–May 6 with hybrid TP: BE ON gives +28.31% / PF 12.41; BE OFF gives +24.75% / PF 7.73.")
 breakevenTriggerPct = input.float(1.0, "BE trigger: favorable % from first entry", minval=0.3, maxval=3.0, step=0.1, group=grpBE,
      tooltip="Once price moves this far in our favor (vs first entry), SL tightens to entry ± buffer. 1.0% (DEFAULT) = aggressive lock-in (proven on 5w window). 1.5% = patient (fewer BE-stops, lets winners breathe).") / 100
 breakevenBufferPct = input.float(0.25, "BE buffer above/below entry (%)", minval=0.0, maxval=0.5, step=0.05, group=grpBE,
      tooltip="Tighten SL to firstEntry × (1 ± this%). 0.25% (DEFAULT) covers ~2× Binance taker fee (0.04%×2) + slippage cushion → locks in real ~0.20% net profit. 0.1% is barely above breakeven; 0% = exact entry (loses to fees).") / 100
+
+// ─── Post-DCA trail stop (opt-in, EXPERIMENT) ───
+// Pattern this fixes: post-DCA trades that drift back near avg entry but
+// don't reach the far hybrid TP (-4% from first_entry). Yesterday's
+// 2026-05-05 SHORT was an example: avg $81,213, drifted in $81,400-$81,500
+// range all afternoon, exited EOD at -0.79%. A trail behind the post-DCA
+// best favorable price could have caught the partial recovery.
+//
+// Activates ONLY after DCA fires (filledCount > 1). Tracks the best-
+// favorable price since DCA fill; SL trails behind it by trailOffsetPct,
+// monotonically. Pre-DCA trades use the regular hybrid/prev_mid TP.
+//
+// Earlier full trail-stop test was rejected — it stopped winners short.
+// Limiting to post-DCA only avoids that issue (winners that work pre-DCA
+// hit prev_mid TP before DCA ever fires).
+grpPostTrail = "📈 Post-DCA Trail Stop"
+usePostDcaTrail = input.bool(false, "Trail SL after DCA fires", group=grpPostTrail,
+     tooltip="When ON: after DCA fills, track the best-favorable price seen and tighten SL to that price ± trailOffset. Captures partial recoveries that don't reach the post-DCA hybrid TP. Default OFF — backtest before enabling.")
+postDcaTrailOffset = input.float(0.5, "Trail offset behind peak (%)", minval=0.1, maxval=2.0, step=0.05, group=grpPostTrail,
+     tooltip="SL trails the best favorable price by this %. 0.5% (DEFAULT) — observed avg EOD giveback in 5w trade history. Smaller = locks in more but stops sooner; larger = breathes more.") / 100
 
 // ─── Prior day levels (with optional range-floor fallback) ───
 // Pre-fetch rolling N-day H/L offsets (1..5). Pine evaluates all
@@ -291,6 +322,9 @@ avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
 var int   cycleClosedOnDay = -1
 var int   cyclesToday = 0
 var bool  beActivated = false
+// Post-DCA trail state — peakFavPx tracks best (lowest for short / highest
+// for long) price since DCA fired. Reset when cycle ends.
+var float peakFavPx = na
 
 if newDay
     cycleClosedOnDay := -1
@@ -412,16 +446,35 @@ if useBreakeven and not beActivated and not na(firstEntryPx) and strategy.positi
     if (strategy.position_size > 0 and favLong  >= breakevenTriggerPct) or (strategy.position_size < 0 and favShort >= breakevenTriggerPct)
         beActivated := true
 
-// SL: static at worst_entry × (1 ∓ slBelowWorst). Tightens to BE if active.
-// Earlier breakeven-SL test on Mar 23–May 1 (range_off / prev_mid config)
-// didn't improve the +35.25% baseline — but with hybrid 4% TP, late-cycle
-// reversals are more common (bigger target = more chance to round-trip).
+// Post-DCA trail tracking. Once DCA fills (filledCount > 1), update the
+// peak favorable price each bar — lowest low for shorts, highest high for
+// longs. Monotonic in the favorable direction.
+if usePostDcaTrail and filledCount > 1 and strategy.position_size != 0
+    if strategy.position_size > 0
+        peakFavPx := math.max(na(peakFavPx) ? high : peakFavPx, high)
+    else
+        peakFavPx := math.min(na(peakFavPx) ? low  : peakFavPx, low)
+
+// SL composition. Start with raw (worst entry × (1 ∓ slBelowWorst)). BE
+// can tighten to firstEntry ± buffer. Trail can tighten to peakFavPx ± offset.
+// When multiple are armed, take the TIGHTEST (highest for long, lowest for short).
 slLongPxRaw   = worstEntryPx * (1 - slBelowWorst)
 slShortPxRaw  = worstEntryPx * (1 + slBelowWorst)
 slLongPxBE    = na(firstEntryPx) ? na : firstEntryPx * (1 + breakevenBufferPct)
 slShortPxBE   = na(firstEntryPx) ? na : firstEntryPx * (1 - breakevenBufferPct)
-slLongPx  = (useBreakeven and beActivated) ? slLongPxBE  : slLongPxRaw
-slShortPx = (useBreakeven and beActivated) ? slShortPxBE : slShortPxRaw
+slLongPxTrail  = na(peakFavPx) ? na : peakFavPx * (1 - postDcaTrailOffset)
+slShortPxTrail = na(peakFavPx) ? na : peakFavPx * (1 + postDcaTrailOffset)
+
+slLongCandidate  = slLongPxRaw
+slShortCandidate = slShortPxRaw
+if useBreakeven and beActivated and not na(slLongPxBE)
+    slLongCandidate  := math.max(slLongCandidate,  slLongPxBE)
+    slShortCandidate := math.min(slShortCandidate, slShortPxBE)
+if usePostDcaTrail and filledCount > 1 and not na(slLongPxTrail)
+    slLongCandidate  := math.max(slLongCandidate,  slLongPxTrail)
+    slShortCandidate := math.min(slShortCandidate, slShortPxTrail)
+slLongPx  = slLongCandidate
+slShortPx = slShortCandidate
 
 if strategy.position_size > 0 and not na(worstEntryPx)
     // Exit all long legs at TP=prevMid or SL=2% below worst entry
@@ -457,6 +510,7 @@ if strategy.position_size == 0 and strategy.position_size[1] != 0
     cumNotional     := na
     cumQty          := na
     beActivated     := false
+    peakFavPx       := na
 
 // ─── Visuals ───
 plot(prevH, "Prev H",   color=color.new(color.red,   50), style=plot.style_linebr)

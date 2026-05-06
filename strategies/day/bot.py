@@ -296,7 +296,7 @@ def cancel_all_orders_and_algos(client, pair):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"S/R DCA Day Bot V2 (5m + 1d S/R + RSI div) — env={ENV} dry={ARGS.dry}")
+    log.info(f"S/R DCA Day Bot V2.1 (5m + 1d S/R + RSI div + BE-stop) — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
@@ -436,7 +436,7 @@ def main():
         "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos, "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "S/R DCA Day V2 (5m + 1d S/R + RSI div)",
+        "strategy": "S/R DCA Day V2.1 (5m + 1d S/R + RSI div + BE-stop)",
         "cycle_closed_day": state.get("cycle_closed_day", ""),
     }
 

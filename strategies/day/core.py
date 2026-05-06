@@ -1,26 +1,33 @@
 """
-core.py — S/R DCA Day Strategy V2 (5m execution + 1d S/R)
+core.py — S/R DCA Day Strategy V2.1 (5m execution + 1d S/R)
 
-Python port of strategy_sr_dca_5m_v2.pine. V2 adds RSI divergence as a
-required entry filter and tightens SL accordingly. Tested Mar 30–May 4:
-+25.44% / PF 7.38 / DD 2.69% / 23 trades / WR 69.6%.
+Python port of strategy_sr_dca_5m.pine. V2.1 layers V1's BE-stop on top of
+V2's divergence-confirmed entries with a wider SL. Tested Mar 30–May 6:
++28.31% / PF 12.41 / DD 2.56% / 26 trades / WR 76.92%.
 
-V2 vs V1:
+V2.1 vs V2 (2026-05-06):
+  - SL below worst: 1.4% → 2.0% (BE-stop rescues borderline trades that
+    would have noise-stopped at 1.4%)
+  - Breakeven SL: OFF → ON (1.0% trigger / 0.25% buffer) — V2 said BE
+    was redundant with divergence, but Mar 30–May 6 data showed it adds
+    +1.3% return + +2.0 PF when paired with 2.0% SL.
+
+V2 vs V1 (still in V2.1):
   - RSI divergence at S/R touch (DEFAULT ON, pivot 5/5, fresh 20 bars)
-  - SL below worst: 1.9% → 1.4% (high-WR entries → smaller losses on misses)
-  - DCA spacing: 0.8% → 0.85% (paired with tighter SL)
+  - DCA spacing: 0.8% → 0.85%
   - Volume × 20-bar avg: 1.2 → 1.1 (slightly more permissive)
   - RSI anti-extreme filter: ON → OFF (subsumed by divergence)
-  - Breakeven SL: ON → OFF (subsumed by divergence)
 
+Logic:
   - Entry: prev_day's L/H touch + fresh divergence + filters
   - DCA: 0.85% beyond L1 (2 levels default)
   - TP: hybrid (prev_mid pre-DCA, fixed % from first entry post-DCA)
-  - SL: 1.4% below worst entry
+  - SL: 2.0% below worst entry, tightens to entry × (1 ± 0.25%) once BE arms
+  - BE arms when fav% from first_entry crosses 1.0%
   - EOD flatten at UTC 20:00
   - Max 1 cycle per UTC day
 
-V1 (no divergence) preserved at core_v1.py / bot_v1.py for rollback.
+V1 (no divergence, no BE) preserved at v1_backup/ for rollback.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -33,8 +40,8 @@ LEVERAGE       = 2.0
 RISK_PCT       = 0.06         # 6% total risk per cycle
 
 DCA_LEVELS     = 2
-DCA_SPACING    = 0.0085       # V2: 0.85% (V1 was 0.8%) — paired with tighter SL
-SL_BELOW_WORST = 0.014        # V2: 1.4% (V1 was 1.9%) — high-WR divergence entries → smaller losses on misses
+DCA_SPACING    = 0.0085       # 0.85% (V1 was 0.8%)
+SL_BELOW_WORST = 0.020        # V2.1: 2.0% (V2 was 1.4%) — BE-stop rescues noise-stopped trades, looser SL outperforms
 SUPPORT_ZONE   = 0.0005       # 0.05% zone around prev H/L — only direct touches qualify
 
 # TP offset: shift prev_mid TP slightly toward current price for reliable fills.
@@ -49,8 +56,10 @@ RANGE_FILTER_MODE  = "extend"
 MIN_PREV_RANGE_PCT = 0.02     # 2% floor
 MAX_LOOKBACK_DAYS  = 2
 
-# Breakeven SL — V2 OFF (subsumed by divergence). V1 had this ON.
-USE_BREAKEVEN  = False
+# Breakeven SL — V2.1 ON. Once fav% from first entry crosses 1.0%, SL tightens
+# to entry × (1 ± 0.25%) to lock in real ~0.20% net profit. With 2.0% SL,
+# BE provides the second protection layer that rescues borderline trades.
+USE_BREAKEVEN  = True
 BE_TRIGGER_PCT = 0.01
 BE_BUFFER_PCT  = 0.0025
 
