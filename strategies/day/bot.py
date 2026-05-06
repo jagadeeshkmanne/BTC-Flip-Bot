@@ -26,6 +26,7 @@ sys.path.insert(0, STRATEGY_DIR)
 from core import (
     LEVERAGE, RISK_PCT, DCA_LEVELS, DCA_SPACING, SL_BELOW_WORST, SUPPORT_ZONE,
     CLOSE_HOUR,
+    HOLD_PAST_EOD_IF_FAV, HOLD_MIN_FAV_PCT,
     USE_BREAKEVEN, BE_TRIGGER_PCT, BE_BUFFER_PCT,
     build_features, evaluate_signal,
     entry_price_zone, dca_price, sl_price, tp_price, per_level_qty,
@@ -296,7 +297,7 @@ def cancel_all_orders_and_algos(client, pair):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"S/R DCA Day Bot V2.1 (5m + 1d S/R + RSI div + BE-stop) — env={ENV} dry={ARGS.dry}")
+    log.info(f"S/R DCA Day Bot V2.2 (5m + 1d S/R + RSI div + BE-stop + EOD hold) — env={ENV} dry={ARGS.dry}")
     client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
 
     state = load_state()
@@ -436,7 +437,7 @@ def main():
         "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos, "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "S/R DCA Day V2.1 (5m + 1d S/R + RSI div + BE-stop)",
+        "strategy": "S/R DCA Day V2.2 (5m + 1d S/R + RSI div + BE-stop + EOD hold)",
         "cycle_closed_day": state.get("cycle_closed_day", ""),
     }
 
@@ -591,12 +592,28 @@ def main():
         else:
             sl_hit = (live_px >= cur_sl) or (bar_high >= cur_sl)
             tp_hit = (live_px <= tp_px)  or (bar_low <= tp_px)
-        eod    = utc_hour >= CLOSE_HOUR
+
+        # V2.2 — Conditional hold past EOD. At CLOSE_HOUR, if fav% ≥ threshold
+        # AND we haven't already held this trade once, mark held and skip the
+        # EOD close. On a LATER day's CLOSE_HOUR, eod_held_on_day != today, the
+        # canHold guard fails (held_on_day already set), so force-close (24h cap).
+        at_eod = utc_hour >= CLOSE_HOUR
+        held_on_day = pos.get("eod_held_on_day")
+        same_day_as_hold = held_on_day == today
+        eod_close = False
+        if at_eod and not same_day_as_hold:
+            fav_frac = fav / first_entry if first_entry > 0 else 0
+            can_hold = HOLD_PAST_EOD_IF_FAV and not held_on_day
+            if can_hold and fav_frac >= HOLD_MIN_FAV_PCT:
+                pos["eod_held_on_day"] = today
+                log.info(f"  EOD HOLD armed at fav {fav_pct:+.2f}% (≥{HOLD_MIN_FAV_PCT*100:.1f}%) — riding past {CLOSE_HOUR}:00 UTC, 24h cap at next day's {CLOSE_HOUR}:00")
+            else:
+                eod_close = True
 
         reason = None
         if sl_hit: reason = "SL"
         elif tp_hit: reason = "TP"
-        elif eod: reason = "EOD"
+        elif eod_close: reason = "EOD"
 
         if reason and not ARGS.dry:
             cancel_all_orders_and_algos(client, PAIR)  # clear both LIMIT TP + algo SL

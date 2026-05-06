@@ -1,9 +1,16 @@
 """
-core.py — S/R DCA Day Strategy V2.1 (5m execution + 1d S/R)
+core.py — S/R DCA Day Strategy V2.2 (5m execution + 1d S/R)
 
-Python port of strategy_sr_dca_5m.pine. V2.1 layers V1's BE-stop on top of
-V2's divergence-confirmed entries with a wider SL. Tested Mar 30–May 6:
-+28.31% / PF 12.41 / DD 2.56% / 26 trades / WR 76.92%.
+Python port of strategy_sr_dca_5m.pine. V2.2 adds conditional hold-past-EOD
+on top of V2.1's divergence + BE-stop foundation. Tested Mar 30–May 6:
+V2.2 (hold @ 1.5% threshold) +33.13% / PF 14.08 / DD 2.56% / WR 76.92%
+V2.1 baseline                +28.31% / PF 12.41 / DD 2.56% / WR 76.92%
+
+V2.2 vs V2.1 (2026-05-06):
+  - HOLD_PAST_EOD_IF_FAV: at 20:00 UTC, if fav ≥ 1.5% from first entry,
+    skip the EOD close and let the trade ride. 24h hard cap at next day's
+    20:00. Same DD, same trade count, same WR — pure upside on winners
+    that were getting cut at EOD.
 
 V2.1 vs V2 (2026-05-06):
   - SL below worst: 1.4% → 2.0% (BE-stop rescues borderline trades that
@@ -64,6 +71,15 @@ BE_TRIGGER_PCT = 0.01
 BE_BUFFER_PCT  = 0.0025
 
 CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries
+
+# V2.2 — Conditional hold past EOD. When favorable ≥ HOLD_MIN_FAV_PCT at
+# closeHour, skip the EOD close and let the trade ride to TP / SL / BE.
+# 24h hard cap: at the next day's CLOSE_HOUR, force close regardless.
+# Backtest Mar 30–May 6: ON gives +33.13% / DD 2.56% / PF 14.08 / WR 76.92%
+# vs V2.1 baseline +28.31% / PF 12.41 — same DD, +4.82% return on winners
+# that were getting cut at 20:00 UTC.
+HOLD_PAST_EOD_IF_FAV = True
+HOLD_MIN_FAV_PCT     = 0.015  # 1.5% — above BE trigger so BE is armed
 
 # Entry filters
 VOL_MULT       = 1.1          # V2: 1.1× (V1 was 1.2×) — slightly more permissive given divergence gate

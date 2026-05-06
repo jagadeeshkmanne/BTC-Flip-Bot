@@ -246,7 +246,7 @@
       <div class="scale-labels" id="scaleLabels"></div>
     </div>
     <div class="pos-foot">
-      <span>Closes by <b>20:00 UTC</b></span>
+      <span id="eodLabel">Closes by <b>20:00 UTC</b></span>
       <span class="countdown">in <span id="eodCountdown">--</span></span>
     </div>
   </section>
@@ -446,6 +446,18 @@ function renderPosition(price){
       }
     } else if (existing) {
       existing.remove();
+    }
+  }
+
+  // EOD hold indicator — when bot held the position past EOD, swap the
+  // foot label from "Closes by 20:00 UTC" to "HELD past EOD". Countdown
+  // continues to tick down to next 20:00 UTC (the 24h hard cap).
+  const eodLabelEl = $('eodLabel');
+  if (eodLabelEl) {
+    if (p.eodHeldOnDay) {
+      eodLabelEl.innerHTML = '<span style="color:var(--gold);font-weight:700;letter-spacing:.5px">HELD past EOD</span> — 24h cap';
+    } else {
+      eodLabelEl.innerHTML = 'Closes by <b>20:00 UTC</b>';
     }
   }
 
@@ -701,6 +713,9 @@ async function refresh(){
       // when the SL has tightened to entry+buffer (locks in small wins on
       // reversal). Bot sets pos.be_activated=true when fav% ≥ BE_TRIGGER_PCT.
       const beActivated = state.position ? !!state.position.be_activated : false;
+      // V2.2 — eod_held_on_day is set on bot.pos when fav ≥ 1.5% at 20:00 UTC,
+      // signalling we're riding past the normal close to the 24h cap.
+      const eodHeldOnDay = state.position ? (state.position.eod_held_on_day || null) : null;
       positionSnapshot = livePos ? {
         side: livePos.side,
         entry: livePos.entry,
@@ -713,6 +728,7 @@ async function refresh(){
         marginType: livePos.marginType,
         liveUpnl: livePos.uPnL,
         beActivated,
+        eodHeldOnDay,
       } : {
         side: pos.side,
         entry: pos.first_entry || pos.entry_price || 0,
@@ -722,6 +738,7 @@ async function refresh(){
         filled: (pos.entries || [{}]).length,
         prevMid: liveTp || fallbackPrevMid,
         beActivated,
+        eodHeldOnDay,
       };
       $('positionCard').style.display = '';
       $('setupCard').style.display = 'none';
