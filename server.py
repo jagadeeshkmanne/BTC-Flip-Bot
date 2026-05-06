@@ -282,6 +282,70 @@ def _query_binance_position(env_name="testnet"):
     return out
 
 
+def _query_paper_position():
+    """Return a synthetic 'binance position' shape for the dashboard built
+    from state_paper.json + mainnet ticker. Paper bot has no real exchange
+    position; this lets the dashboard reuse its existing rendering code.
+
+    Cached for 1 second to absorb dashboard polling.
+    """
+    cache = getattr(_query_paper_position, "_cache", None)
+    if cache and time.time() - cache["t"] < 1.0:
+        return cache["v"]
+
+    state_file = os.path.join(BOT_DIR, 'data', 'paper', 'state_paper.json')
+    state = {}
+    if os.path.exists(state_file):
+        try:
+            with open(state_file) as f: state = json.load(f)
+        except: pass
+
+    # Live mainnet ticker for mark/last price
+    last = mark = 0.0
+    try:
+        with urllib.request.urlopen("https://fapi.binance.com/fapi/v1/ticker/price?symbol=BTCUSDT", timeout=5) as r:
+            tk = json.loads(r.read())
+            last = mark = float(tk.get("price", 0))
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT", timeout=5) as r:
+            prem = json.loads(r.read())
+            mark = float(prem.get("markPrice", mark))
+    except Exception:
+        pass
+
+    pos_dict = state.get("position")
+    pos = None
+    if pos_dict:
+        side = pos_dict.get("side", "")
+        qty = float(pos_dict.get("qty_total", 0))
+        entry = float(pos_dict.get("first_entry", 0))
+        # Synthetic uPnL based on mainnet ticker (matches what bot sees)
+        upnl = (mark - entry) * qty if side == "LONG" else (entry - mark) * qty
+        pos = {
+            "side": side, "qty": abs(qty), "entry": entry, "uPnL": upnl,
+            "leverage": 2, "marginType": "isolated", "isolatedWallet": 0.0,
+            "notional": abs(qty) * entry, "markImplied": mark,
+        }
+
+    paper_balance = float(state.get("paper_balance", 5000.0))
+    out = {
+        "env": "paper",
+        "wallet_balance": paper_balance,
+        "unrealized_pnl": pos["uPnL"] if pos else 0.0,
+        "margin_balance": paper_balance + (pos["uPnL"] if pos else 0.0),
+        "position": pos,
+        "open_orders": [],  # paper has no real resting orders
+        "mark_price": mark,
+        "index_price": mark,
+        "last_trade": last,
+        "ts": time.time(),
+    }
+    _query_paper_position._cache = {"t": time.time(), "v": out}
+    return out
+
+
 def run_bot_now(env):
     """Trigger a single bot run in the background."""
     data_dir = os.path.join(BOT_DIR, "data", env)
@@ -361,8 +425,17 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # ── Bot API (public, no auth). Day bot is the only active strategy. ──
+        # Default routes to PAPER bot (data/paper/) since 2026-05-06. Use
+        # ?env=testnet to access legacy testnet bot data (mostly empty after
+        # paper migration).
+        env_q = parsed.query.split('env=')[-1].split('&')[0] if 'env=' in parsed.query else 'paper'
+        env_dir = 'testnet' if env_q == 'testnet' else 'paper'
+        state_filename = 'state_day.json' if env_dir == 'testnet' else 'state_paper.json'
+        status_filename = 'status_day.json' if env_dir == 'testnet' else 'status_paper.json'
+        log_filename = 'bot_day.log' if env_dir == 'testnet' else 'bot_paper.log'
+
         if path == '/api/bot/day/state':
-            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'state_day.json')
+            sf = os.path.join(BOT_DIR, 'data', env_dir, state_filename)
             if os.path.exists(sf):
                 try:
                     with open(sf) as f: return self._json_response(json.load(f))
@@ -370,7 +443,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             return self._json_response({"position": None, "stats": {"total": 0, "wins": 0, "pnl": 0}})
 
         if path == '/api/bot/day/status':
-            sf = os.path.join(BOT_DIR, 'data', 'testnet', 'status_day.json')
+            sf = os.path.join(BOT_DIR, 'data', env_dir, status_filename)
             if os.path.exists(sf):
                 try:
                     with open(sf) as f: return self._json_response(json.load(f))
@@ -378,17 +451,18 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             return self._json_response({})
 
         if path == '/api/bot/day/log':
-            lf = os.path.join(BOT_DIR, 'data', 'testnet', 'bot_day.log')
+            lf = os.path.join(BOT_DIR, 'data', env_dir, log_filename)
             lines = []
             if os.path.exists(lf):
                 with open(lf) as f: lines = f.readlines()[-100:]
             return self._json_response({"lines": [l.strip() for l in lines]})
 
-        # Live Binance testnet position — proxied so we don't expose API keys
-        # to the browser. Lets the dashboard render the exact same numbers
-        # Binance shows (entry, mark, leverage, unrealizedProfit) instead of
-        # the 5-min-stale snapshot in status_day.json.
+        # Live Binance position — for paper mode, return synthetic position
+        # built from state_paper.json + mainnet ticker. For testnet, query the
+        # real testnet account (as before, requires API keys).
         if path == '/api/bot/day/binance':
+            if env_dir == 'paper':
+                return self._json_response(_query_paper_position())
             return self._json_response(_query_binance_position())
 
         # Dashboard + static files are public (read-only)

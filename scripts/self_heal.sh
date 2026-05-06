@@ -6,7 +6,7 @@
 set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
-DATA_DIR="$BOT_DIR/data/testnet"
+DATA_DIR="$BOT_DIR/data/paper"  # paper bot replaced testnet bot 2026-05-06
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -37,23 +37,26 @@ if [ "$SERVER_OK" -ne 1 ]; then
     fi
 fi
 
-# ── Check 2: Bot cron fired in last 15 min ────────────────────────
-BOT_LOG="$BOT_DIR/data/swing_cron.log"
+# ── Check 2: Paper bot cron fired in last 15 min ──────────────────
+# Paper bot writes its own log via Python's FileHandler, so check that.
+BOT_LOG="$DATA_DIR/bot_paper.log"
+AGE=99999
 if [ -f "$BOT_LOG" ]; then
     LAST_MOD=$(stat -c %Y "$BOT_LOG" 2>/dev/null || stat -f %m "$BOT_LOG" 2>/dev/null)
     NOW=$(date +%s)
     AGE=$((NOW - LAST_MOD))
     if [ "$AGE" -gt 900 ]; then  # 15 min
-        log "WARN: bot cron log stale ($((AGE/60)) min old) — check crontab"
+        log "WARN: paper bot log stale ($((AGE/60)) min old) — check crontab"
     fi
 fi
 
 # ── Check 3: Position sanity ──────────────────────────────────────
-# If state.json has a position but the bot hasn't ran recently, flag it
-if [ -f "$DATA_DIR/state.json" ] && [ -f "$BOT_LOG" ]; then
-    HAS_POS=$(grep -c '"side":' "$DATA_DIR/state.json" 2>/dev/null || echo 0)
-    if [ "$HAS_POS" -gt 0 ] && [ "${AGE:-0}" -gt 900 ]; then
-        log "ALERT: open position but bot stale >15min"
+# If state_paper.json has an open position but the bot hasn't ran recently,
+# flag it — could indicate a held position with no monitoring.
+if [ -f "$DATA_DIR/state_paper.json" ]; then
+    HAS_POS=$(grep -c '"side":' "$DATA_DIR/state_paper.json" 2>/dev/null || echo 0)
+    if [ "$HAS_POS" -gt 0 ] && [ "$AGE" -gt 900 ]; then
+        log "ALERT: paper bot has open position but cron stale >15min"
     fi
 fi
 

@@ -49,31 +49,53 @@ load_dotenv(os.path.join(BOT_DIR, ".env"))
 ap = argparse.ArgumentParser()
 ap.add_argument("--env", default="testnet", choices=["testnet", "production"])
 ap.add_argument("--dry", action="store_true", help="Log signals only, no orders")
+ap.add_argument("--paper", action="store_true",
+                help="Paper trading mode: mainnet PUBLIC kline data + virtual fills + virtual balance. "
+                     "TV-parity signals with zero financial risk. State stored in data/paper/.")
 ARGS, _ = ap.parse_known_args()
 ENV = ARGS.env
+PAPER = ARGS.paper
 
 PAIR = "BTCUSDT"
 LEV = int(LEVERAGE)
-if ENV == "testnet":
+PAPER_INITIAL_BALANCE = 5000.0  # virtual starting equity for paper mode
+PAPER_TAKER_FEE = 0.0004        # 0.04% per side, matches Pine commission_value
+
+if PAPER:
+    # Paper mode: ALWAYS uses mainnet PUBLIC endpoints (no auth needed for klines /
+    # live_price / exchange_info). Orders are simulated locally — no real fills.
+    # This gives TV-mainnet parity for signals while risking nothing.
+    API_KEY = ""
+    API_SECRET = ""
+    BASE_URL = "https://fapi.binance.com"
+    DATA_DIR = os.path.join(BOT_DIR, "data", "paper")
+    STATE_FILE = os.path.join(DATA_DIR, "state_paper.json")
+    STATUS_FILE = os.path.join(DATA_DIR, "status_paper.json")
+    LOG_FILE = os.path.join(DATA_DIR, "bot_paper.log")
+elif ENV == "testnet":
     API_KEY = os.environ.get("TESTNET_API_KEY", "")
     API_SECRET = os.environ.get("TESTNET_API_SECRET", "")
     BASE_URL = "https://testnet.binancefuture.com"
+    DATA_DIR = os.path.join(BOT_DIR, "data", ENV)
+    STATE_FILE = os.path.join(DATA_DIR, "state_day.json")
+    STATUS_FILE = os.path.join(DATA_DIR, "status_day.json")
+    LOG_FILE = os.path.join(DATA_DIR, "bot_day.log")
 else:
     API_KEY = os.environ.get("PRODUCTION_API_KEY", "")
     API_SECRET = os.environ.get("PRODUCTION_API_SECRET", "")
     BASE_URL = "https://fapi.binance.com"
+    DATA_DIR = os.path.join(BOT_DIR, "data", ENV)
+    STATE_FILE = os.path.join(DATA_DIR, "state_day.json")
+    STATUS_FILE = os.path.join(DATA_DIR, "status_day.json")
+    LOG_FILE = os.path.join(DATA_DIR, "bot_day.log")
 
-DATA_DIR = os.path.join(BOT_DIR, "data", ENV)
-STATE_FILE = os.path.join(DATA_DIR, "state_day.json")
-STATUS_FILE = os.path.join(DATA_DIR, "status_day.json")
-LOG_FILE = os.path.join(DATA_DIR, "bot_day.log")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler(sys.stdout)])
-log = logging.getLogger("bot_day")
+log = logging.getLogger("bot_paper" if PAPER else "bot_day")
 
-if not API_KEY or not API_SECRET:
+if not PAPER and (not API_KEY or not API_SECRET):
     log.error(f"Missing API keys for {ENV}"); sys.exit(1)
 
 
@@ -189,20 +211,126 @@ class BinanceClient:
         return None
 
 
+# ─── Paper Trading Client ───
+# Subclass of BinanceClient that:
+#   - Inherits PUBLIC endpoints (klines, live_price, exchange_info) — these
+#     work without API keys against the mainnet base URL, giving us TV-parity
+#     market data.
+#   - Overrides authenticated endpoints (account, positions, orders) to
+#     return values derived from local state.json — virtual balance, virtual
+#     position, mock order responses with synthetic fill prices.
+#   - Tracks fees: 0.04% taker per side, applied on each simulated fill so
+#     paper P&L matches Pine's commission_value=0.04 net of fees.
+# Use case: validate strategy on real mainnet prices without risking capital.
+class PaperClient(BinanceClient):
+    def __init__(self, base_url, state_ref):
+        # No API keys needed — we only hit PUBLIC endpoints from parent.
+        # state_ref is a callable that returns the current state dict (since
+        # state is reloaded each cron tick, we can't cache it at init).
+        self.key = ""; self.secret = ""; self.base = base_url
+        self.s = requests.Session()
+        self._state_ref = state_ref
+        self._sym_cache = {}
+
+    def _state(self):
+        return self._state_ref()
+
+    def account(self):
+        # Return virtual balance from state. peak_equity tracking still works
+        # via the bot's existing logic (compares current to stored peak).
+        bal = self._state().get("paper_balance", PAPER_INITIAL_BALANCE)
+        return {
+            "totalWalletBalance": str(bal),
+            "availableBalance": str(bal),
+            "positions": [],  # empty — bot tracks position separately via state
+        }
+
+    def positions(self, symbol):
+        # Mirror the bot's tracked position back as if it were Binance's view.
+        # Tautological (always matches state), so the reconciliation block in
+        # bot.main never triggers in paper mode — which is what we want.
+        pos = self._state().get("position")
+        if not pos: return []
+        amt = pos.get("qty_total", 0)
+        if pos.get("side") == "SHORT": amt = -amt
+        return [{
+            "symbol": symbol,
+            "positionAmt": str(amt),
+            "entryPrice": str(pos.get("first_entry", 0)),
+            "leverage": str(int(LEVERAGE)),
+            "marginType": "isolated",
+        }]
+
+    def set_leverage(self, symbol, lev):
+        return {"leverage": lev}  # no-op success
+
+    def market_order(self, symbol, side, qty, reduce_only=False, paper_fill_px=None):
+        # Simulate market fill. paper_fill_px lets the bot pass an explicit fill
+        # price (e.g., TP limit price or SL stop price). If not provided, fill
+        # at the current live price (approximates next-tick market execution).
+        fill = paper_fill_px if (paper_fill_px and paper_fill_px > 0) else self.live_price(symbol)
+        if not fill or fill <= 0:
+            log.warning(f"  [paper] market_order: no fill price available")
+            return None
+        return {
+            "orderId": int(time.time() * 1000),
+            "avgPrice": str(fill),
+            "executedQty": str(qty),
+            "status": "FILLED",
+        }
+
+    def limit_order(self, symbol, side, qty, price, reduce_only=False):
+        # No-op: paper bot detects TP fills via bar high/low check in main flow.
+        # Returning a mock NEW order keeps ensure_exits happy if it's still called.
+        return {"orderId": 0, "status": "NEW", "type": "LIMIT", "price": str(price)}
+
+    def algo_stop_market(self, symbol, side, trigger_price, close_position=True):
+        # No-op: paper bot detects SL fills via bar high/low check in main flow.
+        return {"algoId": 0, "orderType": "STOP_MARKET", "triggerPrice": str(trigger_price)}
+
+    def open_orders(self, symbol):
+        return []  # no real resting orders
+
+    def open_algo_orders(self, symbol):
+        return []
+
+    def cancel_all(self, symbol):
+        pass
+
+    def cancel_algo_order(self, symbol, algo_id):
+        pass
+
+    def user_trades(self, symbol, start_time=None, limit=50):
+        # Reconcile path uses this; in paper mode we never reach reconcile
+        # (positions() always matches state), so empty list is safe.
+        return []
+
+
+# Allow BinanceClient.market_order to accept paper_fill_px without breaking —
+# it's ignored in real mode. This way bot.py can pass it unconditionally.
+_orig_market_order = BinanceClient.market_order
+def _market_order_with_paper_kw(self, symbol, side, qty, reduce_only=False, paper_fill_px=None):
+    return _orig_market_order(self, symbol, side, qty, reduce_only=reduce_only)
+BinanceClient.market_order = _market_order_with_paper_kw
+
+
 # ─── State ───
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE) as f: return json.load(f)
         except: pass
-    return {
+    default = {
         "position": None,          # {side, first_entry, entries: [{px, qty}], qty_total, sl, cycle_day}
         "cycle_closed_day": "",    # UTC date string of last cycle close — blocks new entries same day
         "last_exit_time": 0,
-        "peak_equity": 0.0,
+        "peak_equity": PAPER_INITIAL_BALANCE if PAPER else 0.0,
         "trade_log": [],
         "stats": {"total": 0, "wins": 0, "pnl": 0.0},
     }
+    if PAPER:
+        default["paper_balance"] = PAPER_INITIAL_BALANCE
+    return default
 
 def save_state(s):
     with open(STATE_FILE, "w") as f: json.dump(s, f, indent=2, default=str)
@@ -297,10 +425,17 @@ def cancel_all_orders_and_algos(client, pair):
 # ─── Main ───
 def main():
     log.info(f"{'='*50}")
-    log.info(f"S/R DCA Day Bot V2.2 (5m + 1d S/R + RSI div + BE-stop + EOD hold) — env={ENV} dry={ARGS.dry}")
-    client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
+    mode = "PAPER" if PAPER else ENV.upper()
+    log.info(f"S/R DCA Day Bot V2.2 (5m + 1d S/R + RSI div + BE-stop + EOD hold) — mode={mode} dry={ARGS.dry}")
 
     state = load_state()
+    if PAPER:
+        # PaperClient takes a state-getter callback so it always reads the latest
+        # state (the bot mutates state during the tick before write).
+        client = PaperClient(BASE_URL, lambda: state)
+    else:
+        client = BinanceClient(API_KEY, API_SECRET, BASE_URL)
+
     info = client.exchange_info(PAIR)
     if not info: log.error("No exchange info"); return
 
@@ -308,6 +443,7 @@ def main():
     # setting persistent across runs, so without this a manual change on the UI
     # (or an old setting from before LEV was 2x) would drift. Calling this
     # each tick is idempotent — Binance just no-ops when leverage is already set.
+    # PaperClient.set_leverage is a no-op success.
     if not ARGS.dry:
         client.set_leverage(PAIR, LEV)
 
@@ -433,12 +569,13 @@ def main():
     log.info(f"  Conditions: {sum(sig.conditions.values())}/{len(sig.conditions)} met")
 
     status = {
-        "env": ENV, "pair": PAIR, "price": close_price, "live_price": live_px,
+        "env": "paper" if PAPER else ENV, "pair": PAIR, "price": close_price, "live_price": live_px,
         "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos, "signal": sig.side, "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state.get("stats", {}),
-        "strategy": "S/R DCA Day V2.2 (5m + 1d S/R + RSI div + BE-stop + EOD hold)",
+        "strategy": "S/R DCA Day V2.2 (5m + 1d S/R + RSI div + BE-stop + EOD hold)" + (" [PAPER]" if PAPER else ""),
         "cycle_closed_day": state.get("cycle_closed_day", ""),
+        "paper_mode": PAPER,
     }
 
     # ── FLAT: look for entry ──
@@ -467,7 +604,10 @@ def main():
                     log.warning(f"  qty {qty} below min {info['min_qty']}")
                 else:
                     side_api = "BUY" if sig.side == "LONG" else "SELL"
-                    resp = client.market_order(PAIR, side_api, qty)
+                    # Paper mode fills L1 at the Pine LIMIT-target price (matches Pine's
+                    # strategy.entry(limit=target_px) behavior). Real trading fills at market.
+                    paper_fill = target_px if PAPER else None
+                    resp = client.market_order(PAIR, side_api, qty, paper_fill_px=paper_fill)
                     if resp:
                         fill = float(resp.get("avgPrice", entry_px)) or entry_px
                         new_pos = {
@@ -486,8 +626,10 @@ def main():
                         log.info(f"  OPENED L1 {sig.side} {qty}@${fill:.2f} SL=${new_pos['sl']:.2f} ({sl_pct:.1f}%) target=${target_px:.2f}")
                         # Place resting TP+SL on exchange so spikes between cron runs still fill.
                         # filled_count=1 → hybrid mode falls through to prev_mid TP.
+                        # In paper mode, no resting orders — exits detected via bar high/low in main flow.
                         tp_px_new = tp_price(sig.side, sig.raw["prev_mid"], first_entry=fill, filled_count=1)
-                        ensure_exits(client, info, PAIR, sig.side, qty, tp_px_new, new_pos["sl"])
+                        if not PAPER:
+                            ensure_exits(client, info, PAIR, sig.side, qty, tp_px_new, new_pos["sl"])
         elif sig.side and ARGS.dry:
             log.info(f"  [DRY] Would open {sig.side} at ${close_price:,.2f}")
         else:
@@ -552,7 +694,10 @@ def main():
                 dca_qty = round_qty(orig_qty, info["step"])
                 if dca_qty >= info["min_qty"]:
                     side_api = "BUY" if side == "LONG" else "SELL"
-                    resp = client.market_order(PAIR, side_api, dca_qty)
+                    # Paper mode fills DCA at the trigger price (matches Pine's
+                    # strategy.entry(limit=worstEntry × (1 ∓ DCA_SPACING))).
+                    paper_fill = dca_trigger if PAPER else None
+                    resp = client.market_order(PAIR, side_api, dca_qty, paper_fill_px=paper_fill)
                     if resp:
                         dca_fill = float(resp.get("avgPrice", live_px)) or live_px
                         entries.append({"px": dca_fill, "qty": dca_qty})
@@ -567,9 +712,11 @@ def main():
                         log.info(f"  DCA L{len(entries)} filled {dca_qty}@${dca_fill:.2f} | new worst=${worst_entry:.2f} SL=${cur_sl:.2f}")
                         # Replace resting exits to cover the new total qty + updated SL.
                         # Hybrid TP now switches to first_entry × (1 ∓ TP_FIXED_PCT) since filled_count ≥ 2.
+                        # Paper mode skips ensure_exits — exits detected via bar high/low in main flow.
                         tp_px_dca = tp_price(side, sig.raw.get("prev_mid", close_price),
                                              first_entry=first_entry, filled_count=len(entries))
-                        ensure_exits(client, info, PAIR, side, qty_total, tp_px_dca, cur_sl)
+                        if not PAPER:
+                            ensure_exits(client, info, PAIR, side, qty_total, tp_px_dca, cur_sl)
 
         # TP: prev_mid pre-DCA, switches to first_entry × (1 ∓ TP_FIXED_PCT) post-DCA in hybrid mode.
         tp_px = tp_price(side, sig.raw.get("prev_mid", close_price),
@@ -616,13 +763,37 @@ def main():
         elif eod_close: reason = "EOD"
 
         if reason and not ARGS.dry:
-            cancel_all_orders_and_algos(client, PAIR)  # clear both LIMIT TP + algo SL
+            # In paper mode there are no real resting orders to cancel.
+            if not PAPER:
+                cancel_all_orders_and_algos(client, PAIR)  # clear both LIMIT TP + algo SL
             close_side = "SELL" if side == "LONG" else "BUY"
-            resp = client.market_order(PAIR, close_side, qty_total, reduce_only=True)
+            # Paper: TP/SL fills at the EXACT level the order would have triggered;
+            # EOD fills at live_px (market close at end of bar). This matches Pine.
+            paper_fill = None
+            if PAPER:
+                if reason == "TP":
+                    paper_fill = tp_px
+                elif reason == "SL":
+                    paper_fill = cur_sl
+                # EOD: leave None → use live_px as market close
+            resp = client.market_order(PAIR, close_side, qty_total, reduce_only=True, paper_fill_px=paper_fill)
             if resp:
                 fill = float(resp.get("avgPrice", live_px)) or live_px
-                # Compute PnL across all legs
-                total_pnl = sum(((fill - e["px"]) if side == "LONG" else (e["px"] - fill)) * e["qty"] for e in entries)
+                # Compute gross PnL across all legs (price diff × qty for each)
+                total_pnl_gross = sum(((fill - e["px"]) if side == "LONG" else (e["px"] - fill)) * e["qty"] for e in entries)
+
+                # Paper: deduct 0.04% taker fee on each entry leg + on the exit.
+                # Matches Pine commission_value=0.04 net of fees.
+                if PAPER:
+                    entry_notional = sum(e["px"] * e["qty"] for e in entries)
+                    exit_notional = fill * qty_total
+                    total_fees = (entry_notional + exit_notional) * PAPER_TAKER_FEE
+                    total_pnl = total_pnl_gross - total_fees
+                    # Update virtual equity. peak_equity is updated next tick at start of main().
+                    state["paper_balance"] = state.get("paper_balance", PAPER_INITIAL_BALANCE) + total_pnl
+                else:
+                    total_fees = 0.0
+                    total_pnl = total_pnl_gross
                 pnl_pct = total_pnl / balance * 100 if balance > 0 else 0
 
                 state["stats"]["total"] += 1
@@ -633,6 +804,7 @@ def main():
                     "side": side, "first_entry": first_entry, "exit": fill,
                     "entries": len(entries), "avg_entry": sum(e["px"]*e["qty"] for e in entries)/qty_total,
                     "reason": reason, "pnl_usd": total_pnl, "pnl_pct": pnl_pct,
+                    "pnl_gross_usd": total_pnl_gross, "fees_usd": total_fees,
                     "entry_time": pos.get("entry_time"),
                     "time": datetime.now(timezone.utc).isoformat(),
                 }
@@ -643,7 +815,10 @@ def main():
                 state["position"] = None
                 # Lock this UTC day from new entries
                 state["cycle_closed_day"] = today
-                log.info(f"  EXIT {side} via {reason} @${fill:.2f} PnL ${total_pnl:+.2f} ({pnl_pct:+.2f}%)")
+                if PAPER:
+                    log.info(f"  EXIT {side} via {reason} @${fill:.2f} | gross ${total_pnl_gross:+.2f} − fees ${total_fees:.2f} = net ${total_pnl:+.2f} ({pnl_pct:+.2f}%) | balance ${state['paper_balance']:.2f}")
+                else:
+                    log.info(f"  EXIT {side} via {reason} @${fill:.2f} PnL ${total_pnl:+.2f} ({pnl_pct:+.2f}%)")
                 status["just_closed"] = trade
 
     save_state(state)

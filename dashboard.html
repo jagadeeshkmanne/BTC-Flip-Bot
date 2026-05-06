@@ -191,7 +191,7 @@
 <header class="topbar">
   <div class="brand">
     <span class="brand-name">BTC Day Bot</span>
-    <span class="brand-tag" id="brandTag">Testnet · 5m S/R DCA</span>
+    <span class="brand-tag" id="brandTag">Paper · Mainnet · 5m S/R DCA</span>
   </div>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -631,9 +631,18 @@ function renderSetup(status){
         reasons.push(`price not at S/R: prev_L $${ind.prev_L.toFixed(0)} (${distToL >= 0 ? '−' : '+'}${Math.abs(distToL).toFixed(2)}% away) · prev_H $${ind.prev_H.toFixed(0)} (+${distToH.toFixed(2)}% away)`);
       }
     }
-    waitingEl.innerHTML = reasons.length === 0
-      ? '<span class="pos">All conditions met — entry should fire on next valid bar</span>'
-      : `<b>Waiting because:</b><ul><li>${reasons.join('</li><li>')}</li></ul>`;
+    // Guard: if conditions object is empty (status file missing or fresh), don't
+    // claim "all met" — that would be vacuous truth on no data. Empty reasons
+    // array can also mean we genuinely have no insight to report; require at
+    // least ONE condition flag to be present before declaring "all met".
+    const hasAnyConditionData = condData.conditions && Object.keys(condData.conditions).length > 0;
+    if (!hasAnyConditionData) {
+      waitingEl.innerHTML = '<span style="color:var(--muted)">Waiting for bot data — no recent status file</span>';
+    } else {
+      waitingEl.innerHTML = reasons.length === 0
+        ? '<span class="pos">All conditions met — entry should fire on next valid bar</span>'
+        : `<b>Waiting because:</b><ul><li>${reasons.join('</li><li>')}</li></ul>`;
+    }
   }
 }
 
@@ -983,8 +992,16 @@ function updateMark(price, bar){
 // PnL on Binance UI uses last-trade — matching the UI is what users want.
 let currentWs = null, reconnectTimer = null, lastWsMsgTs = 0, wsMsgCount = 0, restCount = 0;
 let lastBar = null; // most recent kline cache, used to compute change %
-const URL_ENV = new URLSearchParams(location.search).get('env') === 'mainnet' ? 'mainnet' : 'testnet';
-const WS_HOST = URL_ENV === 'mainnet' ? 'wss://fstream.binance.com' : 'wss://stream.binancefuture.com';
+// Default = mainnet WS (paper bot trades on mainnet data feed). Use ?env=testnet
+// only for legacy testnet-bot view. After 2026-05-06 paper migration the
+// testnet bot is stopped; testnet view will mostly show empty data.
+const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
+const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
+// Update brand tag to reflect actual env (paper bot uses mainnet feed).
+document.addEventListener('DOMContentLoaded', () => {
+  const tag = document.getElementById('brandTag');
+  if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · 5m S/R DCA';
+});
 const WS_URL  = `${WS_HOST}/stream?streams=btcusdt@kline_5m/btcusdt@aggTrade`;
 const REST_HOST = URL_ENV === 'mainnet' ? 'https://fapi.binance.com' : 'https://testnet.binancefuture.com';
 const REST_URL  = `${REST_HOST}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=1`;
