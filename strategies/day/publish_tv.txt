@@ -1,0 +1,138 @@
+Adaptive S/R Reversal - RSI Divergence + DCA + BE Stop (5m)
+
+DESIGNED FOR: BTCUSDT perpetual · 5-minute timeframe · ONLY.
+Other symbols and timeframes have not been validated. The script enforces 5m and warns on any other TF.
+
+A 5-minute mean-reversion strategy for BTCUSDT perpetual futures. Fades touches of yesterday's high/low when momentum confirms via fresh RSI divergence. Averages down once if price moves further against, exits at yesterday's midpoint pre-DCA or a fixed % from first entry post-DCA. Closes flat at 20:00 UTC daily — unless the trade is favorable enough to ride overnight (24-hour hard cap).
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STRATEGY LOGIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ENTRY (no trend bias)
+- LONG: 5m bar low touches prev_day low (within 0.05% zone) AND a fresh BULLISH RSI divergence (price LL, RSI HL) was confirmed within the last 20 bars.
+- SHORT: 5m bar high touches prev_day high (within 0.05%) AND a fresh BEARISH RSI divergence (price HH, RSI LH) was confirmed within the last 20 bars.
+- Both directions allowed regardless of higher-timeframe trend. The divergence + S/R AND-filter is the edge — neither alone is sufficient.
+
+FILTERS
+- Volume confirmation: entry bar volume ≥ 1.1× SMA(20)
+- Adaptive S/R range: when prev_day range < 2% (squeeze day), expand lookback to a 2-day rolling H/L band so R:R doesn't collapse
+- One cycle per UTC day (configurable up to 5)
+- Trade window: entries blocked after 20:00 UTC
+
+DCA
+- 1 add at worst_entry × (1 ∓ 0.85%) — total 2 legs per cycle
+- Sizing: riskPct of equity is split across DCA levels
+- Per-leg quantity capped by leverage × equity / close / dcaLevels
+
+EXITS
+- TP (hybrid, default): prev_mid × (1 ∓ 0.1%) pre-DCA → switches to firstEntry × (1 ∓ 4%) once DCA fires (avg entry has shifted, post-DCA leg can ride a wider target).
+- SL: worst_entry × (1 ∓ 2%) raw. Once BE arms (+1% favorable from first entry), tightens to firstEntry × (1 ± 0.25%) — locks in real ~0.20% net after fees.
+- EOD flatten: closes at 20:00 UTC unless trade is ≥ +1.5% favorable from first entry → holds another 24 hours max.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BEST CONFIGURATION (defaults — tested on BTC 5m)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Risk per cycle:        6%       (4% safer / 8% aggressive)
+Leverage cap:          2x       (higher amplifies bad days)
+DCA levels:            2        (3+ stretches SL distance)
+DCA spacing:           0.85%    (tighter burns SL faster)
+SL below worst entry:  2.0%     (pairs with BE-stop ON)
+S/R touch zone:        0.05%    (wider hurts win rate)
+Volume × avg:          1.1×     (1.0 lets more in / 1.5 over-filters)
+RSI period:            14       (standard)
+Pivot left/right:      5 / 5    (3/3 noise / 7/7 misses)
+Divergence freshness:  20 bars  (~100 min on 5m)
+Range floor:           2.0%     (below this R:R collapses)
+Max lookback (extend): 2 days   (3+ rarely improves)
+TP mode:               hybrid   (prev_mid is more conservative)
+Post-DCA TP %:         4%       (best balance hit-rate vs win-size)
+BE trigger:            1.0%     (earlier over-triggers)
+BE buffer:             0.25%    (covers 2× taker fee + slippage)
+EOD close hour:        20:00 UTC
+Hold-past-EOD:         ON @ 1.5%
+Cycles per day:        1        (more = N× SL exposure on trend days)
+
+
+CONSERVATIVE VARIANT (lower DD)
+- Risk per cycle: 4% (was 6%)
+- Leverage cap: 1.5x (was 2x)
+- SL below worst: 1.5% (was 2.0%)
+- TP mode: prev_mid (caps upside)
+
+
+AGGRESSIVE VARIANT (higher return, higher DD)
+- Risk per cycle: 8%
+- Leverage cap: 3x
+- TP post-DCA: 6% (lets winners run further)
+- Hold-past-EOD: ON @ 1.0% (more frequent overnight holds)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠ REGIME WARNING — READ BEFORE GOING LIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The strategy is regime-favorable, not regime-robust.
+
+IT WORKS when daily H/L levels consistently revert to the mid (chop, range-bound markets, mean-reverting volatility).
+
+IT LOSES in strong trending markets where price punches through prev_day levels and keeps going — every losing trend day costs a full SL, and the small mean-reversion wins don't pay for them.
+
+DO NOT size up based on a few good weeks. Paper-trade for at least 2-4 weeks across different regimes before deploying real capital. Short-window backtests are real but NOT predictive — they're regime artifacts.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO USE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. BTCUSDT.P (perp) only — params are tuned to BTC's volatility profile. Spot has different funding/fee structure; alts have different ranges.
+2. 5m chart only — script enforces this and warns on other TFs.
+3. Paper trade first. Use TV alerts → paper account on Binance Futures testnet, or a dedicated paper-trading bot, for at least 2-4 weeks.
+4. Watch the on-chart dashboard (top-right) for live state: position, prev levels, active TP/SL, BE status, EOD hold status.
+5. Don't change parameters mid-trade. Re-tune only after a full month of data on a new config.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT'S PLOTTED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- prev_day Low (dim green dotted)
+- prev_day High (dim red dotted)
+- prev_day Mid / TP target (cyan dotted)
+- Active SL (solid red, 2px)
+- Active TP (solid cyan, 2px)
+- Avg entry (yellow dotted, after DCA fires)
+- 1h EMA(20) (purple, visual reference only — not used for entries)
+- Entry triangle markers when L1/S1 conditions fire
+- Bull/Bear divergence diamonds at the pivot bar
+- Top-right dashboard: position, prev levels, UTC hour, TP mode, filled count, BE status, RSI div age, equity, EOD-hold status
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TESTED + REJECTED (anti-recipes)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+These were tried during development and removed — saving you the experiments:
+
+- Trend bias filter (1h EMA) — blocks 60%+ of valid entries because bias flips against you exactly when price reaches the S/R level.
+- RSI anti-extreme filter as primary gate — redundant with divergence.
+- Multi-RSI variants (fast 7 / slow 21) — fast fires on noise, slow on stale moves.
+- Trailing stop (post-DCA or full trail) — too many false trail-outs near peaks. BE-stop does the job cleaner.
+- Wider S/R zone (0.2%) — fires on near-misses, hurts WR.
+- SL on candle close (only fire SL when 5m bar closes beyond SL) — saves wick stops but gives more rope on real trends; net negative.
+- Multi-cycle per day (2-3 cycles) — same-day re-entries whipsaw on trend days. 1 cycle/day is the validated default.
+- Always-in-market flip on every divergence (no S/R touch required) — built and tested; loses. Divergence alone is not an edge.
+- Recycling grid sub-strategies — slippage + risk amplification on dip-buy rungs destroy the math.
+- Wait-for-HTF-rejection-candle confirm filter — cuts return ~60% for marginal DD improvement.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DISCLAIMER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Backtest results don't predict live performance. Slippage, funding fees, exchange downtime, latency, and live order routing all affect real-world returns. The TradingView backtester assumes intra-bar fills that may not happen in live trading without resting orders.
+
+This script is shared for educational and research purposes. Use it as one input in your own due diligence — never as a turn-key money-printer. Past performance is not indicative of future results, especially for a strategy this regime-dependent.

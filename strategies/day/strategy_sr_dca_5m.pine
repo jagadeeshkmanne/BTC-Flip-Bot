@@ -1,59 +1,41 @@
 //@version=6
 // ─────────────────────────────────────────────────────────────────────
-// S/R DCA Day Trader (5m) — V2.2 (RSI divergence + BE-stop + EOD hold)
+// Adaptive S/R Reversal - RSI Divergence + DCA + BE Stop (5m)
 //
-// V2.2 adds conditional hold-past-EOD on top of V2.1's divergence + BE
-// foundation. Live on GCP testnet bot since 2026-05-06.
+// An intraday mean-reversion strategy for BTCUSDT 5m: enter on touches of
+// yesterday's high/low when momentum confirms via fresh RSI divergence,
+// average down once if price moves further against, exit at yesterday's
+// midpoint or a fixed % from first entry post-DCA. Breakeven stop arms at
+// +1% favorable. Closes flat at 20:00 UTC daily — unless trade is +1.5%
+// favorable, in which case it rides another 24 hours max.
 //
-// What V2.2 changes vs V2.1 (2026-05-06):
-//   - HOLD_PAST_EOD_IF_FAV: at 20:00 UTC, if fav ≥ 1.5% from first entry,
-//     skip the EOD close and let the trade ride to TP / SL / BE. 24h hard
-//     cap at next day's 20:00. Same DD, same trade count, same WR — pure
-//     upside on winners that V2.1 was cutting at EOD.
+// ⚠ DESIGNED FOR: BTCUSDT perpetual · 5-minute timeframe · ONLY.
 //
-// What V2.1 changed vs V2:
-//   - SL below worst entry: 1.4% → 2.0% (BE-stop rescues borderline trades)
-//   - Breakeven SL: OFF → ON (1.0% trigger / 0.25% buffer)
+// ─── Logic ───
+//   • Entry: 5m low touches prev_day low (LONG) or 5m high touches prev_day
+//     high (SHORT) within a 0.05% zone, AND a fresh RSI divergence pivot
+//     was confirmed within the last 20 bars (5/5 pivot, RSI(14)).
+//   • Filters: volume ≥ 1.1× SMA(20). NO trend bias filter.
+//   • Adaptive S/R: when prev-day range < 2% floor, expand lookback to a
+//     2-day rolling H/L band so R:R doesn't collapse on inside days.
+//   • DCA: 1 add at worst_entry × (1 ∓ 0.85%)
+//   • TP (hybrid): prev_mid pre-DCA → first_entry × (1 ∓ 4%) post-DCA
+//   • SL: worst_entry × (1 ∓ 2.0%); tightens to first_entry × (1 ± 0.25%)
+//     once BE arms at +1% favorable
+//   • EOD: close at 20:00 UTC unless favorable ≥ 1.5% (then hold 24h max)
+//   • Max 1 entry/exit cycle per UTC day (configurable)
 //
-// What V2 added vs V1 (still in V2.2):
-//   - RSI divergence at S/R touch (DEFAULT ON, pivot 5/5, fresh 20 bars)
-//   - Volume × 20-bar avg lowered 1.2 → 1.1
-//   - DCA spacing 0.8% → 0.85%
-//
-// ⚠ DESIGNED FOR: BTCUSDT · 5-minute timeframe · ONLY.
-//
-// Logic:
-//   - Entry: 5m low touches prev_L (LONG) or 5m high touches prev_H (SHORT)
-//     within a 0.05% zone, AND a fresh RSI divergence pivot was confirmed
-//     within the last 20 bars. Adaptive S/R: when prev-day range < floor,
-//     expand lookback to N-day rolling H/L until range ≥ floor.
-//   - Filters: volume ≥ 1.1× SMA, divergence ≤ 20 bars fresh.
-//   - DCA: 1 add at worst_entry × (1 ∓ 0.85%)
-//   - TP: hybrid — prev_mid pre-DCA, switches to first_entry × (1 ∓ 4%) post-DCA
-//   - SL: worst_entry × (1 ∓ 2.0%); tightens to firstEntry × (1 ± 0.25%) once BE arms (+1% fav)
-//   - EOD: close at 20:00 UTC unless fav ≥ 1.5% (then hold 24h max)
-//
-// Backtest history (BTCUSDT 5m, Mar 30 – May 6):
-//   - V2.2 (DEFAULT, hold @ 1.5% threshold):           +33.13% / PF 14.08 / DD 2.56% / 26 trades / WR 76.92%
-//   - V2.1 (no hold-past-EOD):                         +28.31% / PF 12.41 / DD 2.56% / 26 trades / WR 76.92%
-//
-// Rejected experiments (kept in this comment as anti-recipes):
-//   - Multi-RSI variants (fast 7 / slow 21): noise on fast, stale on slow
-//   - Post-DCA trail / full trail: BE-stop already does the job cleaner
-//   - Smart TP / fixed_pct TP: smart underperforms hybrid; fixed_pct -71% on 2.3y
-//   - RSI anti-extreme filter: redundant with divergence
-//   - Recycling grid bot: slippage + risk amplification on dip-buy rungs
-//   - Unconditional EOD-off: lost (V2.2's CONDITIONAL hold is the working version)
-//
-// ⚠ Regime warning: a 2.3-year python backtest returned -72.78% / DD 82%.
-// Regime-favorable (mean-reverting markets); breaks down in strong trends.
-//
-// Live testnet deployment: http://34.14.124.215:8888/dashboard.html?env=testnet
+// ─── ⚠ Regime warning ───
+//   The strategy is regime-favorable (mean-reverting chop) and breaks
+//   down in strong trending markets where price punches through prev_day
+//   levels and keeps going. Recent short backtest windows can look great
+//   but are not a baseline. Paper-trade until validated on YOUR market
+//   conditions.
 // ─────────────────────────────────────────────────────────────────────
 
 leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5)
 
-strategy("S/R DCA Day Trader (5m) V2.2 — EOD hold", overlay=true, initial_capital=5000,
+strategy("Adaptive S/R Reversal - RSI Div + DCA + BE Stop (5m)", overlay=true, initial_capital=5000,
      default_qty_type=strategy.percent_of_equity, default_qty_value=95,
      pyramiding=3, calc_on_order_fills=false, calc_on_every_tick=false,
      process_orders_on_close=true, commission_type=strategy.commission.percent,
@@ -63,116 +45,91 @@ strategy("S/R DCA Day Trader (5m) V2.2 — EOD hold", overlay=true, initial_capi
 // ─── Risk ───
 grpRisk = "⚙️ Risk"
 riskPct = input.float(6.0, "Total risk per cycle (%)", minval=0.1, maxval=15, step=0.5, group=grpRisk,
-     tooltip="At 6% the TV 5-week test gave +14.07% / 9.75% DD. Drop to 5% for safer, raise to 8% for aggressive.") / 100
+     tooltip="% of equity at risk if all DCA legs fill and SL hits. Drop to 4% for safer; raise to 8% for aggressive.") / 100
 
 // ─── DCA ───
 grpDCA = "📊 S/R DCA"
 dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
-     tooltip="5m uses 2 levels. Each DCA adds 1 leg at worst_entry × (1 ± dcaSpacing).")
+     tooltip="Number of legs per cycle (1 entry + N-1 adds). 2 (DEFAULT) tested best on 5m BTC.")
 dcaSpacing   = input.float(0.85, "DCA spacing (%)", minval=0.3, maxval=3, step=0.05, group=grpDCA,
-     tooltip="V2 DEFAULT 0.85 (V1 was 0.8). Tested better paired with the tighter 1.4% SL — gives DCA leg a hair more breathing room before SL distance shortens past it.") / 100
+     tooltip="Distance from worst entry where the next DCA leg fills. Wider = more breathing room before SL distance shortens past it.") / 100
 slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA,
-     tooltip="V2.1 DEFAULT 2.0 (was 1.4). With BE-stop ON, looser SL outperforms tight — BE rescues trades that would have noise-stopped at 1.4%. Tested Mar 30–May 6: 2.0% gives +28.31% / PF 12.41 vs 1.4% +27.02% / PF 10.45.") / 100
+     tooltip="With BE-stop ON, looser SL outperforms tight — BE rescues trades that would have noise-stopped tighter.") / 100
 supportZone  = input.float(0.05, "S/R entry zone (%)", minval=0.05, maxval=1, step=0.05, group=grpDCA,
-     tooltip="How close to prev_H/prev_L the bar high/low must be to count as a touch. 0.05% = direct touch only, very selective. Wider zones fire on near-misses but hurt win rate.") / 100
+     tooltip="How close to prev_H/prev_L the bar high/low must be to count as a touch. 0.05% = direct touches only — selective.") / 100
 useEodFlatten = input.bool(true, "Force flatten at EOD UTC hour", group=grpDCA,
-     tooltip="When ON: position closes at closeHour UTC and entries are blocked past that hour. When OFF: position rides until TP or SL hits, no time limit. Backtest history says EOD-on is safer; OFF lets winners run but exposes to overnight regime shifts.")
+     tooltip="ON: position closes at closeHour UTC and entries are blocked past that hour. OFF: position rides until TP or SL — exposes to overnight regime shifts.")
 closeHour    = input.int(20, "Force flatten at UTC hour", minval=12, maxval=23, group=grpDCA,
-     tooltip="Only used when EOD flatten is ON. Backtest: 20 is conservative, 23 lets trades work longer.")
+     tooltip="Only used when EOD flatten is ON. 20 is conservative; 23 lets trades work longer.")
 holdPastEodIfFav = input.bool(true, "Hold past EOD if favorable", group=grpDCA,
-     tooltip="V2.2 DEFAULT ON. At closeHour UTC, if trade is favorable ≥ holdMinFavPct from first entry, SKIP the EOD close and let the trade ride to TP/SL/BE. Hard-closes at next day's closeHour (24h cap). Tested Mar 30–May 6: ON gives +33.13% / PF 14.08; OFF gives +28.31% / PF 12.41 — same DD, +4.82% on winners that V2.1 was cutting at EOD.")
+     tooltip="When ON: at closeHour UTC, if trade is favorable ≥ holdMinFavPct from first entry, skip the EOD close and let it ride. Hard-closes at next day's closeHour (24h cap).")
 holdMinFavPct = input.float(1.5, "Min favorable % to hold past EOD", minval=0.3, maxval=3.0, step=0.1, group=grpDCA,
-     tooltip="Trade must be at least this favorable from first entry at closeHour to qualify for holding. 1.5% (DEFAULT) — BE-stop is armed (1.0% trigger) so an overnight reversal is caught at firstEntry+buffer (~+0.25% net) instead of full SL. 1.0% threshold tested but 1.5% gave the cleanest backtest improvement.") / 100
+     tooltip="Trade must be at least this favorable from first entry to qualify for holding. With BE armed (1% trigger), an overnight reversal exits at first-entry+buffer instead of full SL.") / 100
 
 // ─── Multi-cycle (opt-in) ───
 grpReentry = "🔁 Multi-cycle"
 maxCyclesPerDay = input.int(1, "Max cycles per UTC day", minval=1, maxval=5, group=grpReentry,
-     tooltip="1 (DEFAULT, matches +40.59% baseline): one entry/exit cycle per UTC day. >1: after exit (TP or SL), allow re-entry on a fresh prev_H/prev_L touch — same conditions, no special re-entry logic — up to N cycles. EOD flatten always closes the day. With extend mode active, prev_H/prev_L are the WIDER multi-day band, so re-touches within the same day are rare but each cycle re-exposes the full SL — one trend day costs N×SL.")
+     tooltip="1 (DEFAULT): one entry/exit cycle per UTC day. >1: after exit, allow re-entry on a fresh prev_H/prev_L touch, up to N cycles. Each cycle re-exposes the full SL — one trend day costs N×SL.")
 
 // ─── Quality filters ───
 grpFilter = "🎯 Entry Quality Filters"
 useVolumeFilter  = input.bool(true, "Require volume confirmation at entry", group=grpFilter)
 volMult          = input.float(1.1, "Volume × 20-bar avg", minval=0.5, maxval=3.0, step=0.1, group=grpFilter,
-     tooltip="V2 DEFAULT 1.1 (was 1.2 in V1). With divergence ON, volume filter is mostly redundant; 1.1 lets a few more high-quality entries through that 1.2 was blocking.")
+     tooltip="Entry bar volume must exceed this × SMA(volume, 20). With divergence ON the filter is mostly redundant.")
 
-// RSI period for divergence detection. Anti-extreme RSI filter was tested
-// and removed — divergence subsumes it (filter rejects the same entries).
 rsiPeriod = input.int(14, "RSI period (for divergence)", minval=5, maxval=30, step=1, group=grpFilter,
-     tooltip="14 = 70-min lookback on 5m. Used by RSI divergence detection. Standard.")
+     tooltip="RSI lookback used by divergence detection. 14 is standard.")
 
-// ─── RSI Divergence (DEFAULT ON — proven on 5w window) ───
-// At the prev_H / prev_L touch where we'd normally enter, require a recent
-// momentum divergence as confirmation that the move is exhausting:
-//   - SHORT at prev_H: bearish divergence (price HH, RSI LH) → upside weakening
-//   - LONG  at prev_L: bullish divergence (price LL, RSI HL) → downside weakening
-// Mar 30 – May 4: +25.38% / DD 2.91% / 25 trades / WR 72% / PF 7.39 — strictly
-// better risk-adjusted than the no-div baseline (+25.18% / DD 4.61% / 43 trades).
-// Multi-RSI variants (fast 7 / slow 21) tested and rejected: trade count
-// dropped, DD worsened — fast RSI fired on noise, slow on stale moves.
-// 5/5/20 with standard RSI(14) is the validated config.
+// ─── RSI Divergence ───
+// SHORT at prev_H requires bearish div (price HH, RSI LH).
+// LONG  at prev_L requires bullish div (price LL, RSI HL).
 grpDiv = "📉 RSI Divergence"
 useRsiDivergence = input.bool(true, "Require RSI divergence at S/R", group=grpDiv,
-     tooltip="DEFAULT ON. Only fires L1 entry if a fresh divergence pivot was confirmed within divFreshBars. Bearish for shorts at prev_H; bullish for longs at prev_L. Filter cuts trade count ~45% but PF more than doubles and DD halves — the highest-EV edit on the 5w window.")
+     tooltip="DEFAULT ON. Only fires entry if a fresh divergence pivot was confirmed within divFreshBars. Cuts trade count ~45% but PF more than doubles and DD halves.")
 divPivotL    = input.int(5, "Pivot left bars",  minval=1, maxval=10, group=grpDiv,
-     tooltip="Bars on the left of the pivot that must be lower (for highs) / higher (for lows) for it to count. 5 (DEFAULT) catches real swing turning points; 3 catches noise.")
+     tooltip="Bars on the left of the pivot that must be lower (highs) / higher (lows) for it to qualify. 5 catches real swing turns; 3 catches noise.")
 divPivotR    = input.int(5, "Pivot right bars", minval=1, maxval=10, group=grpDiv,
-     tooltip="Bars on the right that confirm the pivot. 5 (DEFAULT) = 25 min lag. Lower (3) confirms faster but pivots can fail to fully form. Tested: 5 best on 5w window.")
+     tooltip="Bars on the right that confirm the pivot. 5 = 25 min lag on 5m. Lower confirms faster but pivots can fail to fully form.")
 divFreshBars = input.int(20, "Divergence valid for N bars", minval=1, maxval=50, group=grpDiv,
-     tooltip="How long after a divergence pivot fires the signal stays usable. 20 (DEFAULT) = ~100 min on 5m. 10 was too tight (lots of misses); 50 added stale entries that hurt DD with no return upside.")
+     tooltip="How long after a divergence pivot fires the signal stays usable. 20 = ~100 min on 5m.")
 
 // ─── Adaptive S/R range ───
-// Problem this fixes: when prev_day range is tight (e.g., 1% squeeze day),
-// prev_mid TP target is only ~0.5% from entry while SL is 2% — R:R 0.25,
-// need 80% WR just to break even. Live data (Apr 26 → May 3) confirmed it:
-// every losing/break-even trade had prev_range < 2.5%.
-// Modes:
-//   - off    : always use prev_day H/L (BASELINE, +32% on 5w window).
-//   - skip   : gate entries when prev_day range < floor — sit out on tight days.
-//   - extend : when prev_day range < floor, expand to N-day rolling H/L until
-//              range ≥ floor. Wider band → entries fire at the wider levels and
-//              prev_mid TP shifts further → bigger wins, fewer signals.
+// On low-range days (prev_day range < floor), prev_mid TP target collapses
+// while SL stays full-width — R:R drops below 1. Extend mode widens the
+// reference band by rolling N days back until range >= floor.
 grpRange = "📏 Adaptive S/R range"
 rangeFilterMode = input.string("extend", "Range filter mode", options=["off", "skip", "extend"], group=grpRange,
-     tooltip="extend (DEFAULT, +40.59% Mar 23–May 3 paired with hybrid TP): when prev_day range < floor, expand lookback to N days until rolling H/L band ≥ floor; entries fire at wider levels and TP shifts to wider prev_mid. off: always use prev_day H/L (legacy baseline +32% on Mar 23–May 1). skip: gate entries when prev_day range < floor — sit out tight days entirely.")
+     tooltip="extend (DEFAULT): when prev_day range < floor, expand lookback to N days until rolling H/L band ≥ floor. off: always use prev_day H/L. skip: gate entries when prev_day range < floor.")
 minPrevRangePct = input.float(2.0, "Min prev range (%)", minval=0.5, maxval=5.0, step=0.1, group=grpRange,
-     tooltip="Range floor. With default 2% SL: 2% range → R:R ~0.5 (break-even at 67% WR); 3% range → R:R ~0.75 (break-even at 58%). Lower = more trades, worse R:R; higher = pickier, better R:R.") / 100
+     tooltip="Range floor. With 2% SL: 2% range → R:R ~0.5 (break-even at 67% WR); 3% range → R:R ~0.75 (break-even at 58%).") / 100
 maxLookbackDays = input.int(2, "Max lookback days (extend mode)", minval=2, maxval=10, group=grpRange,
-     tooltip="Used in extend mode only. Cap on how far back to expand the rolling H/L window. 2 (DEFAULT) tested best on the 5w window — going to 3-5 left more days unfiltered (range still under floor with only 2 days). If even N-day range stays below floor, the widest available is used anyway.")
+     tooltip="Cap on how far back to expand the rolling H/L window in extend mode. If even N-day range stays below floor, the widest available is used anyway.")
 
 // ─── Take Profit ───
-// V2.2: only "prev_mid" and "hybrid" remain. "smart", "prev_extreme",
-// "fixed_pct" tested and removed — smart underperforms on the 5w window;
-// fixed_pct lost -71% on the 2.3y backtest; prev_extreme is riskier with
-// no validated upside. Hybrid is the canonical default.
 grpTP = "🎯 Take Profit"
 tpMode = input.string("hybrid", "TP target", options=["prev_mid", "hybrid"], group=grpTP,
-     tooltip="hybrid (DEFAULT, V2.2 +33.13% paired with extend 2d + EOD hold) = prev_mid pre-DCA, then switches to FIRST entry × (1 ∓ tpPostDcaPct) once DCA fires (worse-avg trades ride further). prev_mid (legacy) = yesterday's midpoint, fixed S/R anchor. Pre-DCA leg always rides to prev_mid in either mode.")
+     tooltip="hybrid (DEFAULT): prev_mid pre-DCA, then switches to firstEntry × (1 ∓ tpPostDcaPct) once DCA fires. prev_mid: yesterday's midpoint, fixed S/R anchor.")
 tpPostDcaPct = input.float(4.0, "Hybrid: post-DCA TP distance from first entry (%)", minval=0.1, maxval=10, step=0.1, group=grpTP,
-     tooltip="Used by hybrid mode after DCA fires. TP = firstEntry × (1 ∓ this%). 4% (DEFAULT) on V2.2 5w window. The post-DCA leg rides further than prev_mid because avg entry has shifted away from prev_mid.") / 100
+     tooltip="Used by hybrid mode after DCA fires. The post-DCA leg rides further than prev_mid because avg entry has shifted away from prev_mid.") / 100
 prevMidOffsetPct = input.float(0.1, "Prev_mid TP offset (%)", minval=-1.0, maxval=1.0, step=0.05, group=grpTP,
-     tooltip="Shift the prev_mid TP slightly toward current price for more reliable fills. 0.1% = TP fires 0.1% before exact mid → smaller wins but higher hit rate.") / 100
+     tooltip="Shift the prev_mid TP slightly toward current price for fill reliability. 0.1% = TP fires before exact mid → smaller wins, higher hit rate.") / 100
 
-// ─── Breakeven SL (opt-in) ───
-// Pattern this fixes: with hybrid TP at 4% post-DCA, trades that hit +1.5–2.7%
-// favorable but reverse before TP ended -1.1% / -0.3% / +0.1%. Breakeven SL
-// locks in the runup once favorable crosses a threshold, converting these
-// "almost wins" into small wins.
-//   ⚠ Earlier note in header said BE was tested and rejected, but that was
-//   on the OLD config (range_off / prev_mid TP) where targets were tighter
-//   so less runup to give back. With hybrid 4% TP, BE has more to add.
+// ─── Breakeven SL ───
+// Locks in profit when fav% > trigger from first entry → SL tightens to
+// firstEntry ± buffer. Pairs with looser SL: BE rescues trades that hit
+// +1% favorable then reverse, converting "almost wins" into small wins.
 grpBE = "🛡️ Breakeven SL"
 useBreakeven = input.bool(true, "Enable breakeven SL after favorable threshold", group=grpBE,
-     tooltip="V2.1 DEFAULT ON. Locks in profit when fav% > 1% from first entry → SL tightens to entry × (1 ± 0.25%). With looser 2.0% SL, BE provides the second protection layer that rescues trades hitting +1% favorable then reversing. Tested Mar 30–May 6 with hybrid TP: BE ON gives +28.31% / PF 12.41; BE OFF gives +24.75% / PF 7.73.")
+     tooltip="DEFAULT ON. Locks in profit when fav% > trigger → SL tightens to firstEntry ± buffer.")
 breakevenTriggerPct = input.float(1.0, "BE trigger: favorable % from first entry", minval=0.3, maxval=3.0, step=0.1, group=grpBE,
-     tooltip="Once price moves this far in our favor (vs first entry), SL tightens to entry ± buffer. 1.0% (DEFAULT) = aggressive lock-in (proven on 5w window). 1.5% = patient (fewer BE-stops, lets winners breathe).") / 100
+     tooltip="Once price moves this far in our favor (vs first entry), SL tightens to entry ± buffer. 1.0% = aggressive lock-in; 1.5% = patient.") / 100
 breakevenBufferPct = input.float(0.25, "BE buffer above/below entry (%)", minval=0.0, maxval=0.5, step=0.05, group=grpBE,
-     tooltip="Tighten SL to firstEntry × (1 ± this%). 0.25% (DEFAULT) covers ~2× Binance taker fee (0.04%×2) + slippage cushion → locks in real ~0.20% net profit. 0.1% is barely above breakeven; 0% = exact entry (loses to fees).") / 100
+     tooltip="Tighten SL to firstEntry × (1 ± this%). 0.25% covers ~2× taker fee + slippage cushion → locks in real ~0.20% net profit.") / 100
 
-// ─── Prior day levels (with optional range-floor fallback) ───
-// Pre-fetch rolling N-day H/L offsets (1..5). Pine evaluates all
-// request.security calls regardless of branch, but they're cheap and we
-// only USE the lookback the cascade picks. Each is shifted by [1] so the
-// current day's bars never leak in (no lookahead).
+// ─── Prior day levels ───
+// Pre-fetch rolling N-day H/L offsets (1..5). request.security calls are
+// always evaluated, but cheap; we only USE the lookback the cascade picks.
+// [1] shift ensures the current day's bars never leak in (no lookahead).
 prevH1 = request.security(syminfo.tickerid, "1D", high[1], lookahead=barmerge.lookahead_off)
 prevL1 = request.security(syminfo.tickerid, "1D", low[1],  lookahead=barmerge.lookahead_off)
 prevH2 = request.security(syminfo.tickerid, "1D", ta.highest(high, 2)[1], lookahead=barmerge.lookahead_off)
@@ -184,9 +141,8 @@ prevL4 = request.security(syminfo.tickerid, "1D", ta.lowest(low,  4)[1],  lookah
 prevH5 = request.security(syminfo.tickerid, "1D", ta.highest(high, 5)[1], lookahead=barmerge.lookahead_off)
 prevL5 = request.security(syminfo.tickerid, "1D", ta.lowest(low,  5)[1],  lookahead=barmerge.lookahead_off)
 
-// Default = 1-day (matches baseline). In extend mode, walk the cascade
-// 1→5 and stop at the first lookback whose range meets the floor (or the
-// max-lookback cap, whichever comes first).
+// In extend mode, walk the cascade 1→5 and stop at the first lookback whose
+// range meets the floor (or the max-lookback cap, whichever comes first).
 prevH = prevH1
 prevL = prevL1
 activeLookback = 1
@@ -209,9 +165,7 @@ if rangeFilterMode == "extend"
                     activeLookback := 5
 prevMid = (prevH + prevL) / 2.0
 
-// 1h EMA — chart display only. The strategy doesn't gate entries on bias;
-// shown for visual context (bias filter was tested and removed — it blocked
-// 60%+ of valid entries because bias flips bear right when price reaches prev_L).
+// 1h EMA — chart display only. Strategy does not gate entries on bias.
 hourEmaLen = 20
 hourEma    = request.security(syminfo.tickerid, "60", ta.ema(close, hourEmaLen)[1], lookahead=barmerge.lookahead_off)
 
@@ -226,9 +180,8 @@ volOk = not useVolumeFilter or volume >= volMult * volAvg
 rsiVal = ta.rsi(close, rsiPeriod)
 
 // ─── RSI Divergence detection ───
-// Track last 2 confirmed price-pivots (hi/lo) and the RSI value AT that pivot
-// bar (which is divPivotR bars behind the confirmation bar). Bearish div =
-// price made a higher high while RSI made a lower high. Bullish = opposite.
+// Track last 2 confirmed price-pivots (hi/lo) and the RSI value AT that
+// pivot bar (which is divPivotR bars behind the confirmation bar).
 priceHiPivot = ta.pivothigh(high, divPivotL, divPivotR)
 priceLoPivot = ta.pivotlow(low,  divPivotL, divPivotR)
 
@@ -256,7 +209,6 @@ if not na(priceLoPivot)
 bearishDivFired = not na(prevPHigh) and not na(priceHiPivot) and lastPHigh > prevPHigh and lastRAtH < prevRAtH
 bullishDivFired = not na(prevPLow)  and not na(priceLoPivot) and lastPLow  < prevPLow  and lastRAtL > prevRAtL
 
-// Bars-since-fire trackers — divergence stays "fresh" for divFreshBars
 var int barsSinceBearDiv = 9999
 var int barsSinceBullDiv = 9999
 barsSinceBearDiv := bearishDivFired ? 0 : barsSinceBearDiv + 1
@@ -265,9 +217,6 @@ barsSinceBullDiv := bullishDivFired ? 0 : barsSinceBullDiv + 1
 bearDivOk = not useRsiDivergence or barsSinceBearDiv <= divFreshBars
 bullDivOk = not useRsiDivergence or barsSinceBullDiv <= divFreshBars
 
-// Range gate. In skip mode, block entries when active range < floor.
-// In off/extend mode, the cascade above has already picked the widest
-// usable band, so the gate passes (entries fire, possibly fewer of them).
 prevRangePct = (prevH - prevL) / prevL
 rangeOk = rangeFilterMode != "skip" or prevRangePct >= minPrevRangePct
 
@@ -275,20 +224,15 @@ rangeOk = rangeFilterMode != "skip" or prevRangePct >= minPrevRangePct
 var int   filledCount = 0
 var float firstEntryPx = na
 var float worstEntryPx = na
-// Weighted avg entry tracking — used by the "Avg Entry" plot for visual
-// reference. cumNotional / cumQty = avgEntryPx.
 var float cumNotional = na
 var float cumQty      = na
 avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
 var int   cycleClosedOnDay = -1
 var int   cyclesToday = 0
 var bool  beActivated = false
-// Hold-past-EOD state — eodHeldOnDay records the calendar date (encoded as
-// year*10000 + month*100 + day, unique per UTC date e.g. 20260506) on which
-// we chose to skip the EOD close. On any LATER day's EOD, force-close (24h cap).
-// Why not dayofmonth: a held trade that rides past a month boundary back to
-// the same dayofmonth (May 5 → June 5) would falsely match. Full date is
-// unique across months and years.
+// eodHeldOnDay: encoded full date (YYYY*10000 + MM*100 + DD) of the day we
+// chose to skip the EOD close. Full-date encoding (not dayofmonth alone)
+// avoids false matches when a held trade rides past a month boundary.
 var int   eodHeldOnDay = -1
 
 if newDay
@@ -305,8 +249,7 @@ perLevelQty = totalNotional / close / dcaLevels
 qtyCap = (strategy.equity * 0.95 * leverageInput) / close / dcaLevels
 perLevelQty := math.min(perLevelQty, qtyCap)
 
-// ─── L1 entry: touch prev_L (for longs) or prev_H (for shorts) ───
-// NO BIAS CHECK. LONG and SHORT both allowed regardless of trend.
+// ─── L1 entry: touch prev_L (longs) or prev_H (shorts), no bias check ───
 inEntryWindow = not useEodFlatten or utcH < closeHour
 l1LongOk = not cycleDone and strategy.position_size == 0 and inEntryWindow
      and low <= prevL * (1 + supportZone) and low > prevL * (1 - 0.01)
@@ -355,16 +298,14 @@ if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
         cumQty       := cumQty + perLevelQty
         filledCount  := filledCount + 1
 
-// ─── TP + SL (static SL, configurable TP) ───
-// prev_mid offsets: shift target slightly toward current price for fill reliability.
-// LONG TP is above current → lower it slightly; SHORT TP is below current → raise it.
+// ─── TP + SL ───
+// prev_mid offsets shift target slightly toward current price for fill
+// reliability. LONG TP is above current → lower it; SHORT TP is below → raise.
 prevMidLong  = prevMid * (1 - prevMidOffsetPct)
 prevMidShort = prevMid * (1 + prevMidOffsetPct)
 
 // Hybrid TP: prev_mid pre-DCA, switches to firstEntry × (1 ∓ tpPostDcaPct)
-// once DCA fires. Reasoning — pre-DCA, the trade is on a small leg and
-// prev_mid is usually within reach. Post-DCA, avg entry has shifted away
-// from prev_mid so a wider fixed-% target lets the winner run further.
+// once DCA fires (avg entry has shifted, post-DCA leg can ride further).
 tpPostDcaLong  = na(firstEntryPx) ? na : firstEntryPx * (1 + tpPostDcaPct)
 tpPostDcaShort = na(firstEntryPx) ? na : firstEntryPx * (1 - tpPostDcaPct)
 tpLongHybrid   = (filledCount > 1 and not na(tpPostDcaLong))  ? tpPostDcaLong  : prevMidLong
@@ -373,18 +314,17 @@ tpShortHybrid  = (filledCount > 1 and not na(tpPostDcaShort)) ? tpPostDcaShort :
 tpLongPx  = tpMode == "hybrid" ? tpLongHybrid : prevMidLong
 tpShortPx = tpMode == "hybrid" ? tpShortHybrid : prevMidShort
 
-// Breakeven activation: once favorable% from FIRST entry exceeds the
-// trigger, lock SL to firstEntry ± buffer for the rest of this cycle.
-// Once activated stays active until the cycle resets — so a subsequent
-// reversal can only exit at BE, not back at the worst-entry SL.
+// BE activation: once favorable% from FIRST entry exceeds the trigger, lock
+// SL to firstEntry ± buffer for the rest of this cycle. Once activated stays
+// active until cycle resets — a reversal can only exit at BE, not at raw SL.
 if useBreakeven and not beActivated and not na(firstEntryPx) and strategy.position_size != 0
     favLong  = (close - firstEntryPx) / firstEntryPx
     favShort = (firstEntryPx - close) / firstEntryPx
     if (strategy.position_size > 0 and favLong  >= breakevenTriggerPct) or (strategy.position_size < 0 and favShort >= breakevenTriggerPct)
         beActivated := true
 
-// SL composition. Start with raw (worst entry × (1 ∓ slBelowWorst)).
-// BE-stop tightens to firstEntry ± buffer once armed (TIGHTEST wins).
+// SL composition: raw (worst entry × (1 ∓ slBelowWorst)). Once BE is armed,
+// tighten to firstEntry ± buffer (whichever is tighter wins).
 slLongPxRaw  = worstEntryPx * (1 - slBelowWorst)
 slShortPxRaw = worstEntryPx * (1 + slBelowWorst)
 slLongPxBE   = na(firstEntryPx) ? na : firstEntryPx * (1 + breakevenBufferPct)
@@ -399,7 +339,6 @@ slLongPx  = slLongCandidate
 slShortPx = slShortCandidate
 
 if strategy.position_size > 0 and not na(worstEntryPx)
-    // Exit all long legs at TP=prevMid or SL=2% below worst entry
     strategy.exit("xL1", from_entry="L1", limit=tpLongPx, stop=slLongPx)
     if filledCount >= 2
         strategy.exit("xL2", from_entry="L2", limit=tpLongPx, stop=slLongPx)
@@ -414,11 +353,10 @@ if strategy.position_size < 0 and not na(worstEntryPx)
         strategy.exit("xS3", from_entry="S3", limit=tpShortPx, stop=slShortPx)
 
 // ─── EOD flatten (with optional conditional hold) ───
-// Default: close at closeHour UTC. With holdPastEodIfFav ON, skip the close
-// if currently favorable >= holdMinFavPct AND we haven't already held this
-// trade past one EOD (24h cap). On the day-after-hold, sameDayAsHold becomes
-// false (date changed), eodHeldOnDay is no longer -1, so canHold is false →
-// force close.
+// At closeHour UTC: close unless hold-if-fav is enabled and trade is
+// favorable ≥ holdMinFavPct AND we haven't already held this trade past
+// one EOD. On the day after a hold, eodHeldOnDay no longer matches today
+// → force close (24h cap).
 todayKey = year(time, "UTC") * 10000 + month(time, "UTC") * 100 + dayofmonth(time, "UTC")
 if useEodFlatten and utcH >= closeHour and strategy.position_size != 0
     sameDayAsHold = eodHeldOnDay == todayKey
@@ -431,9 +369,6 @@ if useEodFlatten and utcH >= closeHour and strategy.position_size != 0
             strategy.close_all(comment="EOD flatten")
 
 // ─── Cycle reset after exit ───
-// Increment cycles. Block further entries today only if (a) we've hit the
-// per-day cap, or (b) EOD flatten just fired. Otherwise leave the door open
-// for the standard L1 touch block to re-fire on a fresh prev_H/prev_L touch.
 if strategy.position_size == 0 and strategy.position_size[1] != 0
     cyclesToday := cyclesToday + 1
     eodForced = useEodFlatten and utcH >= closeHour
@@ -455,22 +390,18 @@ plot(strategy.position_size != 0 and not na(worstEntryPx)
      ? (strategy.position_size > 0 ? slLongPx : slShortPx) : na,
      "Active SL", color=color.new(color.red, 20), style=plot.style_linebr, linewidth=2)
 
-// Active TP — shows where TP currently sits (jumps to post-DCA target after DCA fires in hybrid mode)
 plot(strategy.position_size != 0 and not na(firstEntryPx)
      ? (strategy.position_size > 0 ? tpLongPx : tpShortPx) : na,
      "Active TP", color=color.new(color.aqua, 0), style=plot.style_linebr, linewidth=2)
 
-// Avg entry — shows where the cycle's weighted avg entry sits (visual reference)
 plot(strategy.position_size != 0 and not na(avgEntryPx) ? avgEntryPx : na,
      "Avg Entry", color=color.new(color.yellow, 30), style=plot.style_linebr, linewidth=1)
 
-// 1h EMA plotted on chart for visual bias reference
 plot(hourEma, "1h EMA", color=color.new(color.purple, 20), linewidth=2)
 
 plotshape(l1LongOk,  "L1",  shape.triangleup,   location.belowbar, color.green, size=size.small)
 plotshape(l1ShortOk, "S1",  shape.triangledown, location.abovebar, color.red,   size=size.small)
 
-// Divergence markers — diamonds at the pivot bar where divergence fires
 plotshape(useRsiDivergence and bullishDivFired, "Bull div", shape.diamond, location.belowbar, color.lime,   size=size.tiny, offset=-divPivotR)
 plotshape(useRsiDivergence and bearishDivFired, "Bear div", shape.diamond, location.abovebar, color.orange, size=size.tiny, offset=-divPivotR)
 
@@ -484,7 +415,7 @@ if barstate.islast and wrongTf
 // Dashboard
 if barstate.islast
     var table dash = table.new(position.top_right, 2, 14, border_width=1)
-    table.cell(dash, 0, 0, "S/R DCA Day", bgcolor=color.gray, text_color=color.white)
+    table.cell(dash, 0, 0, "Adaptive S/R", bgcolor=color.gray, text_color=color.white)
     table.cell(dash, 1, 0, "5m", bgcolor=color.teal, text_color=color.white)
     table.cell(dash, 0, 1, "EOD")
     table.cell(dash, 1, 1, useEodFlatten ? str.tostring(closeHour) + ":00 UTC" : "OFF", text_color=useEodFlatten ? color.green : color.gray)
