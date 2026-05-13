@@ -282,18 +282,23 @@ def _query_binance_position(env_name="testnet"):
     return out
 
 
-def _query_paper_position():
+def _query_paper_position(state_subdir='paper', state_filename='state_paper.json', balance_key='paper_balance'):
     """Return a synthetic 'binance position' shape for the dashboard built
-    from state_paper.json + mainnet ticker. Paper bot has no real exchange
-    position; this lets the dashboard reuse its existing rendering code.
+    from a paper bot's state.json + mainnet ticker. Paper bots have no real
+    exchange position; this lets the dashboard reuse its rendering code.
 
-    Cached for 1 second to absorb dashboard polling.
+    Defaults to V2.2 paper bot (data/paper/state_paper.json).
+    For div-flip pass state_subdir='paper_divflip', state_filename='state.json',
+    balance_key='balance'.
+
+    Cached for 1 second per (subdir) key to absorb dashboard polling.
     """
-    cache = getattr(_query_paper_position, "_cache", None)
+    cache_key = f"_cache_{state_subdir}"
+    cache = getattr(_query_paper_position, cache_key, None)
     if cache and time.time() - cache["t"] < 1.0:
         return cache["v"]
 
-    state_file = os.path.join(BOT_DIR, 'data', 'paper', 'state_paper.json')
+    state_file = os.path.join(BOT_DIR, 'data', state_subdir, state_filename)
     state = {}
     if os.path.exists(state_file):
         try:
@@ -329,9 +334,9 @@ def _query_paper_position():
             "notional": abs(qty) * entry, "markImplied": mark,
         }
 
-    paper_balance = float(state.get("paper_balance", 5000.0))
+    paper_balance = float(state.get(balance_key, state.get("balance", 5000.0)))
     out = {
-        "env": "paper",
+        "env": state_subdir,
         "wallet_balance": paper_balance,
         "unrealized_pnl": pos["uPnL"] if pos else 0.0,
         "margin_balance": paper_balance + (pos["uPnL"] if pos else 0.0),
@@ -342,7 +347,7 @@ def _query_paper_position():
         "last_trade": last,
         "ts": time.time(),
     }
-    _query_paper_position._cache = {"t": time.time(), "v": out}
+    setattr(_query_paper_position, cache_key, {"t": time.time(), "v": out})
     return out
 
 
@@ -479,6 +484,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/bot/day/binance':
             if env_dir == 'paper':
                 return self._json_response(_query_paper_position())
+            if env_dir == 'paper_divflip':
+                return self._json_response(_query_paper_position(
+                    state_subdir='paper_divflip',
+                    state_filename='state.json',
+                    balance_key='balance',
+                ))
             return self._json_response(_query_binance_position())
 
         # Dashboard + static files are public (read-only)
