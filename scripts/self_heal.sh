@@ -1,12 +1,13 @@
 #!/bin/bash
 # self_heal.sh — Runs every 10 minutes via cron
-# Checks: (1) dashboard server alive, (2) bot cron fired recently
-# Restarts the dashboard server if down; logs an alert if bot is stale
+# Checks: (1) dashboard server alive, (2) both paper bots fired recently
+# Restarts the dashboard server if down; logs an alert if any bot is stale
 
 set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
-DATA_DIR="$BOT_DIR/data/paper"  # paper bot replaced testnet bot 2026-05-06
+SR_DATA_DIR="$BOT_DIR/data/paper"           # V2.2 S/R paper bot
+DIVFLIP_DATA_DIR="$BOT_DIR/data/paper_divflip"  # Divergence-Flip paper bot
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -37,27 +38,42 @@ if [ "$SERVER_OK" -ne 1 ]; then
     fi
 fi
 
-# ── Check 2: Paper bot cron fired in last 15 min ──────────────────
-# Paper bot writes its own log via Python's FileHandler, so check that.
-BOT_LOG="$DATA_DIR/bot_paper.log"
-AGE=99999
-if [ -f "$BOT_LOG" ]; then
-    LAST_MOD=$(stat -c %Y "$BOT_LOG" 2>/dev/null || stat -f %m "$BOT_LOG" 2>/dev/null)
-    NOW=$(date +%s)
-    AGE=$((NOW - LAST_MOD))
-    if [ "$AGE" -gt 900 ]; then  # 15 min
-        log "WARN: paper bot log stale ($((AGE/60)) min old) — check crontab"
+# ── check_bot: log staleness + open-position alert for a paper bot ──
+# Args: $1=label  $2=log_path  $3=state_path
+check_bot() {
+    local label="$1"
+    local bot_log="$2"
+    local state_file="$3"
+    local age=99999
+    if [ -f "$bot_log" ]; then
+        local last_mod
+        last_mod=$(stat -c %Y "$bot_log" 2>/dev/null || stat -f %m "$bot_log" 2>/dev/null)
+        local now
+        now=$(date +%s)
+        age=$((now - last_mod))
+        if [ "$age" -gt 900 ]; then  # 15 min
+            log "WARN: $label bot log stale ($((age/60)) min old) — check crontab"
+        fi
+    else
+        log "WARN: $label bot log missing: $bot_log"
     fi
-fi
+    # Open-position alert. awk's c+0 returns 0 when no matches (avoids the
+    # "grep -c || echo 0" trap where grep prints 0 on no-match exit 1, then
+    # echo 0 prints another → "0\n0" breaks integer compare).
+    if [ -f "$state_file" ]; then
+        local has_pos
+        has_pos=$(awk '/"side":/{c++} END{print c+0}' "$state_file" 2>/dev/null)
+        : "${has_pos:=0}"
+        if [ "$has_pos" -gt 0 ] && [ "$age" -gt 900 ]; then
+            log "ALERT: $label bot has open position but cron stale >15min"
+        fi
+    fi
+}
 
-# ── Check 3: Position sanity ──────────────────────────────────────
-# If state_paper.json has an open position but the bot hasn't ran recently,
-# flag it — could indicate a held position with no monitoring.
-if [ -f "$DATA_DIR/state_paper.json" ]; then
-    HAS_POS=$(grep -c '"side":' "$DATA_DIR/state_paper.json" 2>/dev/null || echo 0)
-    if [ "$HAS_POS" -gt 0 ] && [ "$AGE" -gt 900 ]; then
-        log "ALERT: paper bot has open position but cron stale >15min"
-    fi
-fi
+# ── Check 2: V2.2 S/R paper bot ───────────────────────────────────
+check_bot "V2.2 S/R" "$SR_DATA_DIR/bot_paper.log" "$SR_DATA_DIR/state_paper.json"
+
+# ── Check 3: Divergence-Flip paper bot ────────────────────────────
+check_bot "Div-Flip" "$DIVFLIP_DATA_DIR/bot.log" "$DIVFLIP_DATA_DIR/state.json"
 
 exit 0
