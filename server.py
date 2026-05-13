@@ -325,13 +325,25 @@ def _query_paper_position(state_subdir='paper', state_filename='state_paper.json
     if pos_dict:
         side = pos_dict.get("side", "")
         qty = float(pos_dict.get("qty_total", 0))
-        entry = float(pos_dict.get("first_entry", 0))
-        # Synthetic uPnL based on mainnet ticker (matches what bot sees)
-        upnl = (mark - entry) * qty if side == "LONG" else (entry - mark) * qty
+        first_entry = float(pos_dict.get("first_entry", 0))
+        # Compute weighted avg entry from per-leg entries. PnL must use avg
+        # (not first_entry) so post-DCA losses don't get over-reported by the
+        # better-priced second leg being ignored.
+        entries = pos_dict.get("entries") or [{"px": first_entry, "qty": qty}]
+        total_q = sum(float(e.get("qty", 0)) for e in entries) or qty
+        avg_entry = (sum(float(e.get("px", 0)) * float(e.get("qty", 0)) for e in entries) / total_q) if total_q > 0 else first_entry
+        worst_entry = float(pos_dict.get("worst_entry", first_entry))
+        # Synthetic uPnL based on avg entry × total qty
+        upnl = (mark - avg_entry) * qty if side == "LONG" else (avg_entry - mark) * qty
         pos = {
-            "side": side, "qty": abs(qty), "entry": entry, "uPnL": upnl,
+            "side": side, "qty": abs(qty),
+            "entry": avg_entry,           # show avg as the displayed "entry" post-DCA
+            "first_entry": first_entry,   # original L1 fill (for chart marker)
+            "worst_entry": worst_entry,   # L2 fill price post-DCA
+            "filled": int(pos_dict.get("filled") or len(entries)),
+            "uPnL": upnl,
             "leverage": 2, "marginType": "isolated", "isolatedWallet": 0.0,
-            "notional": abs(qty) * entry, "markImplied": mark,
+            "notional": abs(qty) * avg_entry, "markImplied": mark,
         }
 
     paper_balance = float(state.get(balance_key, state.get("balance", 5000.0)))

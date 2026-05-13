@@ -490,14 +490,21 @@ function renderPosition(price){
   else { $('zoneLeft').textContent = 'LOSS (SL)'; $('zoneRight').textContent = 'PROFIT (TP)'; }
 
   // Price scale: linear position from min to max of all relevant levels.
-  const dca = p.filled < 2 && p.worstEntry > 0
-    ? (p.side === 'LONG' ? p.worstEntry * 0.99 : p.worstEntry * 1.01) : null;
+  // Pre-DCA: show projected DCA target. Post-DCA: show actual L2 fill price
+  // (worstEntry) so the user can see the second leg actually filled.
+  const dcaSpacing = STRATEGY === 'divflip' ? 0.006 : 0.0085;
+  const dcaTargetPrice = p.worstEntry > 0
+    ? (p.side === 'LONG' ? p.worstEntry * (1 - dcaSpacing) : p.worstEntry * (1 + dcaSpacing))
+    : null;
+  const dcaPrice  = p.filled >= 2 ? p.worstEntry : dcaTargetPrice;
+  const dcaLabel  = p.filled >= 2 ? 'L2' : 'DCA';
+  const entryLabel = p.filled >= 2 ? 'L1' : 'Entry';
   const levels = [
-    {key:'tp',    name:'TP',    price: p.prevMid},
-    {key:'entry', name:'Entry', price: p.entry},
-    {key:'dca',   name:'DCA',   price: dca},
-    {key:'sl',    name:'SL',    price: p.sl},
-    {key:'mark',  name:'Mark',  price: mark},
+    {key:'tp',    name:'TP',        price: p.prevMid},
+    {key:'entry', name: entryLabel, price: p.entry},
+    {key:'dca',   name: dcaLabel,   price: dcaPrice},
+    {key:'sl',    name:'SL',        price: p.sl},
+    {key:'mark',  name:'Mark',      price: mark},
   ].filter(l => l.price && l.price > 0);
 
   const prices = levels.map(l => l.price);
