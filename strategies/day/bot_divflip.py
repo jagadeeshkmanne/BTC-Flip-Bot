@@ -200,6 +200,18 @@ def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
     qty = round(qty, 3)
     if qty <= 0:
         return False
+    # Leverage cap guard — total notional (existing + new leg) must not exceed
+    # balance × LEVERAGE × 0.95. Protects against over-leverage when DCA_LEVELS
+    # changes mid-position (e.g., 2 → 3): existing legs were sized for the OLD
+    # per-leg split, so adding a new leg blindly would push total > cap.
+    max_total_qty = (balance * 0.95 * LEVERAGE) / dca_trigger
+    if pos["qty_total"] + qty > max_total_qty:
+        remaining = max_total_qty - pos["qty_total"]
+        if remaining < 0.001:  # below BTCUSDT step
+            log.info(f"  DCA L{pos['filled']+1} skipped — leverage cap reached "
+                     f"(total {pos['qty_total']:.3f} ≈ max {max_total_qty:.3f})")
+            return False
+        qty = round(remaining, 3)  # partial leg to top up to the cap
     fees = dca_trigger * qty * COMMISSION_PCT
     state["balance"] -= fees
     pos["entries"].append({"px": dca_trigger, "qty": qty})

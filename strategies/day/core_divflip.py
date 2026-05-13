@@ -28,8 +28,8 @@ from core import build_features, detect_divergence  # noqa: F401
 LEVERAGE       = 2.0
 RISK_PCT       = 0.06
 
-DCA_LEVELS     = 2
-DCA_SPACING    = 0.006        # 0.6% adverse triggers DCA
+DCA_LEVELS     = 3
+DCA_SPACING    = 0.004        # 0.4% adverse triggers each DCA leg (3 levels span ~0.8% from L1)
 SL_FROM_WORST  = 0.01         # 1% below worst entry (tighter than V2.2's 2%)
 TP_FROM_AVG_PRE_DCA  = 0.007   # 0.7% from avg entry pre-DCA — ~$33 net win on 1 leg
 TP_FROM_AVG_POST_DCA = 0.0035  # 0.35% from avg entry post-DCA — ~$33 net win on 2 legs (same $ at half the move)
