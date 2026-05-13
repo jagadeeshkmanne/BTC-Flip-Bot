@@ -193,6 +193,10 @@
     <span class="brand-name">BTC Day Bot</span>
     <span class="brand-tag" id="brandTag">Paper · Mainnet · 5m S/R DCA</span>
   </div>
+  <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
+    <option value="sr_dca">V2.2 S/R DCA</option>
+    <option value="divflip">Divergence-Flip</option>
+  </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
 
@@ -324,6 +328,12 @@ const fmtPct = v => (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
 const isT = v => v === true || v === 'True' || v === 'true';
 const START_BALANCE = 5000;
 
+// ── URL params parsed early so other code can branch on them ──────
+// URL_ENV defaults to mainnet (paper bot's data source); ?env=testnet for legacy view.
+const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
+// STRATEGY: ?strategy=divflip routes to the Divergence-Flip paper bot.
+const STRATEGY = new URLSearchParams(location.search).get('strategy') === 'divflip' ? 'divflip' : 'sr_dca';
+
 // Entry conditions — V2: Touch + Volume + RSI Divergence (3 per side).
 // Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
 // is encoded into the dict key by the bot. Falls back to 1.1× (V2 default).
@@ -379,16 +389,30 @@ const liveTouchOk = (d, side) => {
   if (side === 'LONG')  return px <= lvl * 1.0005 && px > lvl * 0.99;
   return px >= lvl * 0.9995 && px < lvl * 1.01;
 };
-const LONG_CONDS = [
+// V2.2 S/R conditions (3 per side): Touch + Volume + Divergence (AND-filter).
+const SR_LONG_CONDS = [
   {key: 'Touch prev_L',     check: d => liveTouchOk(d, 'LONG'),                 val: d => fmtTouchDist(d, 'LONG')},
   {key: 'Volume ≥ 1.1× avg',check: d => isT(d.conditions?.[volKey(d)]),         val: d => fmtVolRatio(d)},
   {key: 'Bull div fresh',   check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
 ];
-const SHORT_CONDS = [
+const SR_SHORT_CONDS = [
   {key: 'Touch prev_H',     check: d => liveTouchOk(d, 'SHORT'),                val: d => fmtTouchDist(d, 'SHORT')},
   {key: 'Volume ≥ 1.1× avg',check: d => isT(d.conditions?.[volKey(d)]),         val: d => fmtVolRatio(d)},
   {key: 'Bear div fresh',   check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
 ];
+
+// Divergence-flip conditions: just freshness of the divergence pivot.
+// No S/R touch, no volume requirement — div firing IS the signal.
+const DIVFLIP_LONG_CONDS = [
+  {key: 'Bull div fresh (≤5 bars)', check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
+];
+const DIVFLIP_SHORT_CONDS = [
+  {key: 'Bear div fresh (≤5 bars)', check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
+];
+
+// Pick the right set based on the URL ?strategy= param.
+const LONG_CONDS  = STRATEGY === 'divflip' ? DIVFLIP_LONG_CONDS  : SR_LONG_CONDS;
+const SHORT_CONDS = STRATEGY === 'divflip' ? DIVFLIP_SHORT_CONDS : SR_SHORT_CONDS;
 
 // ── State caches (used by both refresh() and live WS updates) ───
 let positionSnapshot = null;
@@ -603,32 +627,44 @@ function renderSetup(status){
   // countdown — RSI / volume / condition rows are irrelevant since we're not
   // hunting until 00:00 UTC tomorrow regardless of price action.
   const _utcDateStr = (d => `${d.getUTCFullYear()}-${(d.getUTCMonth()+1).toString().padStart(2,'0')}-${d.getUTCDate().toString().padStart(2,'0')}`)(new Date());
-  const _cycleDoneToday = (status.cycle_closed_day === _utcDateStr) ||
-    (status.cycle_closed_day && new Date(status.cycle_closed_day).toDateString() === new Date().toDateString());
+  // Div-flip has no 1-cycle-per-day cap — never "cycle done"
+  const _cycleDoneToday = STRATEGY !== 'divflip' && (
+    (status.cycle_closed_day === _utcDateStr) ||
+    (status.cycle_closed_day && new Date(status.cycle_closed_day).toDateString() === new Date().toDateString())
+  );
   $('setupCard').classList.toggle('cycle-done', _cycleDoneToday);
   if (waitingEl && !_cycleDoneToday) {
     const reasons = [];
-    // Check time window (UTC < 20)
-    const utcHr = new Date().getUTCHours();
-    if (utcHr >= 20) reasons.push(`outside trading window (${utcHr}:00 UTC ≥ 20:00 cutoff)`);
-    // Volume — V2 threshold is 1.1×
-    const volRatio = ind.vol && ind.vol_avg ? ind.vol/ind.vol_avg : null;
-    if (volRatio !== null && volRatio < 1.1) reasons.push(`volume ${volRatio.toFixed(2)}× < 1.1× required`);
-    // V2: divergence freshness
     const bullAge = ind.bars_since_bull_div;
     const bearAge = ind.bars_since_bear_div;
-    const longTouch  = isT(condData.conditions?.['Touch prev low']);
-    const shortTouch = isT(condData.conditions?.['Touch prev high']);
-    if (longTouch && (bullAge == null || bullAge > 20)) reasons.push(`bull div stale (${bullAge != null && bullAge < 9999 ? bullAge + 'b' : 'none'} vs ≤20b for LONG)`);
-    if (shortTouch && (bearAge == null || bearAge > 20)) reasons.push(`bear div stale (${bearAge != null && bearAge < 9999 ? bearAge + 'b' : 'none'} vs ≤20b for SHORT)`);
-    // Touch — closest level
-    if (ind.prev_H && ind.prev_L && ind.price) {
-      const distToH = ((ind.prev_H - ind.price) / ind.price) * 100;
-      const distToL = ((ind.price - ind.prev_L) / ind.price) * 100;
-      const touchLOk = condData.conditions['Touch prev low'];
-      const touchHOk = condData.conditions['Touch prev high'];
-      if (!touchLOk && !touchHOk) {
-        reasons.push(`price not at S/R: prev_L $${ind.prev_L.toFixed(0)} (${distToL >= 0 ? '−' : '+'}${Math.abs(distToL).toFixed(2)}% away) · prev_H $${ind.prev_H.toFixed(0)} (+${distToH.toFixed(2)}% away)`);
+
+    if (STRATEGY === 'divflip') {
+      // Div-flip: only divergence freshness matters (no S/R, no volume, no EOD).
+      const freshLimit = 5;  // matches DIV_FRESH_BARS in core_divflip.py
+      const bullFresh = bullAge != null && bullAge !== 9999 && bullAge <= freshLimit;
+      const bearFresh = bearAge != null && bearAge !== 9999 && bearAge <= freshLimit;
+      if (!bullFresh && !bearFresh) {
+        const ageStr = (a) => (a != null && a < 9999) ? `${a}b` : 'never';
+        reasons.push(`no fresh divergence (bull: ${ageStr(bullAge)} ago, bear: ${ageStr(bearAge)} ago — need ≤${freshLimit}b)`);
+      }
+    } else {
+      // V2.2 S/R logic
+      const utcHr = new Date().getUTCHours();
+      if (utcHr >= 20) reasons.push(`outside trading window (${utcHr}:00 UTC ≥ 20:00 cutoff)`);
+      const volRatio = ind.vol && ind.vol_avg ? ind.vol/ind.vol_avg : null;
+      if (volRatio !== null && volRatio < 1.1) reasons.push(`volume ${volRatio.toFixed(2)}× < 1.1× required`);
+      const longTouch  = isT(condData.conditions?.['Touch prev low']);
+      const shortTouch = isT(condData.conditions?.['Touch prev high']);
+      if (longTouch && (bullAge == null || bullAge > 20)) reasons.push(`bull div stale (${bullAge != null && bullAge < 9999 ? bullAge + 'b' : 'none'} vs ≤20b for LONG)`);
+      if (shortTouch && (bearAge == null || bearAge > 20)) reasons.push(`bear div stale (${bearAge != null && bearAge < 9999 ? bearAge + 'b' : 'none'} vs ≤20b for SHORT)`);
+      if (ind.prev_H && ind.prev_L && ind.price) {
+        const distToH = ((ind.prev_H - ind.price) / ind.price) * 100;
+        const distToL = ((ind.price - ind.prev_L) / ind.price) * 100;
+        const touchLOk = condData.conditions['Touch prev low'];
+        const touchHOk = condData.conditions['Touch prev high'];
+        if (!touchLOk && !touchHOk) {
+          reasons.push(`price not at S/R: prev_L $${ind.prev_L.toFixed(0)} (${distToL >= 0 ? '−' : '+'}${Math.abs(distToL).toFixed(2)}% away) · prev_H $${ind.prev_H.toFixed(0)} (+${distToH.toFixed(2)}% away)`);
+        }
       }
     }
     // Guard: if conditions object is empty (status file missing or fresh), don't
@@ -649,10 +685,11 @@ function renderSetup(status){
 // ── Main refresh — pulls bot state every 15s via HTTP ─────────
 async function refresh(){
   try {
+    const stratParam = STRATEGY === 'divflip' ? '?strategy=divflip' : '';
     const [r1, r2, r3] = await Promise.all([
-      fetch('/api/bot/day/state'),
-      fetch('/api/bot/day/status'),
-      fetch('/api/bot/day/binance').catch(() => null),  // live truth proxy
+      fetch('/api/bot/day/state' + stratParam),
+      fetch('/api/bot/day/status' + stratParam),
+      fetch('/api/bot/day/binance' + stratParam).catch(() => null),
     ]);
     const state = await r1.json();
     const status = await r2.json();
@@ -992,15 +1029,30 @@ function updateMark(price, bar){
 // PnL on Binance UI uses last-trade — matching the UI is what users want.
 let currentWs = null, reconnectTimer = null, lastWsMsgTs = 0, wsMsgCount = 0, restCount = 0;
 let lastBar = null; // most recent kline cache, used to compute change %
-// Default = mainnet WS (paper bot trades on mainnet data feed). Use ?env=testnet
-// only for legacy testnet-bot view. After 2026-05-06 paper migration the
-// testnet bot is stopped; testnet view will mostly show empty data.
-const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
+// URL_ENV and STRATEGY are declared at the top of this script (line ~330).
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
-// Update brand tag to reflect actual env (paper bot uses mainnet feed).
+// Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
+  const stratLabel = STRATEGY === 'divflip' ? 'Divergence-Flip' : '5m S/R DCA';
   const tag = document.getElementById('brandTag');
-  if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · 5m S/R DCA';
+  if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
+  // Update the setup subtitle based on strategy
+  const sub = document.getElementById('setupSub');
+  if (sub) {
+    sub.textContent = STRATEGY === 'divflip'
+      ? 'Fires on every fresh RSI divergence (≤5 bars). No S/R, no volume filter. Flips on opposite divergence. TP 0.7%/0.35% (pre/post-DCA) from avg, SL 1% from worst. No EOD.'
+      : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
+  }
+  const sel = document.getElementById('strategySelector');
+  if (sel) {
+    sel.value = STRATEGY;
+    sel.addEventListener('change', () => {
+      const u = new URL(location.href);
+      if (sel.value === 'divflip') u.searchParams.set('strategy', 'divflip');
+      else u.searchParams.delete('strategy');
+      location.href = u.toString();
+    });
+  }
 });
 const WS_URL  = `${WS_HOST}/stream?streams=btcusdt@kline_5m/btcusdt@aggTrade`;
 const REST_HOST = URL_ENV === 'mainnet' ? 'https://fapi.binance.com' : 'https://testnet.binancefuture.com';

@@ -425,14 +425,30 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         # ── Bot API (public, no auth). Day bot is the only active strategy. ──
-        # Default routes to PAPER bot (data/paper/) since 2026-05-06. Use
-        # ?env=testnet to access legacy testnet bot data (mostly empty after
-        # paper migration).
-        env_q = parsed.query.split('env=')[-1].split('&')[0] if 'env=' in parsed.query else 'paper'
-        env_dir = 'testnet' if env_q == 'testnet' else 'paper'
-        state_filename = 'state_day.json' if env_dir == 'testnet' else 'state_paper.json'
-        status_filename = 'status_day.json' if env_dir == 'testnet' else 'status_paper.json'
-        log_filename = 'bot_day.log' if env_dir == 'testnet' else 'bot_paper.log'
+        # Routes by ?strategy= (preferred) or legacy ?env=:
+        #   ?strategy=sr_dca  → V2.2 S/R paper bot (data/paper/state_paper.json) — default
+        #   ?strategy=divflip → Divergence-flip paper bot (data/paper_divflip/state.json)
+        #   ?env=testnet      → legacy testnet bot data (mostly empty after paper migration)
+        from urllib.parse import parse_qs
+        qs = parse_qs(parsed.query)
+        strategy_q = (qs.get('strategy', ['']) or [''])[0]
+        env_q = (qs.get('env', ['']) or [''])[0]
+
+        if strategy_q == 'divflip':
+            env_dir = 'paper_divflip'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
+        elif env_q == 'testnet':
+            env_dir = 'testnet'
+            state_filename = 'state_day.json'
+            status_filename = 'status_day.json'
+            log_filename = 'bot_day.log'
+        else:
+            env_dir = 'paper'
+            state_filename = 'state_paper.json'
+            status_filename = 'status_paper.json'
+            log_filename = 'bot_paper.log'
 
         if path == '/api/bot/day/state':
             sf = os.path.join(BOT_DIR, 'data', env_dir, state_filename)
