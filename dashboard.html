@@ -83,9 +83,10 @@
   .scale-tick.sl{background:var(--red)}
   .scale-tick.entry{background:var(--gold)}
   .scale-tick.dca{background:var(--orange)}
-  .scale-labels-top{position:relative;height:34px;margin-bottom:8px}
+  .scale-labels-top{position:relative;height:68px;margin-bottom:8px}
   .scale-labels{position:relative;height:36px;margin-top:10px}
-  .scale-lbl{position:absolute;transform:translateX(-50%);text-align:center;white-space:nowrap}
+  .scale-lbl{position:absolute;top:0;transform:translateX(-50%);text-align:center;white-space:nowrap}
+  .scale-lbl.tier-2{top:34px}
   .scale-lbl-name{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;line-height:1}
   .scale-lbl-price{font-size:11px;font-weight:700;margin-top:2px;color:var(--text-bright)}
   .scale-lbl-pct{font-size:10px;color:var(--muted);margin-top:1px;font-weight:600}
@@ -548,26 +549,47 @@ function renderPosition(price){
   //   BOTTOM:     Mark only (moves with price; needs to be visually distinct)
   const trackEl = $('scaleTrack');
   Array.from(trackEl.querySelectorAll('.scale-tick')).forEach(n => n.remove());
-  let topHtml = '', bottomHtml = '';
+  let bottomHtml = '';
+  // Top labels: TP, Entry, DCA, SL — collision-staggered to a second tier when
+  // two adjacent labels would overlap horizontally. Mark stays on the bottom.
+  const topLevels = levels.filter(l => l.key !== 'mark');
+  // Tick + bottom-Mark rendering pass.
   levels.forEach(l => {
     if (l.key === 'mark') {
       $('scaleMark').style.left = pct(l.price) + '%';
+      const distPct = ((l.price - mark) / mark) * 100;
+      bottomHtml += `
+        <div class="scale-lbl mark" style="left:${pct(l.price)}%">
+          <div class="scale-lbl-name">${l.name}</div>
+          <div class="scale-lbl-price num">${fmt$0(l.price)}</div>
+          <div class="scale-lbl-pct num">NOW</div>
+        </div>`;
     } else {
       const tick = document.createElement('div');
       tick.className = 'scale-tick ' + l.key;
       tick.style.left = pct(l.price) + '%';
       trackEl.appendChild(tick);
     }
+  });
+  // Stagger pass: sort top labels by horizontal position, push to tier-2 when
+  // a label sits within MIN_GAP_PCT of the most recent tier-1 neighbor.
+  // 8% gap ≈ 80px on a 1000px container — enough for the widest "$80,887" labels.
+  const sorted = topLevels.map(l => ({...l, leftPct: pct(l.price)}))
+                          .sort((a, b) => a.leftPct - b.leftPct);
+  const MIN_GAP_PCT = 8;
+  let lastTier1Pct = -Infinity;
+  let topHtml = '';
+  sorted.forEach(l => {
+    const tier2 = (l.leftPct - lastTier1Pct) < MIN_GAP_PCT;
+    if (!tier2) lastTier1Pct = l.leftPct;
     const distPct = ((l.price - mark) / mark) * 100;
-    const distStr = l.key === 'mark' ? 'NOW' : (distPct >= 0 ? '+' : '') + distPct.toFixed(2) + '%';
-    const html = `
-      <div class="scale-lbl ${l.key}" style="left:${pct(l.price)}%">
+    const distStr = (distPct >= 0 ? '+' : '') + distPct.toFixed(2) + '%';
+    topHtml += `
+      <div class="scale-lbl ${l.key}${tier2 ? ' tier-2' : ''}" style="left:${l.leftPct}%">
         <div class="scale-lbl-name">${l.name}</div>
         <div class="scale-lbl-price num">${fmt$0(l.price)}</div>
         <div class="scale-lbl-pct num">${distStr}</div>
       </div>`;
-    if (l.key === 'mark') bottomHtml += html;
-    else topHtml += html;
   });
   $('scaleLabelsTop').innerHTML = topHtml;
   $('scaleLabels').innerHTML = bottomHtml;
