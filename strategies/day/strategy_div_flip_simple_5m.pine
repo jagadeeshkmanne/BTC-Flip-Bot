@@ -58,8 +58,17 @@ slFromWorst = input.float(2.0, "SL from WORST entry (%)", minval=0.5, maxval=5.0
 // ─── BE ───
 grpBE = "🎯 Breakeven SL"
 useBE      = input.bool(true, "Enable BE-stop", group=grpBE)
-beTrigger  = input.float(0.4,  "BE arms at +fav from L1 (%)", minval=0.1, maxval=3.0, step=0.1, group=grpBE) / 100
-beBuffer   = input.float(0.25, "BE buffer (%)",               minval=0.0, maxval=1.0, step=0.05, group=grpBE) / 100
+beTrigger  = input.float(0.2,  "BE arms at +fav from L1 (%)", minval=0.1, maxval=3.0, step=0.05, group=grpBE,
+     tooltip="Lower trigger = more trades save themselves at small profit. 0.2% catches the marginal moves that would otherwise fall back to SL.") / 100
+beBuffer   = input.float(0.15, "BE buffer (%)",               minval=0.0, maxval=1.0, step=0.05, group=grpBE,
+     tooltip="When BE arms, SL ratchets to firstEntry ± this%. Net after fees: ~0.07% per leg. 0.15 keeps exit just above breakeven.") / 100
+
+// ─── Cooldown after SL ───
+grpCool = "❄️ Cooldown after SL"
+useCooldown = input.bool(true, "Block entries for N bars after SL", group=grpCool,
+     tooltip="Prevents revenge trades when divs fire repeatedly in a trend. Most back-to-back SL clusters happen within 30 min.")
+cooldownBars = input.int(6, "Cooldown bars after SL", minval=1, maxval=50, group=grpCool,
+     tooltip="6 bars = 30 min on 5m. Long enough to let market state change before re-entering.")
 
 // ─── RSI Divergence ───
 grpDiv = "📉 RSI Divergence"
@@ -84,7 +93,10 @@ useTrendFilter = input.bool(false, "1h EMA trend filter", group=grpQuality,
 trendEmaLen  = input.int(20, "1h EMA length", minval=10, maxval=200, group=grpQuality)
 
 // ─── Flip ───
-useFlip = input.bool(true, "Close + reverse on opposite divergence", group="🔄 Flip")
+grpFlip = "🔄 Flip"
+useFlip = input.bool(true, "Close + reverse on opposite divergence", group=grpFlip)
+smartFlip = input.bool(true, "SMART: only flip if NOT in loss", group=grpFlip,
+     tooltip="Skip flip if current trade is underwater. Prevents 'losing LONG → flip → losing SHORT' chains in choppy trends. When OFF, flips on every opposite signal regardless of P&L.")
 
 // ═════ Indicators ═════
 rsiVal = ta.rsi(close, rsiPeriod)
@@ -156,9 +168,20 @@ avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
 // ─── Equal-size sizing ───
 perLevelQty = strategy.equity * 0.95 * leverageInput / close / dcaLevels
 
+// ─── SL cooldown tracking ───
+// When the previous trade closed at a loss, block new entries for N bars.
+// Prevents back-to-back SL hits when divs fire repeatedly in a trend regime.
+var int cooldownUntilBar = 0
+justClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+if justClosed and useCooldown and strategy.closedtrades > 0
+    lastPnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if lastPnl < 0
+        cooldownUntilBar := bar_index + cooldownBars
+inCooldown = useCooldown and bar_index < cooldownUntilBar
+
 // ─── L1 entry ───
-l1LongOk  = strategy.position_size == 0 and bullDivOk
-l1ShortOk = strategy.position_size == 0 and bearDivOk
+l1LongOk  = strategy.position_size == 0 and bullDivOk and not inCooldown
+l1ShortOk = strategy.position_size == 0 and bearDivOk and not inCooldown
 
 if l1LongOk and perLevelQty > 0
     strategy.entry("L1", strategy.long, qty=perLevelQty)
@@ -231,11 +254,13 @@ if strategy.position_size < 0 and not na(slShortPx) and not na(tpShortPx)
     if filledCount >= 2
         strategy.exit("xS2", from_entry="S2", limit=tpShortPx, stop=slShortPx)
 
-// ─── Flip on opposite divergence ───
-if useFlip and strategy.position_size != 0
-    if strategy.position_size > 0 and bearDivOk
+// ─── Flip on opposite divergence (with smart-flip option) ───
+if useFlip and strategy.position_size != 0 and not na(firstEntryPx)
+    favNow = strategy.position_size > 0 ? (close - firstEntryPx) / firstEntryPx : (firstEntryPx - close) / firstEntryPx
+    canFlip = not smartFlip or favNow >= 0
+    if strategy.position_size > 0 and bearDivOk and canFlip
         strategy.close_all(comment="FLIP→SHORT")
-    if strategy.position_size < 0 and bullDivOk
+    if strategy.position_size < 0 and bullDivOk and canFlip
         strategy.close_all(comment="FLIP→LONG")
 
 // ─── Cycle reset ───
@@ -294,5 +319,9 @@ if barstate.islast
     table.cell(dash, 0, 8, "BE armed")
     table.cell(dash, 1, 8, beActivated ? "YES" : "—",
          text_color=beActivated ? color.new(#FFD700, 0) : color.gray)
-    table.cell(dash, 0, 9, "Equity")
-    table.cell(dash, 1, 9, "$" + str.tostring(strategy.equity, "#,###"))
+    table.cell(dash, 0, 9, "Cooldown")
+    cdRemaining = inCooldown ? (cooldownUntilBar - bar_index) : 0
+    table.cell(dash, 1, 9, inCooldown ? str.tostring(cdRemaining) + "b left" : "—",
+         text_color=inCooldown ? color.new(#FF8800, 0) : color.gray)
+    table.cell(dash, 0, 10, "Equity")
+    table.cell(dash, 1, 10, "$" + str.tostring(strategy.equity, "#,###"))
