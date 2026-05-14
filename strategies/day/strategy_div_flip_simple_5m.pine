@@ -1,0 +1,265 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────
+// Divergence-Flip SIMPLE (5m) — Fire on every fresh RSI divergence
+//
+// The original "always in market" flip strategy — no RSI level filter,
+// no martingale, equal-size DCA. Fires on EVERY fresh RSI divergence
+// (5/5 pivot). Bull div → LONG, bear div → SHORT. Opposite div = flip.
+//
+// ⚠ DESIGNED FOR: BTCUSDT perpetual · 5-minute timeframe · ONLY.
+//
+// ─── Logic ───
+//   • Entry: fresh bull div (≤5 bars) → LONG
+//            fresh bear div (≤5 bars) → SHORT
+//   • DCA: 2 levels at 0.85% spacing, equal qty per leg
+//   • TP (hybrid):
+//       - Pre-DCA: avg × (1 + 0.5%)  — single leg
+//       - Post-DCA: avg × (1 + 0.25%) — qty doubled, half the move = same $ win
+//   • SL: 2% from WORST entry (widens with DCA)
+//   • BE: arms at +0.4% favorable → SL tightens to firstEntry ± 0.25%
+//   • Flip: opposite div → close + reverse
+//   • No EOD, no time cap
+//
+// ─── Caveats ───
+//   This is the SIMPLE version — fires often, accepts every divergence.
+//   Many will be mid-range fakeouts. Expect ~50-60% WR vs ~78% with the
+//   RSI-filtered version. Higher trade count, similar or lower expectancy.
+//   Run side-by-side with the RSI-filtered version to compare.
+// ─────────────────────────────────────────────────────────────────────
+
+strategy("Divergence-Flip SIMPLE - 2 DCA Equal (5m)", overlay=true, initial_capital=5000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=95,
+     pyramiding=2, calc_on_order_fills=false, calc_on_every_tick=false,
+     process_orders_on_close=true, commission_type=strategy.commission.percent,
+     commission_value=0.04, slippage=3,
+     margin_long=0, margin_short=0)
+
+// ─── Risk ───
+grpRisk = "⚙️ Risk"
+leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5, group=grpRisk)
+
+// ─── DCA ───
+grpDCA = "📊 DCA"
+dcaLevels  = input.int(2, "DCA levels", minval=1, maxval=3, group=grpDCA)
+dcaSpacing = input.float(0.85, "DCA spacing (%)", minval=0.1, maxval=2.0, step=0.05, group=grpDCA,
+     tooltip="Each leg fires at worst_entry × (1 ∓ this%). Equal qty per leg.") / 100
+
+// ─── Take Profit (hybrid) ───
+grpTP = "🎯 Take Profit"
+tpPreDcaPct  = input.float(0.5,  "TP pre-DCA (% from avg)",  minval=0.1, maxval=3.0, step=0.05, group=grpTP) / 100
+tpPostDcaPct = input.float(0.25, "TP post-DCA (% from avg)", minval=0.1, maxval=2.0, step=0.05, group=grpTP,
+     tooltip="Once DCA fires, qty doubles — half the move banks same $.") / 100
+
+// ─── Stop Loss ───
+grpSL = "🛡️ Stop Loss"
+slFromWorst = input.float(2.0, "SL from WORST entry (%)", minval=0.5, maxval=5.0, step=0.1, group=grpSL,
+     tooltip="SL widens with each DCA fill (anchored to worst entry, not L1).") / 100
+
+// ─── BE ───
+grpBE = "🎯 Breakeven SL"
+useBE      = input.bool(true, "Enable BE-stop", group=grpBE)
+beTrigger  = input.float(0.4,  "BE arms at +fav from L1 (%)", minval=0.1, maxval=3.0, step=0.1, group=grpBE) / 100
+beBuffer   = input.float(0.25, "BE buffer (%)",               minval=0.0, maxval=1.0, step=0.05, group=grpBE) / 100
+
+// ─── RSI Divergence ───
+grpDiv = "📉 RSI Divergence"
+rsiPeriod    = input.int(14, "RSI period",       minval=5, maxval=30, group=grpDiv)
+divPivotL    = input.int(5,  "Pivot left bars",  minval=1, maxval=10, group=grpDiv)
+divPivotR    = input.int(5,  "Pivot right bars", minval=1, maxval=10, group=grpDiv)
+divFreshBars = input.int(5,  "Divergence valid for N bars", minval=1, maxval=50, group=grpDiv,
+     tooltip="5 bars = 25 min on 5m. Tight = freshest signals only.")
+
+// ─── Flip ───
+useFlip = input.bool(true, "Close + reverse on opposite divergence", group="🔄 Flip")
+
+// ═════ Indicators ═════
+rsiVal = ta.rsi(close, rsiPeriod)
+
+priceHiPivot = ta.pivothigh(high, divPivotL, divPivotR)
+priceLoPivot = ta.pivotlow(low,  divPivotL, divPivotR)
+
+var float lastPHigh = na
+var float prevPHigh = na
+var float lastRAtH  = na
+var float prevRAtH  = na
+var float lastPLow  = na
+var float prevPLow  = na
+var float lastRAtL  = na
+var float prevRAtL  = na
+
+if not na(priceHiPivot)
+    prevPHigh := lastPHigh
+    prevRAtH  := lastRAtH
+    lastPHigh := priceHiPivot
+    lastRAtH  := rsiVal[divPivotR]
+
+if not na(priceLoPivot)
+    prevPLow := lastPLow
+    prevRAtL := lastRAtL
+    lastPLow := priceLoPivot
+    lastRAtL := rsiVal[divPivotR]
+
+bearishDivFired = not na(prevPHigh) and not na(priceHiPivot) and lastPHigh > prevPHigh and lastRAtH < prevRAtH
+bullishDivFired = not na(prevPLow)  and not na(priceLoPivot) and lastPLow  < prevPLow  and lastRAtL > prevRAtL
+
+var int barsSinceBearDiv = 9999
+var int barsSinceBullDiv = 9999
+barsSinceBearDiv := bearishDivFired ? 0 : barsSinceBearDiv + 1
+barsSinceBullDiv := bullishDivFired ? 0 : barsSinceBullDiv + 1
+
+bullDivOk = barsSinceBullDiv <= divFreshBars
+bearDivOk = barsSinceBearDiv <= divFreshBars
+
+// ═════ State ═════
+var float firstEntryPx = na
+var float worstEntryPx = na
+var int   filledCount  = 0
+var float cumNotional  = na
+var float cumQty       = na
+var bool  beActivated  = false
+
+avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
+
+// ─── Equal-size sizing ───
+perLevelQty = strategy.equity * 0.95 * leverageInput / close / dcaLevels
+
+// ─── L1 entry ───
+l1LongOk  = strategy.position_size == 0 and bullDivOk
+l1ShortOk = strategy.position_size == 0 and bearDivOk
+
+if l1LongOk and perLevelQty > 0
+    strategy.entry("L1", strategy.long, qty=perLevelQty)
+    firstEntryPx := close
+    worstEntryPx := close
+    cumNotional  := close * perLevelQty
+    cumQty       := perLevelQty
+    filledCount  := 1
+    beActivated  := false
+
+if l1ShortOk and perLevelQty > 0
+    strategy.entry("S1", strategy.short, qty=perLevelQty)
+    firstEntryPx := close
+    worstEntryPx := close
+    cumNotional  := close * perLevelQty
+    cumQty       := perLevelQty
+    filledCount  := 1
+    beActivated  := false
+
+// ─── DCA fills (fixed distance, equal qty) ───
+if strategy.position_size > 0 and filledCount >= 1 and filledCount < dcaLevels
+    nextDcaPx = worstEntryPx * (1 - dcaSpacing)
+    if low <= nextDcaPx
+        idStr = "L" + str.tostring(filledCount + 1)
+        strategy.entry(idStr, strategy.long, qty=perLevelQty, limit=nextDcaPx)
+        worstEntryPx := nextDcaPx
+        cumNotional  := cumNotional + nextDcaPx * perLevelQty
+        cumQty       := cumQty + perLevelQty
+        filledCount  := filledCount + 1
+
+if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
+    nextDcaPx = worstEntryPx * (1 + dcaSpacing)
+    if high >= nextDcaPx
+        idStr = "S" + str.tostring(filledCount + 1)
+        strategy.entry(idStr, strategy.short, qty=perLevelQty, limit=nextDcaPx)
+        worstEntryPx := nextDcaPx
+        cumNotional  := cumNotional + nextDcaPx * perLevelQty
+        cumQty       := cumQty + perLevelQty
+        filledCount  := filledCount + 1
+
+// ─── BE activation ───
+if useBE and not beActivated and not na(firstEntryPx) and strategy.position_size != 0
+    favLong  = (close - firstEntryPx) / firstEntryPx
+    favShort = (firstEntryPx - close) / firstEntryPx
+    if (strategy.position_size > 0 and favLong  >= beTrigger) or (strategy.position_size < 0 and favShort >= beTrigger)
+        beActivated := true
+
+// ─── TP (hybrid — uses avg, switches when DCA fires) ───
+tpPct = filledCount > 1 ? tpPostDcaPct : tpPreDcaPct
+tpLongPx  = na(avgEntryPx) ? na : avgEntryPx * (1 + tpPct)
+tpShortPx = na(avgEntryPx) ? na : avgEntryPx * (1 - tpPct)
+
+// ─── SL — worst-anchored, tightens to BE when armed ───
+slLongRaw  = na(worstEntryPx) ? na : worstEntryPx * (1 - slFromWorst)
+slShortRaw = na(worstEntryPx) ? na : worstEntryPx * (1 + slFromWorst)
+slLongBE   = na(firstEntryPx) ? na : firstEntryPx * (1 + beBuffer)
+slShortBE  = na(firstEntryPx) ? na : firstEntryPx * (1 - beBuffer)
+
+slLongPx  = useBE and beActivated and not na(slLongBE) ? math.max(slLongRaw, slLongBE) : slLongRaw
+slShortPx = useBE and beActivated and not na(slShortBE) ? math.min(slShortRaw, slShortBE) : slShortRaw
+
+// ─── Exit orders ───
+if strategy.position_size > 0 and not na(slLongPx) and not na(tpLongPx)
+    strategy.exit("xL1", from_entry="L1", limit=tpLongPx, stop=slLongPx)
+    if filledCount >= 2
+        strategy.exit("xL2", from_entry="L2", limit=tpLongPx, stop=slLongPx)
+
+if strategy.position_size < 0 and not na(slShortPx) and not na(tpShortPx)
+    strategy.exit("xS1", from_entry="S1", limit=tpShortPx, stop=slShortPx)
+    if filledCount >= 2
+        strategy.exit("xS2", from_entry="S2", limit=tpShortPx, stop=slShortPx)
+
+// ─── Flip on opposite divergence ───
+if useFlip and strategy.position_size != 0
+    if strategy.position_size > 0 and bearDivOk
+        strategy.close_all(comment="FLIP→SHORT")
+    if strategy.position_size < 0 and bullDivOk
+        strategy.close_all(comment="FLIP→LONG")
+
+// ─── Cycle reset ───
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    filledCount  := 0
+    firstEntryPx := na
+    worstEntryPx := na
+    cumNotional  := na
+    cumQty       := na
+    beActivated  := false
+
+// ═════ Visuals ═════
+plot(strategy.position_size != 0 and not na(tpLongPx)  ? (strategy.position_size > 0 ? tpLongPx  : tpShortPx)  : na,
+     "Active TP", color=color.new(color.aqua, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 and not na(slLongPx)  ? (strategy.position_size > 0 ? slLongPx  : slShortPx)  : na,
+     "Active SL", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 and not na(avgEntryPx) ? avgEntryPx : na,
+     "Avg Entry", color=color.new(color.yellow, 30), style=plot.style_linebr, linewidth=1)
+
+// Divergence pivot markers (every fresh div — no RSI filter)
+plotshape(bullDivOk and barsSinceBullDiv == 0, "Bull div", shape.diamond, location.belowbar, color.lime,   size=size.tiny, offset=-divPivotR)
+plotshape(bearDivOk and barsSinceBearDiv == 0, "Bear div", shape.diamond, location.abovebar, color.orange, size=size.tiny, offset=-divPivotR)
+
+if barstate.islast and timeframe.period != "5"
+    var table tfWarn = table.new(position.bottom_center, 1, 1, border_width=2, border_color=color.red)
+    table.cell(tfWarn, 0, 0,
+         "⚠ Chart TF is " + timeframe.period + " — designed for 5m",
+         bgcolor=color.new(color.red, 15), text_color=color.white, text_size=size.normal)
+
+// Dashboard
+if barstate.islast
+    var table dash = table.new(position.top_right, 2, 10, border_width=1)
+    table.cell(dash, 0, 0, "Div-Flip SIMPLE", bgcolor=color.gray, text_color=color.white)
+    table.cell(dash, 1, 0, "5m", bgcolor=color.teal, text_color=color.white)
+    table.cell(dash, 0, 1, "RSI now")
+    table.cell(dash, 1, 1, str.tostring(rsiVal, "#.#"))
+    bullAge = barsSinceBullDiv > 50 ? "—" : str.tostring(barsSinceBullDiv) + "b"
+    bearAge = barsSinceBearDiv > 50 ? "—" : str.tostring(barsSinceBearDiv) + "b"
+    table.cell(dash, 0, 2, "Bull / Bear age")
+    table.cell(dash, 1, 2, bullAge + " / " + bearAge,
+         text_color=(bullDivOk or bearDivOk) ? color.aqua : color.gray)
+    table.cell(dash, 0, 3, "Position")
+    table.cell(dash, 1, 3, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color=strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray)
+    table.cell(dash, 0, 4, "Avg entry")
+    table.cell(dash, 1, 4, na(avgEntryPx) ? "—" : str.tostring(avgEntryPx, "#.##"))
+    table.cell(dash, 0, 5, "Worst entry")
+    table.cell(dash, 1, 5, na(worstEntryPx) ? "—" : str.tostring(worstEntryPx, "#.##"))
+    table.cell(dash, 0, 6, "Active TP / SL")
+    tpDisp = strategy.position_size == 0 ? "—" : str.tostring(strategy.position_size > 0 ? tpLongPx : tpShortPx, "#.##")
+    slDisp = strategy.position_size == 0 ? "—" : str.tostring(strategy.position_size > 0 ? slLongPx : slShortPx, "#.##")
+    table.cell(dash, 1, 6, tpDisp + " / " + slDisp + (useBE and beActivated ? " [BE]" : ""),
+         text_color=beActivated ? color.new(#FFD700, 0) : color.aqua)
+    table.cell(dash, 0, 7, "Filled")
+    table.cell(dash, 1, 7, str.tostring(filledCount) + "/" + str.tostring(dcaLevels))
+    table.cell(dash, 0, 8, "BE armed")
+    table.cell(dash, 1, 8, beActivated ? "YES" : "—",
+         text_color=beActivated ? color.new(#FFD700, 0) : color.gray)
+    table.cell(dash, 0, 9, "Equity")
+    table.cell(dash, 1, 9, "$" + str.tostring(strategy.equity, "#,###"))
