@@ -69,6 +69,20 @@ divPivotR    = input.int(5,  "Pivot right bars", minval=1, maxval=10, group=grpD
 divFreshBars = input.int(5,  "Divergence valid for N bars", minval=1, maxval=50, group=grpDiv,
      tooltip="5 bars = 25 min on 5m. Tight = freshest signals only.")
 
+// ─── Quality Filters (optional — tune to improve WR) ───
+grpQuality = "🎯 Quality Filters (improve WR)"
+useRsiLevelFilter = input.bool(false, "Filter by RSI level at pivot", group=grpQuality,
+     tooltip="Reject divs where RSI at pivot wasn't extreme. Cuts mid-range fakeouts. Toggle ON to test.")
+rsiLongMax   = input.float(40, "Bull div: max RSI at pivot", minval=20, maxval=50, step=1, group=grpQuality,
+     tooltip="40 = moderate (lets many through); 35 = stricter; 30 = strict; 25 = very strict.")
+rsiShortMin  = input.float(60, "Bear div: min RSI at pivot", minval=50, maxval=80, step=1, group=grpQuality)
+useVolFilter = input.bool(false, "Require volume confirmation on entry", group=grpQuality,
+     tooltip="Reject entries where entry bar volume < volMult × SMA(20).")
+volMult      = input.float(1.1, "Volume multiplier", minval=0.5, maxval=3.0, step=0.1, group=grpQuality)
+useTrendFilter = input.bool(false, "1h EMA trend filter", group=grpQuality,
+     tooltip="LONG only if price > 1h EMA20 (HTF bullish). SHORT only if below. Reduces counter-trend trades.")
+trendEmaLen  = input.int(20, "1h EMA length", minval=10, maxval=200, group=grpQuality)
+
 // ─── Flip ───
 useFlip = input.bool(true, "Close + reverse on opposite divergence", group="🔄 Flip")
 
@@ -104,11 +118,30 @@ bullishDivFired = not na(prevPLow)  and not na(priceLoPivot) and lastPLow  < pre
 
 var int barsSinceBearDiv = 9999
 var int barsSinceBullDiv = 9999
+var float rsiAtLastBullPivot = na
+var float rsiAtLastBearPivot = na
 barsSinceBearDiv := bearishDivFired ? 0 : barsSinceBearDiv + 1
 barsSinceBullDiv := bullishDivFired ? 0 : barsSinceBullDiv + 1
+if bullishDivFired
+    rsiAtLastBullPivot := lastRAtL
+if bearishDivFired
+    rsiAtLastBearPivot := lastRAtH
 
-bullDivOk = barsSinceBullDiv <= divFreshBars
-bearDivOk = barsSinceBearDiv <= divFreshBars
+// Volume filter (entry bar)
+volAvg = ta.sma(volume, 20)
+volOk = not useVolFilter or (not na(volAvg) and volume >= volMult * volAvg)
+
+// 1h EMA trend filter (HTF bias)
+hourEma = request.security(syminfo.tickerid, "60", ta.ema(close, trendEmaLen)[1], lookahead=barmerge.lookahead_off)
+trendLongOk  = not useTrendFilter or (not na(hourEma) and close > hourEma)
+trendShortOk = not useTrendFilter or (not na(hourEma) and close < hourEma)
+
+// RSI level filter at pivot
+rsiBullOk = not useRsiLevelFilter or (not na(rsiAtLastBullPivot) and rsiAtLastBullPivot <= rsiLongMax)
+rsiBearOk = not useRsiLevelFilter or (not na(rsiAtLastBearPivot) and rsiAtLastBearPivot >= rsiShortMin)
+
+bullDivOk = barsSinceBullDiv <= divFreshBars and rsiBullOk and volOk and trendLongOk
+bearDivOk = barsSinceBearDiv <= divFreshBars and rsiBearOk and volOk and trendShortOk
 
 // ═════ State ═════
 var float firstEntryPx = na
