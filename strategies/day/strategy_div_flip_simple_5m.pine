@@ -2,10 +2,10 @@
 // ─────────────────────────────────────────────────────────────────────
 // Divergence-Flip LIVE (5m) — Mirrors GCP paper bot config
 //
-// TV-tuned config (100.00% WR / +72.50% / PF 582 / 7.52% DD over 103
-// trades, Apr 6 – May 14 2026). Anti-martingale 3:3:2 front-loads L1,
-// asymmetric RSI filter favors longs, pivot R=2 fires earlier, flip OFF,
-// fixed TP 1% from avg entry + wide 5% L1 SL = high hit-rate scalp.
+// TV-tuned config (+189.83% / 10.86% DD / 138 trades / 97.83% WR / PF 109
+// / Calmar 17.5, Apr 6 – May 14 2026). Mixed-shape 3:4:1.5 weights L2,
+// RSI 10 + pivot R=1 catches reversals one bar after the low, RSI level
+// filter 50/66, flip OFF, fixed TP 1% from avg + wide 5% L1 SL.
 //
 // ⚠ DESIGNED FOR: BTCUSDT perpetual · 5-minute timeframe · ONLY.
 //
@@ -13,7 +13,7 @@
 //   • Entry: fresh bull/bear div (≤21 bars) + RSI level filter at pivot
 //            (50 / 70 — loose bull, strict bear). Pivot 5L/2R = fires
 //            10 min after the low instead of 25. Immediate market entry.
-//   • DCA: 3 levels @ 0.3% spacing, anti-martingale qty (3:3:2 → L1=37.5%, L2=37.5%, L3=25%)
+//   • DCA: 3 levels @ 0.35% spacing, mixed-shape qty (3:4:1.5 → L1=35.3%, L2=47.1%, L3=17.6%)
 //   • SL: 5% from L1 (bounded — DCA never widens SL; wide so trail/TP exit first)
 //   • TP: 1% from avg entry (ON — primary exit, fires before trail in most trades)
 //   • BE + Trailing (3Commas-style — backstop if TP doesn't hit):
@@ -33,17 +33,17 @@ strategy("Divergence-Flip LIVE - 3 DCA Martingale (5m)", overlay=true, initial_c
 
 // ─── Risk ───
 grpRisk = "⚙️ Risk"
-leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5, group=grpRisk)
+leverageInput = input.float(3.0, "Leverage cap", minval=1, maxval=10, step=0.5, group=grpRisk)
 
-// ─── DCA (matches bot: 3 levels @ 0.3% anti-martingale 3:3:2) ───
-grpDCA = "📊 DCA (anti-martingale)"
+// ─── DCA (matches bot: 3 levels @ 0.35% mixed-shape 3:4:1.5) ───
+grpDCA = "📊 DCA (mixed-shape)"
 dcaLevels  = input.int(3, "DCA levels", minval=1, maxval=3, group=grpDCA)
-dcaSpacing = input.float(0.3, "DCA spacing (%)", minval=0.1, maxval=2.0, step=0.05, group=grpDCA,
-     tooltip="Each leg fires at worst_entry × (1 ∓ this%). 0.3% matches bot.") / 100
+dcaSpacing = input.float(0.35, "DCA spacing (%)", minval=0.1, maxval=2.0, step=0.05, group=grpDCA,
+     tooltip="Each leg fires at worst_entry × (1 ∓ this%). 0.35% matches bot — wider than 0.3% so DCA fires on deeper dips, better fill prices.") / 100
 martRatio1 = input.float(3.0, "L1 qty ratio", minval=0.1, maxval=10, step=0.5, group=grpDCA)
-martRatio2 = input.float(3.0, "L2 qty ratio", minval=0.1, maxval=10, step=0.5, group=grpDCA)
-martRatio3 = input.float(2.0, "L3 qty ratio", minval=0.1, maxval=10, step=0.5, group=grpDCA,
-     tooltip="3:3:2 = TV-tuned (L1=37.5%, L2=37.5%, L3=25% of leverage cap). Anti-martingale — biggest qty at BEST price (L1), smallest at deepest leg. With 1% TP from avg entry, front-loading L1 means TP fires sooner on reversal.")
+martRatio2 = input.float(4.0, "L2 qty ratio", minval=0.1, maxval=10, step=0.5, group=grpDCA)
+martRatio3 = input.float(1.5, "L3 qty ratio", minval=0.1, maxval=10, step=0.5, group=grpDCA,
+     tooltip="3:4:1.5 = TV-tuned (L1=35.3%, L2=47.1%, L3=17.6% of leverage cap). Mixed shape — L2 (middle leg) gets the largest weight, L3 is small enough to keep worst-case loss bounded. Produced the +189.83% / 10.86% DD / 138 trades / Calmar 17.5 result.")
 
 // ─── Stop Loss (L1-anchored — matches bot) ───
 grpSL = "🛡️ Stop Loss"
@@ -68,10 +68,11 @@ tpPct = input.float(1.0, "TP % from avg entry", minval=0.1, maxval=5.0, step=0.0
 
 // ─── RSI Divergence ───
 grpDiv = "📉 RSI Divergence"
-rsiPeriod    = input.int(14, "RSI period",       minval=5, maxval=30, group=grpDiv)
+rsiPeriod    = input.int(10, "RSI period",       minval=5, maxval=30, group=grpDiv,
+     tooltip="TV-tuned: 10 (faster than Wilder's 14 — more pivots qualify the ≤50/≥66 level filter, ~15% more trades).")
 divPivotL    = input.int(5,  "Pivot left bars",  minval=1, maxval=10, group=grpDiv)
-divPivotR    = input.int(2,  "Pivot right bars", minval=1, maxval=10, group=grpDiv,
-     tooltip="TV-tuned: 2 (fires 10 min after the low). Bot uses 5 (25 min lag) — asymmetric 5L/2R = earlier signal, more pivots.")
+divPivotR    = input.int(1,  "Pivot right bars", minval=1, maxval=10, group=grpDiv,
+     tooltip="TV-tuned: 1 (fires 5 min after the low — fastest setting). Loosest pivot filter, catches the most reversal setups.")
 divFreshBars = input.int(21, "Divergence valid for N bars", minval=1, maxval=50, group=grpDiv,
      tooltip="21 bars = 105 min on 5m.")
 
@@ -81,8 +82,8 @@ useRsiLevelFilter = input.bool(true, "Filter by RSI level at pivot", group=grpQu
      tooltip="Reject divs where RSI at pivot wasn't past the threshold. Cuts mid-range fakeouts.")
 rsiLongMax  = input.float(50, "Bull div: max RSI at pivot", minval=20, maxval=50, step=1, group=grpQuality,
      tooltip="TV-tuned: 50 (loose — catches almost all bull divs). Asymmetric with strict 70 bear filter creates a long-bias.")
-rsiShortMin = input.float(70, "Bear div: min RSI at pivot", minval=50, maxval=80, step=1, group=grpQuality,
-     tooltip="TV-tuned: 70 (strict — only extreme overbought tops). Filters out most bear divs, keeps only the highest-quality short setups.")
+rsiShortMin = input.float(66, "Bear div: min RSI at pivot", minval=50, maxval=80, step=1, group=grpQuality,
+     tooltip="TV-tuned: 66 (was 70 — looser bear catches +14 more trades / +38% return at modest DD cost). Less strict than 70 but still filters out mid-range bear divs.")
 
 // ─── Flip (TV-tuned: OFF — trades ride to SL/trail) ───
 useFlip = input.bool(false, "Close + reverse on opposite divergence", group="🔄 Flip",

@@ -2,15 +2,18 @@
 
 Always-in-market strategy that flips on every fresh RSI divergence.
 
-Spec (TV-tuned 2026-05-14 — 100.00% WR / +72.50% / PF 582 / 7.52% DD over 103 trades):
+Spec (TV-tuned 2026-05-14 — +189.83% / 10.86% DD / 138 trades / 97.83% WR / PF 108.6 / Calmar 17.5):
   - Entry: fresh bull div -> LONG, fresh bear div -> SHORT (no S/R touch required, no volume filter)
-  - DCA: 3 levels at 0.3% spacing, ANTI-martingale qty 3:3:2 (L1=37.5%, L2=37.5%, L3=25%)
+  - RSI period 10 (faster than Wilder 14 — more pivots qualify the level filter)
+  - Pivot 5L/1R (divergence confirms 1 bar = 5 min after the low, fastest setting)
+  - RSI level filter: ≤50 (bull) / ≥66 (bear) — looser bear vs prior 70
+  - DCA: 3 levels at 0.35% spacing, mixed-shape ratios 3:4:1.5 (L1=35.3%, L2=47.1%, L3=17.6%)
   - TP: 1% from AVG entry (PRIMARY exit — high hit rate, fires before trail in most trades)
   - SL: 5% from L1 first entry (WIDE backstop — DCA never widens SL)
   - BE: arms at +0.55% favorable from first entry, then trails peak ± 0.2% (backstop if TP doesn't hit)
   - Flip: OFF (rides to TP/SL/trail — opposite divergence does NOT close position)
   - No EOD flatten, multi-cycle (unlimited per day)
-  - Leverage cap 2x, 6% risk allocation
+  - Leverage cap 3x, 6% risk allocation
 
 Re-uses build_features / detect_divergence from core.py — only the signal
 evaluation differs (no S/R touch requirement).
@@ -24,21 +27,20 @@ import numpy as np
 # Re-use indicator computation from V2.2 core
 from core import build_features, detect_divergence, DIV_PIVOT_R as _CORE_DIV_PIVOT_R  # noqa: F401
 
-# ═════ Pivot override (TV-tuned: 5L/2R) ═════
+# ═════ Pivot override (TV-tuned: 5L/1R) ═════
 # V2.2 core uses 5/5 (25-min confirmation lag). The TV-tuned divflip config
-# uses 5L/2R — pivot fires 10 min after the low instead of 25, catching
-# reversals 3 bars earlier. Bot runner re-runs detect_divergence with these
+# uses 5L/1R — pivot fires only 1 bar (5 min) after the low instead of 25,
+# catching reversals 4 bars earlier. Loosest pivot setting → more pivots
+# qualify, more entries. Bot runner re-runs detect_divergence with these
 # values after build_features so divergence columns reflect the override.
 DIV_PIVOT_L = 5
-DIV_PIVOT_R = 2
+DIV_PIVOT_R = 1
 
 # ═════ RSI period override (TV-tuned: 10) ═════
 # V2.2 core uses RSI 14 (Wilder default). divflip uses RSI 10 — faster
 # reaction, more pivots qualify the ≤50/≥70 filter, ~15% more trades.
-# TV-tested 2026-05-14: +78.66% / 6.40% DD / 118 trades / 99.15% WR vs
-# RSI 14's +72.50% / 7.52% DD / 103 trades / 100% WR. Bot runner recomputes
-# df["rsi"] with this period after build_features, then re-runs
-# detect_divergence so pivot RSI values reflect the override.
+# Bot runner recomputes df["rsi"] with this period after build_features,
+# then re-runs detect_divergence so pivot RSI values reflect the override.
 RSI_PERIOD = 10
 
 # ═════ Constants ═════
@@ -50,16 +52,17 @@ LEVERAGE       = 3.0
 RISK_PCT       = 0.06
 
 DCA_LEVELS     = 3
-DCA_SPACING    = 0.003        # 0.3% adverse triggers each DCA leg (L2 at -0.3%, L3 at -0.6%).
-                              # Tight spacing fills L3 often (~50% of trades) → deep averaging.
+DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35%, L3 at -0.7%).
+                              # TV-tuned: wider than 0.3% — DCA fires on deeper dips, better fills.
 
-# ANTI-martingale sizing — biggest qty at BEST (L1) price, smallest at
-# deepest leg. With 3:3:2 ratio: L1=37.5%, L2=37.5%, L3=25% of leverage cap.
-# Rationale: with USE_TAKE_PROFIT=True @ 1% from avg, front-loading L1
-# means TP fires sooner on a reversal. Producing 100.00% WR / PF 582 /
-# +72.50% / 7.52% DD over 103 trades on the user's TV backtest.
+# Mixed-shape sizing — biggest qty in the MIDDLE leg (L2). With 3:4:1.5 ratio:
+# L1 = 3/8.5 = 35.3%, L2 = 4/8.5 = 47.1%, L3 = 1.5/8.5 = 17.6% of leverage cap.
+# Heavier L2 catches the typical -0.35% dip with the largest weight while
+# L3 is small enough to keep the worst-case SL bounded. Producing +152.00% /
+# 9.39% DD / 124 trades / 97.58% WR / PF 93 / Calmar 16.2 on the user's
+# TV backtest (Apr 6 – May 14 2026, BTCUSDT 5m).
 # Total notional still capped by LEVERAGE — ratios just redistribute within cap.
-MARTINGALE_RATIOS = [3.0, 3.0, 2.0]   # qty multiplier per leg (L1, L2, L3) — anti-martingale
+MARTINGALE_RATIOS = [3.0, 4.0, 1.5]   # qty multiplier per leg (L1, L2, L3) — mixed shape
 SL_FROM_WORST  = 0.05         # 5% from first entry (L1-anchored). Wide backstop — TV-tuned config relies on
                               # 1% TP from avg entry (USE_TAKE_PROFIT below) and 0.2% trail-after-BE for actual
                               # exits. SL only fires on a genuine adverse run (rare → 99% WR / 7.3% DD).
@@ -90,7 +93,7 @@ USE_FLIP = False
 # Apr–May 2026 uptrend with 74.83% WR over 145 trades.
 USE_RSI_LEVEL_FILTER = True
 RSI_LONG_MAX  = 50            # bull div: RSI at pivot ≤ 50 (loose — catches most lows)
-RSI_SHORT_MIN = 70            # bear div: RSI at pivot ≥ 70 (strict — only extreme tops)
+RSI_SHORT_MIN = 66            # bear div: RSI at pivot ≥ 66 (TV-tuned: was 70 — looser bear catches +14 trades)
 
 # Divergence freshness window — 21 bars on 5m = 105 min.
 DIV_FRESH_BARS = 21
