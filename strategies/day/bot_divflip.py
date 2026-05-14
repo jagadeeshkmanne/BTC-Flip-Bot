@@ -135,9 +135,17 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
         gross = (avg_entry - exit_px) * qty_total
     fees = exit_px * qty_total * COMMISSION_PCT
     net = gross - fees
+    balance_before = state["balance"]                   # capital base BEFORE this trade's net is added
     state["balance"] += net
 
-    pnl_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
+    # pnl_pct is the BALANCE-impact %, not the price-move %. Reasoning:
+    # users care "how much did my account grow on this trade?", which with
+    # leverage is roughly (price_move × leverage) − fee_drag. Storing it as
+    # balance % makes the trade log directly reflect equity changes (and
+    # additive day-bucket sums approximate compound growth).
+    # The raw price-move % is preserved separately as `price_move_pct`.
+    price_move_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
+    pnl_pct = (net / balance_before * 100) if balance_before > 0 else 0.0
     trade_record = {
         "side": side,
         "first_entry": pos["first_entry"],
@@ -147,7 +155,9 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
         "qty_total": qty_total,
         "reason": reason,
         "pnl_usd": net,
-        "pnl_pct": pnl_pct,
+        "pnl_pct": pnl_pct,              # BALANCE impact (new)
+        "price_move_pct": price_move_pct, # raw price move from avg→exit (preserved for reference)
+        "leverage": pos.get("leverage"),
         "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(),
     }
@@ -158,7 +168,8 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
     if net > 0:
         state["stats"]["wins"] += 1
     log.warning(f"  EXIT {side} via {reason} @${exit_px:.2f} | avg_entry ${avg_entry:.2f} | "
-                f"gross ${gross:+.2f} − fees ${fees:.2f} = net ${net:+.2f} ({pnl_pct:+.2f}%) | "
+                f"gross ${gross:+.2f} − fees ${fees:.2f} = net ${net:+.2f} "
+                f"(price {price_move_pct:+.2f}% / balance {pnl_pct:+.2f}%) | "
                 f"balance ${state['balance']:.2f}")
     return trade_record
 

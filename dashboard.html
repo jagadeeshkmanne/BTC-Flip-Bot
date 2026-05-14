@@ -915,6 +915,12 @@ async function refresh(){
       // entry: prefer the weighted avg over L1 once DCA has fired. PnL math
       // and posEntry display both read p.entry, so this keeps "entry" semantic
       // with what the bot uses for TP (avg-based).
+      // Leverage: ALWAYS prefer the bot's saved per-position snapshot
+      // (state.position.leverage) over whatever Binance proxy reports. The
+      // proxy can return stale leverage from a prior trade or another bot
+      // sharing the testnet account — that snuck a lev=2 into a 3x divflip
+      // position and made the ROI display read half what it should.
+      const botLeverage = (state.position && state.position.leverage) || 1;
       positionSnapshot = livePos ? {
         side: livePos.side,
         entry: avgEntry > 0 ? avgEntry : livePos.entry,
@@ -925,7 +931,7 @@ async function refresh(){
         legEntries,
         avgEntry,
         prevMid: tpFromStatus || liveTp || fallbackPrevMid,
-        leverage: livePos.leverage,
+        leverage: botLeverage || livePos.leverage,
         marginType: livePos.marginType,
         liveUpnl: livePos.uPnL,
         beActivated,
@@ -940,6 +946,7 @@ async function refresh(){
         legEntries,
         avgEntry,
         prevMid: tpFromStatus || liveTp || fallbackPrevMid,
+        leverage: botLeverage,
         beActivated,
         eodHeldOnDay,
       };
@@ -978,10 +985,12 @@ async function refresh(){
         const entryPx = t.avg_entry || t.first_entry || t.entry || 0;
         const exitPx  = t.exit || t.exit_price || 0;
         const pnlUsd  = t.pnl_usd !== undefined ? t.pnl_usd : t.pnl;
-        const tStr = t.time ? new Date(t.time).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '--';
+        // divflip bot writes `exit_time`; SR_DCA bot writes `time`. Accept both.
+        const exitT = t.exit_time || t.time;
+        const tStr = exitT ? new Date(exitT).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '--';
         let holdStr = '--';
-        if (t.entry_time && t.time) {
-          const hMs = new Date(t.time) - new Date(t.entry_time);
+        if (t.entry_time && exitT) {
+          const hMs = new Date(exitT) - new Date(t.entry_time);
           if (hMs > 0) {
             const hH = Math.floor(hMs / 3600000);
             const hM = Math.floor((hMs % 3600000) / 60000);
