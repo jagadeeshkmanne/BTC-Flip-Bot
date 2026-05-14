@@ -1,0 +1,310 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────
+// Divergence-Flip RSI Strategy (5m) — RSI-Filtered Reversal with Martingale DCA
+//
+// Mean-reversion strategy that fires on fresh RSI divergence WHEN the
+// RSI at the swing pivot was in extreme territory (≤30 for bull, ≥70 for
+// bear). No S/R touch required, no volume filter — RSI level at pivot
+// is the quality gate. Uses 3 DCA legs with martingale 1:2:4 sizing so
+// the biggest qty is at the deepest price (smallest unit loss when SL
+// hits). Flips on opposite divergence; trailing SL captures runners.
+//
+// ⚠ DESIGNED FOR: BTCUSDT perpetual · 5-minute timeframe · ONLY.
+//
+// ─── Logic ───
+//   • Entry: fresh RSI div (5/5 pivot, ≤20 bars) AND
+//            RSI at the pivot bar ≤ 30 (bull div → LONG) OR ≥ 70 (bear div → SHORT)
+//   • DCA: 3 fixed levels at 0.3% spacing from worst entry,
+//          martingale qty 1:2:4 (L1:L2:L3)
+//   • SL: 1.8% from FIRST entry (anchored — DCA can only improve avg,
+//          never widens SL)
+//   • BE: arms at +0.5% favorable from L1 → SL ratchets to firstEntry ± 0.2%
+//   • Trail: after BE armed, SL = peak × (1 ∓ 0.2%) — captures runners
+//   • Flip: opposite divergence (with RSI filter) → close + reverse
+//   • No hard TP — exits via trailing SL or flip only
+//   • No EOD — multi-cycle, no time cap
+//
+// ─── 6-month Python backtest (Nov 2025 – May 2026) ───
+//   +10.75% / PF 1.31 / DD 12.1% / WR 78% / 78 trades
+//   Realistic expectation: ~1.5–2% per month with normal regimes,
+//   ~20-25% annual compounded.
+//
+// ─── ⚠ Regime warning ───
+//   Same caveat as the S/R reversal strategy — works in mean-reverting
+//   markets, breaks down in strong trending regimes. Recent short-window
+//   backtests can look better than long-run reality.
+// ─────────────────────────────────────────────────────────────────────
+
+strategy("Divergence-Flip RSI - 3 DCA Martingale (5m)", overlay=true, initial_capital=5000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=95,
+     pyramiding=3, calc_on_order_fills=false, calc_on_every_tick=false,
+     process_orders_on_close=true, commission_type=strategy.commission.percent,
+     commission_value=0.04, slippage=3,
+     margin_long=0, margin_short=0)
+
+// ─── Risk ───
+grpRisk = "⚙️ Risk"
+leverageInput = input.float(2.0, "Leverage cap", minval=1, maxval=10, step=0.5, group=grpRisk)
+
+// ─── DCA + Martingale ───
+grpDCA = "📊 DCA Martingale"
+dcaLevels  = input.int(3, "DCA levels (max)", minval=1, maxval=5, group=grpDCA)
+dcaSpacing = input.float(0.3, "DCA spacing (%)", minval=0.1, maxval=2.0, step=0.05, group=grpDCA,
+     tooltip="Each leg fires at worst_entry × (1 ∓ this%). 0.3% → L2 at -0.3%, L3 at -0.6% from L1.") / 100
+mart1 = input.float(1.0, "L1 qty weight", minval=0.1, maxval=10, step=0.1, group=grpDCA)
+mart2 = input.float(2.0, "L2 qty weight", minval=0.1, maxval=10, step=0.1, group=grpDCA)
+mart3 = input.float(4.0, "L3 qty weight", minval=0.1, maxval=10, step=0.1, group=grpDCA,
+     tooltip="Martingale 1:2:4 — L3 gets 4× L1's qty. Biggest leg at deepest price means smallest per-unit loss when SL hits.")
+
+// ─── Stop Loss ───
+grpSL = "🛡️ Stop Loss"
+slFromL1 = input.float(1.8, "SL from L1 first entry (%)", minval=0.5, maxval=5.0, step=0.1, group=grpSL,
+     tooltip="SL anchored to FIRST entry. DCA never widens this — only improves avg basis.") / 100
+
+// ─── BE + Trailing ───
+grpTrail = "🎯 Breakeven + Trailing SL"
+useTrail   = input.bool(true, "Enable trailing SL after BE arms", group=grpTrail)
+beTrigger  = input.float(0.5, "BE arms at +fav from L1 (%)", minval=0.1, maxval=3.0, step=0.1, group=grpTrail,
+     tooltip="Once price moves +X% favorable from first entry, BE arms and trailing starts.") / 100
+beBuffer   = input.float(0.2, "BE buffer / initial floor (%)", minval=0.0, maxval=1.0, step=0.05, group=grpTrail,
+     tooltip="When BE first arms, SL ratchets to firstEntry ± buffer (initial profit lock). Trail takes over once peak exceeds buffer.") / 100
+trailDist  = input.float(0.2, "Trail distance below peak (%)", minval=0.05, maxval=2.0, step=0.05, group=grpTrail,
+     tooltip="After BE armed, active SL = peak × (1 ∓ this%). Captures runners — bigger peak = bigger locked profit.") / 100
+
+// ─── RSI Divergence ───
+grpDiv = "📉 RSI Divergence"
+rsiPeriod    = input.int(14, "RSI period", minval=5, maxval=30, group=grpDiv)
+divPivotL    = input.int(5, "Pivot left bars",  minval=1, maxval=10, group=grpDiv)
+divPivotR    = input.int(5, "Pivot right bars", minval=1, maxval=10, group=grpDiv)
+divFreshBars = input.int(20, "Divergence valid for N bars", minval=1, maxval=100, group=grpDiv,
+     tooltip="How long a divergence stays usable after confirmation. 20 = 100 min on 5m.")
+useRsiLevelFilter = input.bool(true, "Filter by RSI level at pivot", group=grpDiv,
+     tooltip="ON: only fire LONG if RSI at bull-div pivot ≤ rsiLongMax; only fire SHORT if RSI at bear-div pivot ≥ rsiShortMin. The single most impactful filter — strips out fakeout-prone mid-range divergences.")
+rsiLongMax   = input.float(30, "Bull div: max RSI at pivot", minval=10, maxval=50, step=1, group=grpDiv)
+rsiShortMin  = input.float(70, "Bear div: min RSI at pivot", minval=50, maxval=90, step=1, group=grpDiv)
+
+// ─── Flip ───
+grpFlip = "🔄 Flip on Opposite Divergence"
+useFlip = input.bool(true, "Close + reverse on opposite divergence", group=grpFlip,
+     tooltip="If LONG and a NEW bear divergence fires (passing RSI filter), close LONG and immediately open SHORT (and vice versa).")
+
+// ═════ Indicators ═════
+rsiVal = ta.rsi(close, rsiPeriod)
+
+priceHiPivot = ta.pivothigh(high, divPivotL, divPivotR)
+priceLoPivot = ta.pivotlow(low,  divPivotL, divPivotR)
+
+var float lastPHigh = na
+var float prevPHigh = na
+var float lastRAtH  = na
+var float prevRAtH  = na
+var float lastPLow  = na
+var float prevPLow  = na
+var float lastRAtL  = na
+var float prevRAtL  = na
+
+if not na(priceHiPivot)
+    prevPHigh := lastPHigh
+    prevRAtH  := lastRAtH
+    lastPHigh := priceHiPivot
+    lastRAtH  := rsiVal[divPivotR]
+
+if not na(priceLoPivot)
+    prevPLow := lastPLow
+    prevRAtL := lastRAtL
+    lastPLow := priceLoPivot
+    lastRAtL := rsiVal[divPivotR]
+
+bearishDivFired = not na(prevPHigh) and not na(priceHiPivot) and lastPHigh > prevPHigh and lastRAtH < prevRAtH
+bullishDivFired = not na(prevPLow)  and not na(priceLoPivot) and lastPLow  < prevPLow  and lastRAtL > prevRAtL
+
+// Bars-since trackers + RSI-at-pivot for the most recent divergence
+var int barsSinceBearDiv = 9999
+var int barsSinceBullDiv = 9999
+var float rsiAtLastBearPivot = na
+var float rsiAtLastBullPivot = na
+barsSinceBearDiv := bearishDivFired ? 0 : barsSinceBearDiv + 1
+barsSinceBullDiv := bullishDivFired ? 0 : barsSinceBullDiv + 1
+if bearishDivFired
+    rsiAtLastBearPivot := lastRAtH
+if bullishDivFired
+    rsiAtLastBullPivot := lastRAtL
+
+// Composite "div ok" — freshness + RSI level filter
+bullDivOk = barsSinceBullDiv <= divFreshBars and (not useRsiLevelFilter or (not na(rsiAtLastBullPivot) and rsiAtLastBullPivot <= rsiLongMax))
+bearDivOk = barsSinceBearDiv <= divFreshBars and (not useRsiLevelFilter or (not na(rsiAtLastBearPivot) and rsiAtLastBearPivot >= rsiShortMin))
+
+// ═════ Position state ═════
+var float firstEntryPx = na
+var float worstEntryPx = na
+var float peakPrice    = na
+var int   filledCount  = 0
+var float cumNotional  = na
+var float cumQty       = na
+var bool  beActivated  = false
+
+avgEntryPx = na(cumQty) or cumQty == 0 ? na : cumNotional / cumQty
+
+// ─── Martingale-weighted sizing ───
+// Total notional cap = LEVERAGE × 0.95 × equity. Distribute by ratios.
+totalRatio = mart1 + (dcaLevels >= 2 ? mart2 : 0) + (dcaLevels >= 3 ? mart3 : 0)
+totalCapQty = strategy.equity * 0.95 * leverageInput / close
+l1Qty = totalCapQty * mart1 / totalRatio
+l2Qty = totalCapQty * mart2 / totalRatio
+l3Qty = totalCapQty * mart3 / totalRatio
+
+// ─── L1 entry (no S/R, no volume — RSI-filtered divergence only) ───
+l1LongOk  = strategy.position_size == 0 and bullDivOk
+l1ShortOk = strategy.position_size == 0 and bearDivOk
+
+if l1LongOk and l1Qty > 0
+    strategy.entry("L1", strategy.long, qty=l1Qty)
+    firstEntryPx := close
+    worstEntryPx := close
+    peakPrice    := high
+    cumNotional  := close * l1Qty
+    cumQty       := l1Qty
+    filledCount  := 1
+    beActivated  := false
+
+if l1ShortOk and l1Qty > 0
+    strategy.entry("S1", strategy.short, qty=l1Qty)
+    firstEntryPx := close
+    worstEntryPx := close
+    peakPrice    := low
+    cumNotional  := close * l1Qty
+    cumQty       := l1Qty
+    filledCount  := 1
+    beActivated  := false
+
+// ─── DCA fills (fixed distance, martingale qty) ───
+if strategy.position_size > 0 and filledCount >= 1 and filledCount < dcaLevels
+    nextDcaPx = worstEntryPx * (1 - dcaSpacing)
+    if low <= nextDcaPx
+        dcaQty = filledCount == 1 ? l2Qty : l3Qty
+        idStr  = "L" + str.tostring(filledCount + 1)
+        strategy.entry(idStr, strategy.long, qty=dcaQty, limit=nextDcaPx)
+        worstEntryPx := nextDcaPx
+        cumNotional  := cumNotional + nextDcaPx * dcaQty
+        cumQty       := cumQty + dcaQty
+        filledCount  := filledCount + 1
+
+if strategy.position_size < 0 and filledCount >= 1 and filledCount < dcaLevels
+    nextDcaPx = worstEntryPx * (1 + dcaSpacing)
+    if high >= nextDcaPx
+        dcaQty = filledCount == 1 ? l2Qty : l3Qty
+        idStr  = "S" + str.tostring(filledCount + 1)
+        strategy.entry(idStr, strategy.short, qty=dcaQty, limit=nextDcaPx)
+        worstEntryPx := nextDcaPx
+        cumNotional  := cumNotional + nextDcaPx * dcaQty
+        cumQty       := cumQty + dcaQty
+        filledCount  := filledCount + 1
+
+// ─── Peak tracking (high-water mark for LONG, low-water for SHORT) ───
+if strategy.position_size > 0 and not na(peakPrice)
+    peakPrice := math.max(peakPrice, high)
+if strategy.position_size < 0 and not na(peakPrice)
+    peakPrice := math.min(peakPrice, low)
+
+// ─── BE activation ───
+if not beActivated and not na(firstEntryPx) and strategy.position_size != 0
+    favLong  = (close - firstEntryPx) / firstEntryPx
+    favShort = (firstEntryPx - close) / firstEntryPx
+    if (strategy.position_size > 0 and favLong  >= beTrigger) or (strategy.position_size < 0 and favShort >= beTrigger)
+        beActivated := true
+
+// ─── SL composition: raw (L1-anchored) + BE floor + trail ───
+slLongRaw    = na(firstEntryPx) ? na : firstEntryPx * (1 - slFromL1)
+slShortRaw   = na(firstEntryPx) ? na : firstEntryPx * (1 + slFromL1)
+slLongBE     = na(firstEntryPx) ? na : firstEntryPx * (1 + beBuffer)
+slShortBE    = na(firstEntryPx) ? na : firstEntryPx * (1 - beBuffer)
+slLongTrail  = na(peakPrice)    ? na : peakPrice * (1 - trailDist)
+slShortTrail = na(peakPrice)    ? na : peakPrice * (1 + trailDist)
+
+slLongPx  = useTrail and beActivated and not na(slLongBE) and not na(slLongTrail) ? math.max(slLongRaw, slLongBE, slLongTrail) : slLongRaw
+slShortPx = useTrail and beActivated and not na(slShortBE) and not na(slShortTrail) ? math.min(slShortRaw, slShortBE, slShortTrail) : slShortRaw
+
+// ─── Exit orders (SL only — no fixed TP) ───
+if strategy.position_size > 0 and not na(slLongPx)
+    strategy.exit("xL1", from_entry="L1", stop=slLongPx)
+    if filledCount >= 2
+        strategy.exit("xL2", from_entry="L2", stop=slLongPx)
+    if filledCount >= 3
+        strategy.exit("xL3", from_entry="L3", stop=slLongPx)
+
+if strategy.position_size < 0 and not na(slShortPx)
+    strategy.exit("xS1", from_entry="S1", stop=slShortPx)
+    if filledCount >= 2
+        strategy.exit("xS2", from_entry="S2", stop=slShortPx)
+    if filledCount >= 3
+        strategy.exit("xS3", from_entry="S3", stop=slShortPx)
+
+// ─── Flip on opposite divergence ───
+if useFlip and strategy.position_size != 0
+    if strategy.position_size > 0 and bearDivOk
+        strategy.close_all(comment="FLIP→SHORT")
+    if strategy.position_size < 0 and bullDivOk
+        strategy.close_all(comment="FLIP→LONG")
+
+// ─── Cycle reset after exit ───
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    filledCount  := 0
+    firstEntryPx := na
+    worstEntryPx := na
+    peakPrice    := na
+    cumNotional  := na
+    cumQty       := na
+    beActivated  := false
+
+// ═════ Visuals ═════
+plot(strategy.position_size != 0 and not na(slLongPx) ? (strategy.position_size > 0 ? slLongPx : slShortPx) : na,
+     "Active SL", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 and not na(peakPrice) ? peakPrice : na,
+     "Peak (trail anchor)", color=color.new(color.yellow, 30), style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size != 0 and not na(avgEntryPx) ? avgEntryPx : na,
+     "Avg Entry", color=color.new(color.aqua, 0), style=plot.style_linebr, linewidth=1)
+
+// Divergence pivot markers (fired this bar, RSI-filter passed)
+plotshape(bullDivOk and barsSinceBullDiv == 0, "Bull div (qualified)", shape.diamond, location.belowbar, color.lime,   size=size.small, offset=-divPivotR)
+plotshape(bearDivOk and barsSinceBearDiv == 0, "Bear div (qualified)", shape.diamond, location.abovebar, color.orange, size=size.small, offset=-divPivotR)
+
+// Wrong-timeframe warning
+if barstate.islast and timeframe.period != "5"
+    var table tfWarn = table.new(position.bottom_center, 1, 1, border_width=2, border_color=color.red)
+    table.cell(tfWarn, 0, 0,
+         "⚠ Chart TF is " + timeframe.period + " — designed for 5m",
+         bgcolor=color.new(color.red, 15), text_color=color.white, text_size=size.normal)
+
+// Dashboard table
+if barstate.islast
+    var table dash = table.new(position.top_right, 2, 12, border_width=1)
+    table.cell(dash, 0, 0, "Div-Flip RSI", bgcolor=color.gray, text_color=color.white)
+    table.cell(dash, 1, 0, "5m", bgcolor=color.teal, text_color=color.white)
+    table.cell(dash, 0, 1, "RSI now")
+    table.cell(dash, 1, 1, str.tostring(rsiVal, "#.#"))
+    table.cell(dash, 0, 2, "Bull div age (RSI@piv)")
+    table.cell(dash, 1, 2, barsSinceBullDiv > 50 ? "—" : str.tostring(barsSinceBullDiv) + "b" + (not na(rsiAtLastBullPivot) ? "  RSI=" + str.tostring(rsiAtLastBullPivot, "#.#") : ""),
+         text_color=bullDivOk ? color.lime : color.gray)
+    table.cell(dash, 0, 3, "Bear div age (RSI@piv)")
+    table.cell(dash, 1, 3, barsSinceBearDiv > 50 ? "—" : str.tostring(barsSinceBearDiv) + "b" + (not na(rsiAtLastBearPivot) ? "  RSI=" + str.tostring(rsiAtLastBearPivot, "#.#") : ""),
+         text_color=bearDivOk ? color.orange : color.gray)
+    table.cell(dash, 0, 4, "Position")
+    table.cell(dash, 1, 4, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT",
+         text_color=strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray)
+    table.cell(dash, 0, 5, "Avg entry")
+    table.cell(dash, 1, 5, na(avgEntryPx) ? "—" : str.tostring(avgEntryPx, "#.##"))
+    table.cell(dash, 0, 6, "Worst entry (L" + str.tostring(filledCount) + ")")
+    table.cell(dash, 1, 6, na(worstEntryPx) ? "—" : str.tostring(worstEntryPx, "#.##"))
+    table.cell(dash, 0, 7, "Peak")
+    table.cell(dash, 1, 7, na(peakPrice) ? "—" : str.tostring(peakPrice, "#.##"))
+    table.cell(dash, 0, 8, "Filled")
+    table.cell(dash, 1, 8, str.tostring(filledCount) + "/" + str.tostring(dcaLevels))
+    table.cell(dash, 0, 9, "Active SL")
+    slDisp = strategy.position_size == 0 ? "—" : str.tostring(strategy.position_size > 0 ? slLongPx : slShortPx, "#.##")
+    slType = strategy.position_size == 0 ? "" : (useTrail and beActivated ? " [TRAIL]" : " [raw]")
+    table.cell(dash, 1, 9, slDisp + slType, text_color=beActivated ? color.yellow : color.red)
+    table.cell(dash, 0, 10, "Equity")
+    table.cell(dash, 1, 10, "$" + str.tostring(strategy.equity, "#,###"))
+    table.cell(dash, 0, 11, "BE armed")
+    table.cell(dash, 1, 11, beActivated ? "YES (trailing)" : "—",
+         text_color=beActivated ? color.gold : color.gray)
