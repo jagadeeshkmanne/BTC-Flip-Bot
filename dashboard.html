@@ -89,7 +89,7 @@
   .scale-tick{position:absolute;top:-2px;width:2px;height:12px;border-radius:1px;transform:translateX(-50%)}
   .scale-tick.tp{background:var(--green-2)}
   .scale-tick.sl{background:var(--red)}
-  .scale-tick.entry{background:var(--gold)}
+  .scale-tick.entry{background:#ffffff;box-shadow:0 0 6px rgba(255,255,255,.55)}
   .scale-tick.dca{background:var(--orange)}
   /* Top labels: absolutely positioned above the bar so each label sits
      vertically aligned with its tick. When two labels would visually
@@ -103,7 +103,7 @@
   .scale-lbl-pct{font-size:10px;color:var(--muted);margin-top:1px;font-weight:600}
   .scale-lbl.tp .scale-lbl-name,.scale-lbl.tp .scale-lbl-price{color:var(--green-2)}
   .scale-lbl.sl .scale-lbl-name,.scale-lbl.sl .scale-lbl-price{color:var(--red)}
-  .scale-lbl.entry .scale-lbl-name,.scale-lbl.entry .scale-lbl-price{color:var(--gold)}
+  .scale-lbl.entry .scale-lbl-name,.scale-lbl.entry .scale-lbl-price{color:#ffffff}
   .scale-lbl.leg .scale-lbl-name,.scale-lbl.leg .scale-lbl-price{color:#FFB347}
   .scale-lbl.dca .scale-lbl-name,.scale-lbl.dca .scale-lbl-price{color:var(--orange)}
   .scale-tick.leg{background:#FFB347}
@@ -376,23 +376,26 @@ const divFreshAge = (d, side) => {
   const ageMin = v * 5;
   return fmtMins(ageMin) + ` / ${DIV_FRESH_MAX_MIN}m max`;
 };
-// Format "RSI at last divergence pivot / required threshold" — shows the
-// actual RSI value the bot saw at the pivot bar vs the filter threshold.
-// Bot sends: indicators.rsi_at_bull_pivot / rsi_at_bear_pivot / rsi_long_max / rsi_short_min.
+// Format "RSI at last divergence pivot (Xm ago) / required threshold". Shows
+// the HISTORICAL RSI value at the pivot bar — explicitly tagged with its age
+// so the user doesn't confuse it with current RSI shown elsewhere.
 const fmtRsiAtPivot = (d, side) => {
   const k  = side === 'LONG' ? 'rsi_at_bull_pivot' : 'rsi_at_bear_pivot';
   const tk = side === 'LONG' ? 'rsi_long_max'      : 'rsi_short_min';
+  const ageK = side === 'LONG' ? 'bars_since_bull_div' : 'bars_since_bear_div';
   const v  = d?.[k];
-  const th = d?.[tk] ?? (side === 'LONG' ? 50 : 70);
+  const th = d?.[tk] ?? (side === 'LONG' ? 50 : 66);
+  const age = d?.[ageK];
   const cmp = side === 'LONG' ? '≤' : '≥';
-  if (v == null) return `none / ${cmp}${th}`;
-  return `${v.toFixed(1)} / ${cmp}${th}`;
+  const ageTag = (age != null && age < 9999) ? ` (${fmtMins(age * 5)} ago)` : '';
+  if (v == null) return `none / need ${cmp}${th}`;
+  return `${v.toFixed(1)}${ageTag} / need ${cmp}${th}`;
 };
 const checkRsiAtPivot = (d, side) => {
   const k  = side === 'LONG' ? 'rsi_at_bull_pivot' : 'rsi_at_bear_pivot';
   const tk = side === 'LONG' ? 'rsi_long_max'      : 'rsi_short_min';
   const v  = d?.[k];
-  const th = d?.[tk] ?? (side === 'LONG' ? 50 : 70);
+  const th = d?.[tk] ?? (side === 'LONG' ? 50 : 66);
   if (v == null) return false;
   return side === 'LONG' ? v <= th : v >= th;
 };
@@ -450,14 +453,14 @@ const DIVFLIP_LONG_CONDS = [
     const v = d?.bars_since_bull_div;
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'LONG')},
-  {key: 'RSI @ bull pivot ≤ threshold', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
+  {key: 'RSI at last bull pivot (historical)', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
 ];
 const DIVFLIP_SHORT_CONDS = [
   {key: 'Bear div fresh (≤21 bars)', check: d => {
     const v = d?.bars_since_bear_div;
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'SHORT')},
-  {key: 'RSI @ bear pivot ≥ threshold', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
+  {key: 'RSI at last bear pivot (historical)', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
 ];
 
 // Pick the right set based on the URL ?strategy= param.
@@ -552,17 +555,20 @@ function renderPosition(price){
     slEl.style.display = 'none';
   }
 
-  // Bar levels — show what's PENDING (future DCA targets) + Avg once it
-  // diverges from L1 (i.e. after at least one DCA fills). TP and Mark always.
-  //   filled=1: L2-target, L3-target  (no Avg — equals L1)
-  //   filled=2: L3-target, Avg        (one pending, Avg now meaningful)
-  //   filled=3: Avg only              (nothing pending)
+  // Bar levels — once a leg fills, the per-leg price is redundant (Avg
+  // captures it). So we collapse filled legs into Avg and only show what's
+  // still PENDING. TP and Mark always.
+  //   filled=1: Entry (L1) + L2-target + L3-target   (Avg = L1, redundant)
+  //   filled=2: Avg + L3-target                       (filled legs collapsed)
+  //   filled=3: Avg only                              (nothing pending)
   const filled = p.filled || 1;
-  const dcaSpacing = STRATEGY === 'divflip' ? 0.003 : 0.0085;
-  // Pending DCA targets project from L1 (first entry) at fixed multiples of
-  // the spacing — L2 = L1 ± 0.3%, L3 = L1 ± 0.6%. Using L1 (not worst_entry)
-  // keeps the projections stable as more legs fill.
-  const l1Price = (p.legEntries && p.legEntries[0]) ? p.legEntries[0].px : null;
+  const dcaSpacing = STRATEGY === 'divflip' ? 0.0035 : 0.0085;
+  // legAt(n) → actual filled price for leg n (null if not filled).
+  // Pending DCA targets project from L1 at fixed multiples of the spacing
+  // (L2 = L1 ± 0.35%, L3 = L1 ± 0.70%). Using L1 (not worst_entry) keeps
+  // projections stable as more legs fill.
+  const legAt = n => (p.legEntries && p.legEntries[n-1] && p.legEntries[n-1].px > 0) ? p.legEntries[n-1].px : null;
+  const l1Price = legAt(1);
   const projectFromL1 = (legNum) => {
     if (!l1Price || l1Price <= 0) return null;
     const mult = (legNum - 1) * dcaSpacing;
@@ -573,13 +579,16 @@ function renderPosition(price){
     {key:'mark', name:'Mark', price: mark},
   ];
   if (filled === 1) {
-    // No Avg label — Avg equals L1 with only one fill, so it would just
-    // clutter the bar without adding info. Show the two pending targets.
-    rawLevels.push({key:'leg', name:'L2', price: projectFromL1(2)});
-    rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    // Show the L1 entry tick + the two pending DCA targets. Avg label is
+    // omitted since it equals L1 with only one fill.
+    rawLevels.push({key:'entry', name:'Entry', price: l1Price});
+    rawLevels.push({key:'leg',   name:'L2',    price: projectFromL1(2)});
+    rawLevels.push({key:'leg',   name:'L3',    price: projectFromL1(3)});
   } else if (filled === 2) {
-    rawLevels.push({key:'leg',   name:'L3',  price: projectFromL1(3)});
+    // L1 + L2 collapse into Avg — individual leg prices no longer relevant.
+    // L3 stays as a pending target until it fires.
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
+    rawLevels.push({key:'leg',   name:'L3',  price: projectFromL1(3)});
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
   }
@@ -1188,7 +1197,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const sub = document.getElementById('setupSub');
   if (sub) {
     sub.textContent = STRATEGY === 'divflip'
-      ? 'Fires on fresh RSI div (≤21 bars, pivot 5L/2R) with RSI at pivot ≤50 (bull) or ≥70 (bear) — asymmetric long-bias. 3 DCA @ 0.3% spacing, anti-martingale 3:3:2 sizing. TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. Flip OFF. No EOD.'
+      ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'
       : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
   }
   // Divflip has no 20:00 UTC force-flatten — hide the "Closes by 20:00 UTC"
@@ -1202,9 +1211,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const stats = document.querySelector('.setup-stats');
     if (stats) {
       stats.innerHTML =
-        '<span>RSI now <b class="num" id="setupRsi">--</b></span>' +
-        '<span>Bull thr <b class="num">≤ 50</b></span>' +
-        '<span>Bear thr <b class="num">≥ 70</b></span>';
+        '<span>RSI live (current bar) <b class="num" id="setupRsi">--</b></span>' +
+        '<span>Bull pivot threshold <b class="num">≤ 50</b></span>' +
+        '<span>Bear pivot threshold <b class="num">≥ 66</b></span>';
     }
   }
   const sel = document.getElementById('strategySelector');
@@ -1352,8 +1361,13 @@ function renderPriceChart() {
   const highs = klines.map(k => +k[2]);
   const lows  = klines.map(k => +k[3]);
   const closes = klines.map(k => +k[4]);
-  const rsi = computeRSI(closes, 14);
-  const divs = detectDivergences(highs, lows, rsi, 5, 5);
+  // RSI period + pivot R must match the bot's divflip override (RSI 10 / 5L-1R)
+  // so the chart's BULL/BEAR markers reflect the same divergences the bot acts on.
+  // SR_DCA stays on the V2.2 defaults (RSI 14, pivot 5/5).
+  const rsiLen = STRATEGY === 'divflip' ? 10 : 14;
+  const pivotR = STRATEGY === 'divflip' ? 1 : 5;
+  const rsi = computeRSI(closes, rsiLen);
+  const divs = detectDivergences(highs, lows, rsi, 5, pivotR);
 
   // S/R levels — prefer bot status (matches live bot's adaptive range).
   // If bot indicators aren't loaded yet, fall back to computing prev_H/L
@@ -1384,21 +1398,64 @@ function renderPriceChart() {
   }
 
   // Markers — triangles ABOVE bearish pivots and BELOW bullish pivots.
-  // Triangles are directional (point down at top = "drop expected", point up
-  // at bottom = "rise expected"), high-contrast colors, with text labels.
+  // Two visual tiers per side:
+  //   PASS (the bot acted / would have acted)  → full color, bold "BULL"/"BEAR" + RSI value
+  //   FAIL (filtered out by RSI@pivot threshold) → dimmed gray-tinted, small "bull"/"bear" + RSI value
+  // RSI at pivot is sampled at (confirmIdx − pivotR) since detectDivergences
+  // pushes the CONFIRMATION bar index but the actual pivot is pivotR bars back.
+  // (S/R-DCA strategy has no pivot-RSI filter, so thresholds default to "always passes".)
+  const heroInd = lastHeroState.indicators || {};
+  const rsiLongMax = heroInd.rsi_long_max ?? (STRATEGY === 'divflip' ? 50 : 100);
+  const rsiShortMin = heroInd.rsi_short_min ?? (STRATEGY === 'divflip' ? 66 : 0);
   const markers = [];
-  divs.bear.forEach(i => { if (i < klines.length) markers.push({
-    coord: [times[i], highs[i]],
-    symbol: 'triangle', symbolSize: 16, symbolRotate: 180, symbolOffset: [0, '-90%'],
-    itemStyle: { color: '#ff5b6e', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
-    label: { show: true, position: 'top', formatter: 'BEAR', fontSize: 9, fontWeight: 'bold', color: '#ff5b6e', distance: 6, textBorderColor: '#0d1117', textBorderWidth: 2 }
-  }); });
-  divs.bull.forEach(i => { if (i < klines.length) markers.push({
-    coord: [times[i], lows[i]],
-    symbol: 'triangle', symbolSize: 16, symbolOffset: [0, '90%'],
-    itemStyle: { color: '#2ecc6f', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
-    label: { show: true, position: 'bottom', formatter: 'BULL', fontSize: 9, fontWeight: 'bold', color: '#2ecc6f', distance: 6, textBorderColor: '#0d1117', textBorderWidth: 2 }
-  }); });
+  // PASS: large filled triangle, bold colored "BULL"/"BEAR" + RSI value
+  // FAIL: tiny hollow circle (outline only), light gray "·" mark, RSI faded.
+  //       Visually unmistakable — the filtered ones look like noise; the
+  //       acted-on ones look like signals.
+  divs.bear.forEach(confirmIdx => {
+    if (confirmIdx >= klines.length) return;
+    const pivotIdx = Math.max(0, confirmIdx - pivotR);
+    const rsiAtPivot = rsi[pivotIdx];
+    const passes = !isNaN(rsiAtPivot) && rsiAtPivot >= rsiShortMin;
+    const rsiTag = !isNaN(rsiAtPivot) ? rsiAtPivot.toFixed(0) : '';
+    if (passes) {
+      markers.push({
+        coord: [times[confirmIdx], highs[confirmIdx]],
+        symbol: 'triangle', symbolSize: 18, symbolRotate: 180, symbolOffset: [0, '-90%'],
+        itemStyle: { color: '#ff5b6e', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
+        label: { show: true, position: 'top', formatter: `BEAR ${rsiTag}`, fontSize: 11, fontWeight: 'bold', color: '#ff5b6e', distance: 8, textBorderColor: '#0d1117', textBorderWidth: 2 },
+      });
+    } else {
+      markers.push({
+        coord: [times[confirmIdx], highs[confirmIdx]],
+        symbol: 'circle', symbolSize: 5, symbolOffset: [0, '-220%'],
+        itemStyle: { color: 'transparent', borderColor: '#7a4348', borderWidth: 1, opacity: 0.6 },
+        label: { show: true, position: 'top', formatter: rsiTag, fontSize: 8, fontWeight: 'normal', color: '#6e4347', distance: 4 },
+      });
+    }
+  });
+  divs.bull.forEach(confirmIdx => {
+    if (confirmIdx >= klines.length) return;
+    const pivotIdx = Math.max(0, confirmIdx - pivotR);
+    const rsiAtPivot = rsi[pivotIdx];
+    const passes = !isNaN(rsiAtPivot) && rsiAtPivot <= rsiLongMax;
+    const rsiTag = !isNaN(rsiAtPivot) ? rsiAtPivot.toFixed(0) : '';
+    if (passes) {
+      markers.push({
+        coord: [times[confirmIdx], lows[confirmIdx]],
+        symbol: 'triangle', symbolSize: 18, symbolOffset: [0, '90%'],
+        itemStyle: { color: '#2ecc6f', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
+        label: { show: true, position: 'bottom', formatter: `BULL ${rsiTag}`, fontSize: 11, fontWeight: 'bold', color: '#2ecc6f', distance: 8, textBorderColor: '#0d1117', textBorderWidth: 2 },
+      });
+    } else {
+      markers.push({
+        coord: [times[confirmIdx], lows[confirmIdx]],
+        symbol: 'circle', symbolSize: 5, symbolOffset: [0, '220%'],
+        itemStyle: { color: 'transparent', borderColor: '#427a4f', borderWidth: 1, opacity: 0.6 },
+        label: { show: true, position: 'bottom', formatter: rsiTag, fontSize: 8, fontWeight: 'normal', color: '#4d6e54', distance: 4 },
+      });
+    }
+  });
 
   // Trade markers — entry (●) at the trade's first_entry, exit (■) at the
   // trade's exit. Colored by side: blue for LONG entries, purple for SHORT
