@@ -32,8 +32,21 @@ from core import build_features, detect_divergence, DIV_PIVOT_R as _CORE_DIV_PIV
 DIV_PIVOT_L = 5
 DIV_PIVOT_R = 2
 
+# ═════ RSI period override (TV-tuned: 10) ═════
+# V2.2 core uses RSI 14 (Wilder default). divflip uses RSI 10 — faster
+# reaction, more pivots qualify the ≤50/≥70 filter, ~15% more trades.
+# TV-tested 2026-05-14: +78.66% / 6.40% DD / 118 trades / 99.15% WR vs
+# RSI 14's +72.50% / 7.52% DD / 103 trades / 100% WR. Bot runner recomputes
+# df["rsi"] with this period after build_features, then re-runs
+# detect_divergence so pivot RSI values reflect the override.
+RSI_PERIOD = 10
+
 # ═════ Constants ═════
-LEVERAGE       = 2.0
+# LEVERAGE is the DEFAULT used for NEW positions only. Each position captures
+# its leverage at L1 entry into pos["leverage"] so subsequent DCA legs use the
+# leverage that was in effect when the position opened — changes to this
+# constant only take effect for the next fresh entry.
+LEVERAGE       = 3.0
 RISK_PCT       = 0.06
 
 DCA_LEVELS     = 3
@@ -218,15 +231,18 @@ def be_should_activate(side: Side, first_entry: float, current_price: float) -> 
     return fav >= BE_TRIGGER_PCT
 
 
-def per_level_qty(equity: float, price: float, leg_idx: int = 0) -> float:
-    """Martingale-weighted per-leg sizing. Total notional cap = LEVERAGE × 0.95 ×
+def per_level_qty(equity: float, price: float, leg_idx: int = 0, leverage: float = None) -> float:
+    """Martingale-weighted per-leg sizing. Total notional cap = leverage × 0.95 ×
     equity is distributed across legs via MARTINGALE_RATIOS.
 
-    For 1:2:4 ratios: L1 = 1/7 of cap, L2 = 2/7, L3 = 4/7. Deepest leg gets
-    biggest qty (averages closer to SL, smallest unit loss when SL hits)."""
+    `leverage` param lets the caller pass the position's captured leverage
+    (so subsequent DCA legs honor the leverage that was in effect when L1
+    opened, even if the global LEVERAGE constant changes mid-trade).
+    """
     if price <= 0:
         return 0.0
-    total = (equity * 0.95 * LEVERAGE) / price
+    lev = leverage if leverage is not None else LEVERAGE
+    total = (equity * 0.95 * lev) / price
     total_ratio = sum(MARTINGALE_RATIOS[:DCA_LEVELS])
     if leg_idx >= len(MARTINGALE_RATIOS):
         return 0.0

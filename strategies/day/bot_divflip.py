@@ -20,13 +20,13 @@ STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_DIR = os.path.dirname(os.path.dirname(STRATEGY_DIR))
 sys.path.insert(0, STRATEGY_DIR)
 
-from core import build_features, detect_divergence
+from core import build_features, detect_divergence, rsi_series
 from core_divflip import (
     LEVERAGE, RISK_PCT, DCA_LEVELS, DCA_SPACING, SL_FROM_WORST,
     USE_BREAKEVEN, BE_TRIGGER_PCT, BE_BUFFER_PCT, TRAIL_DIST_PCT, DIV_FRESH_BARS,
     USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
     USE_TAKE_PROFIT, TP_PCT,
-    DIV_PIVOT_L, DIV_PIVOT_R,
+    DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -164,7 +164,10 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
 
 
 def open_position(state, side: str, entry_px: float, balance: float) -> dict:
-    qty = per_level_qty(balance, entry_px, leg_idx=0)   # L1 — martingale qty for first leg
+    # Snapshot leverage at L1 entry so DCA legs use the leverage in effect
+    # when this position opened, regardless of later changes to the constant.
+    pos_lev = LEVERAGE
+    qty = per_level_qty(balance, entry_px, leg_idx=0, leverage=pos_lev)
     qty = round(qty, 3)  # BTCUSDT step 0.001
     if qty <= 0:
         log.warning(f"  qty {qty} too small to open")
@@ -180,6 +183,7 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
         "qty_total": qty,
         "filled": 1,
         "be_activated": False,
+        "leverage": pos_lev,
         "entry_time": datetime.now(timezone.utc).isoformat(),
         "cycle_day": str(datetime.now(timezone.utc).date()),
     }
@@ -190,14 +194,17 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
 
 def _apply_dca_leg(pos, fill_px: float, balance: float, state, reason: str) -> bool:
     """Add a DCA leg at fill_px. Returns True if filled. Uses martingale
-    sizing — leg_idx = current filled count (new leg's index)."""
+    sizing — leg_idx = current filled count (new leg's index). Honors the
+    leverage that was snapshotted at L1 entry so mid-position config changes
+    to the global LEVERAGE constant don't resize this position's legs."""
     side = pos["side"]
-    qty = per_level_qty(balance, fill_px, leg_idx=pos["filled"])
+    pos_lev = pos.get("leverage", LEVERAGE)
+    qty = per_level_qty(balance, fill_px, leg_idx=pos["filled"], leverage=pos_lev)
     qty = round(qty, 3)
     if qty <= 0:
         return False
-    # Leverage cap guard — total notional must stay within balance × LEV × 0.95
-    max_total_qty = (balance * 0.95 * LEVERAGE) / fill_px
+    # Leverage cap guard — total notional must stay within balance × pos_lev × 0.95
+    max_total_qty = (balance * 0.95 * pos_lev) / fill_px
     if pos["qty_total"] + qty > max_total_qty:
         remaining = max_total_qty - pos["qty_total"]
         if remaining < 0.001:
@@ -258,6 +265,11 @@ def main():
         return
 
     df = build_features(df_5m, df_1d)
+    # RSI period override — build_features uses core.RSI_PERIOD (14) by
+    # default; divflip wants 10 (TV-tuned, faster pivot RSI reaction).
+    # Recompute the RSI column BEFORE detect_divergence so pivot RSI values
+    # reflect the override.
+    df["rsi"] = rsi_series(df["close"], RSI_PERIOD)
     # Override pivot R from V2.2's 5/5 to TV-tuned 5/2 — re-runs divergence
     # detection so bars_since_*_div columns reflect the faster confirmation.
     df = detect_divergence(df, DIV_PIVOT_L, DIV_PIVOT_R)

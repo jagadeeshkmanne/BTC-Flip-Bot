@@ -73,6 +73,14 @@
 
   /* ── Compact horizontal price scale (the focal viz) ──────── */
   .scale-wrap{padding:18px 18px 22px;border-top:1px solid var(--border);background:var(--panel-2)}
+  /* SL pinned to the left as a static card (off the bar) so the bar can zoom
+     into the entry→TP zone and give the L1/L2/L3/Avg/DCA/TP ticks real gaps. */
+  .scale-row{display:flex;align-items:stretch;gap:16px}
+  .scale-sl{flex-shrink:0;display:flex;flex-direction:column;justify-content:center;text-align:center;padding:10px 14px;background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.25);border-radius:6px;min-width:96px}
+  .scale-sl-name{font-size:10px;color:var(--red);font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+  .scale-sl-price{font-size:13px;font-weight:700;color:var(--text-bright);margin-top:3px}
+  .scale-sl-pct{font-size:11px;color:var(--muted);margin-top:2px;font-weight:600}
+  .scale-main{flex:1;min-width:0}
   .scale-zones{display:flex;justify-content:space-between;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;color:var(--muted)}
   .scale{position:relative;height:8px;background:linear-gradient(90deg,rgba(46,160,67,.18),rgba(31,38,46,.4) 50%,rgba(248,81,73,.18));border-radius:4px}
   .position.long .scale{background:linear-gradient(90deg,rgba(248,81,73,.18),rgba(31,38,46,.4) 50%,rgba(46,160,67,.18))}
@@ -83,17 +91,22 @@
   .scale-tick.sl{background:var(--red)}
   .scale-tick.entry{background:var(--gold)}
   .scale-tick.dca{background:var(--orange)}
-  .scale-labels-top{position:relative;height:68px;margin-bottom:8px}
+  /* Top labels: absolutely positioned above the bar so each label sits
+     vertically aligned with its tick. When two labels would visually
+     collide, the second drops to a 2nd tier underneath the first. */
+  .scale-labels-top{position:relative;height:96px;margin-bottom:8px}
   .scale-labels{position:relative;height:36px;margin-top:10px}
   .scale-lbl{position:absolute;top:0;transform:translateX(-50%);text-align:center;white-space:nowrap}
-  .scale-lbl.tier-2{top:34px}
+  .scale-lbl.tier-2{top:48px}
   .scale-lbl-name{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;line-height:1}
   .scale-lbl-price{font-size:11px;font-weight:700;margin-top:2px;color:var(--text-bright)}
   .scale-lbl-pct{font-size:10px;color:var(--muted);margin-top:1px;font-weight:600}
   .scale-lbl.tp .scale-lbl-name,.scale-lbl.tp .scale-lbl-price{color:var(--green-2)}
   .scale-lbl.sl .scale-lbl-name,.scale-lbl.sl .scale-lbl-price{color:var(--red)}
   .scale-lbl.entry .scale-lbl-name,.scale-lbl.entry .scale-lbl-price{color:var(--gold)}
+  .scale-lbl.leg .scale-lbl-name,.scale-lbl.leg .scale-lbl-price{color:#FFB347}
   .scale-lbl.dca .scale-lbl-name,.scale-lbl.dca .scale-lbl-price{color:var(--orange)}
+  .scale-tick.leg{background:#FFB347}
   .scale-lbl.mark .scale-lbl-name,.scale-lbl.mark .scale-lbl-price{color:var(--blue)}
 
   /* ── Position footer — closes/EOD info ───────────────────── */
@@ -237,18 +250,25 @@
         <span class="pos-pnl-pct num" id="posPnlPct">--</span>
       </div>
     </div>
-    <!-- Horizontal price scale -->
+    <!-- Horizontal price scale: SL pinned as a left-side card, bar zooms
+         into the entry→TP zone so ticks get real horizontal breathing room. -->
     <div class="scale-wrap">
-      <div class="scale-zones"><span id="zoneLeft">PROFIT</span><span id="zoneRight">LOSS</span></div>
-      <!-- Entry/TP/DCA/SL labels — rendered ABOVE the bar so they never get
-           visually clobbered when Mark drifts onto an entry/TP price. -->
-      <div class="scale-labels-top" id="scaleLabelsTop"></div>
-      <div class="scale" id="scaleTrack">
-        <div class="scale-mark" id="scaleMark"></div>
-        <!-- Ticks populated by JS -->
+      <div class="scale-row">
+        <div class="scale-sl" id="scaleSlCard">
+          <div class="scale-sl-name">SL</div>
+          <div class="scale-sl-price num" id="scaleSlPrice">--</div>
+          <div class="scale-sl-pct num" id="scaleSlPct">--</div>
+        </div>
+        <div class="scale-main">
+          <div class="scale-zones"><span id="zoneLeft">ENTRY ZONE</span><span id="zoneRight">PROFIT (TP)</span></div>
+          <div class="scale-labels-top" id="scaleLabelsTop"></div>
+          <div class="scale" id="scaleTrack">
+            <div class="scale-mark" id="scaleMark"></div>
+            <!-- Ticks populated by JS -->
+          </div>
+          <div class="scale-labels" id="scaleLabels"></div>
+        </div>
       </div>
-      <!-- Mark label only — rendered BELOW the bar. -->
-      <div class="scale-labels" id="scaleLabels"></div>
     </div>
     <div class="pos-foot">
       <span id="eodLabel">Closes by <b>20:00 UTC</b></span>
@@ -515,25 +535,55 @@ function renderPosition(price){
     }
   }
 
-  // Zone labels — for SHORT: profit = lower (left), loss = upper (right). LONG flipped.
-  if (p.side === 'SHORT') { $('zoneLeft').textContent = 'PROFIT (TP)'; $('zoneRight').textContent = 'LOSS (SL)'; }
-  else { $('zoneLeft').textContent = 'LOSS (SL)'; $('zoneRight').textContent = 'PROFIT (TP)'; }
+  // Zone labels — for the new layout the bar spans entry-zone → TP only.
+  // SL is rendered as its own card off to the left of the bar.
+  if (p.side === 'SHORT') { $('zoneLeft').textContent = 'PROFIT (TP)'; $('zoneRight').textContent = 'ENTRY ZONE'; }
+  else { $('zoneLeft').textContent = 'ENTRY ZONE'; $('zoneRight').textContent = 'PROFIT (TP)'; }
 
-  // Price scale: linear position from min to max of all relevant levels.
-  // Pre-DCA: show projected DCA target as a hint. Once DCA fills, p.entry
-  // already reflects the weighted avg from the proxy — so we just show
-  // Entry/TP/SL/Mark. No L1/L2 clutter after execution.
+  // SL card (left, off-bar) — always pinned at the corner so the bar can
+  // ignore the SL range and give the in-zone ticks real horizontal spacing.
+  const slEl = $('scaleSlCard');
+  if (slEl && p.sl > 0) {
+    slEl.style.display = '';
+    $('scaleSlPrice').textContent = fmt$0(p.sl);
+    const slDistPct = ((p.sl - mark) / mark) * 100;
+    $('scaleSlPct').textContent = (slDistPct >= 0 ? '+' : '') + slDistPct.toFixed(2) + '%';
+  } else if (slEl) {
+    slEl.style.display = 'none';
+  }
+
+  // Bar levels — show what's PENDING (future DCA targets) + Avg once it
+  // diverges from L1 (i.e. after at least one DCA fills). TP and Mark always.
+  //   filled=1: L2-target, L3-target  (no Avg — equals L1)
+  //   filled=2: L3-target, Avg        (one pending, Avg now meaningful)
+  //   filled=3: Avg only              (nothing pending)
+  const filled = p.filled || 1;
   const dcaSpacing = STRATEGY === 'divflip' ? 0.003 : 0.0085;
-  const dcaTargetPrice = p.filled < 2 && p.worstEntry > 0
-    ? (p.side === 'LONG' ? p.worstEntry * (1 - dcaSpacing) : p.worstEntry * (1 + dcaSpacing))
-    : null;
-  const levels = [
-    {key:'tp',    name:'TP',    price: p.prevMid},
-    {key:'entry', name:'Entry', price: p.entry},
-    {key:'dca',   name:'DCA',   price: dcaTargetPrice},  // null post-DCA → filtered out
-    {key:'sl',    name:'SL',    price: p.sl},
-    {key:'mark',  name:'Mark',  price: mark},
-  ].filter(l => l.price && l.price > 0);
+  // Pending DCA targets project from L1 (first entry) at fixed multiples of
+  // the spacing — L2 = L1 ± 0.3%, L3 = L1 ± 0.6%. Using L1 (not worst_entry)
+  // keeps the projections stable as more legs fill.
+  const l1Price = (p.legEntries && p.legEntries[0]) ? p.legEntries[0].px : null;
+  const projectFromL1 = (legNum) => {
+    if (!l1Price || l1Price <= 0) return null;
+    const mult = (legNum - 1) * dcaSpacing;
+    return p.side === 'LONG' ? l1Price * (1 - mult) : l1Price * (1 + mult);
+  };
+  const rawLevels = [
+    {key:'tp',   name:'TP',   price: p.prevMid},
+    {key:'mark', name:'Mark', price: mark},
+  ];
+  if (filled === 1) {
+    // No Avg label — Avg equals L1 with only one fill, so it would just
+    // clutter the bar without adding info. Show the two pending targets.
+    rawLevels.push({key:'leg', name:'L2', price: projectFromL1(2)});
+    rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+  } else if (filled === 2) {
+    rawLevels.push({key:'leg',   name:'L3',  price: projectFromL1(3)});
+    rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
+  } else if (filled >= 3) {
+    rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
+  }
+  const levels = rawLevels.filter(l => l.price && l.price > 0);
 
   const prices = levels.map(l => l.price);
   const min = Math.min(...prices), max = Math.max(...prices);
@@ -571,12 +621,13 @@ function renderPosition(price){
       trackEl.appendChild(tick);
     }
   });
-  // Stagger pass: sort top labels by horizontal position, push to tier-2 when
-  // a label sits within MIN_GAP_PCT of the most recent tier-1 neighbor.
-  // 8% gap ≈ 80px on a 1000px container — enough for the widest "$80,887" labels.
+  // Top labels: positioned at each tick's bar percentage so label visually
+  // aligns with its tick. When two labels would collide, the second drops to
+  // tier-2 underneath the first. With the bar zoomed to entry→TP only, L1/L2
+  // typically sit ~30% apart on the bar (no longer cramped in 5% of the span).
   const sorted = topLevels.map(l => ({...l, leftPct: pct(l.price)}))
                           .sort((a, b) => a.leftPct - b.leftPct);
-  const MIN_GAP_PCT = 8;
+  const MIN_GAP_PCT = 12;
   let lastTier1Pct = -Infinity;
   let topHtml = '';
   sorted.forEach(l => {
@@ -841,13 +892,29 @@ async function refresh(){
       // V2.2 — eod_held_on_day is set on bot.pos when fav ≥ 1.5% at 20:00 UTC,
       // signalling we're riding past the normal close to the 24h cap.
       const eodHeldOnDay = state.position ? (state.position.eod_held_on_day || null) : null;
+      // Per-leg fills — sourced from bot.state.position.entries (paper mode).
+      // Drives L1/L2/L3 labels and the weighted Avg entry on the bar.
+      const legEntries = (state.position && Array.isArray(state.position.entries))
+        ? state.position.entries.map(e => ({px: Number(e.px), qty: Number(e.qty)}))
+                                .filter(e => e.px > 0 && e.qty > 0)
+        : [];
+      // Weighted avg of all filled legs (matches what the bot uses for TP).
+      const totalQty = legEntries.reduce((s, e) => s + e.qty, 0);
+      const avgEntry = totalQty > 0
+        ? legEntries.reduce((s, e) => s + e.px * e.qty, 0) / totalQty
+        : 0;
+      // entry: prefer the weighted avg over L1 once DCA has fired. PnL math
+      // and posEntry display both read p.entry, so this keeps "entry" semantic
+      // with what the bot uses for TP (avg-based).
       positionSnapshot = livePos ? {
         side: livePos.side,
-        entry: livePos.entry,
+        entry: avgEntry > 0 ? avgEntry : livePos.entry,
         sl: slFromStatus || (state.position ? (state.position.sl || 0) : 0),
         qty: livePos.qty,
         worstEntry: statusPos.worst_entry || (state.position ? (state.position.worst_entry || livePos.entry) : livePos.entry),
         filled: statusPos.filled || (state.position ? (state.position.entries || [{}]).length : 1),
+        legEntries,
+        avgEntry,
         prevMid: tpFromStatus || liveTp || fallbackPrevMid,
         leverage: livePos.leverage,
         marginType: livePos.marginType,
@@ -856,11 +923,13 @@ async function refresh(){
         eodHeldOnDay,
       } : {
         side: pos.side,
-        entry: pos.first_entry || pos.entry_price || 0,
+        entry: avgEntry > 0 ? avgEntry : (pos.first_entry || pos.entry_price || 0),
         sl: slFromStatus || pos.sl || pos.sl_price || 0,
         qty: pos.qty_total || pos.qty || 0,
         worstEntry: pos.worst_entry || pos.first_entry || pos.entry_price || 0,
         filled: (pos.entries || [{}]).length,
+        legEntries,
+        avgEntry,
         prevMid: tpFromStatus || liveTp || fallbackPrevMid,
         beActivated,
         eodHeldOnDay,
