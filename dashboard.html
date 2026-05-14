@@ -401,13 +401,13 @@ const SR_SHORT_CONDS = [
   {key: 'Bear div fresh',   check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
 ];
 
-// Divergence-flip conditions: just freshness of the divergence pivot.
-// No S/R touch, no volume requirement — div firing IS the signal.
+// Divergence-flip conditions: freshness of the divergence pivot + RSI level
+// at pivot. No S/R touch, no volume requirement.
 const DIVFLIP_LONG_CONDS = [
-  {key: 'Bull div fresh (≤5 bars)', check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
+  {key: 'Bull div fresh + RSI@pivot ≤30 (≤20 bars)', check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
 ];
 const DIVFLIP_SHORT_CONDS = [
-  {key: 'Bear div fresh (≤5 bars)', check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
+  {key: 'Bear div fresh + RSI@pivot ≥70 (≤20 bars)', check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
 ];
 
 // Pick the right set based on the URL ?strategy= param.
@@ -493,7 +493,7 @@ function renderPosition(price){
   // Pre-DCA: show projected DCA target as a hint. Once DCA fills, p.entry
   // already reflects the weighted avg from the proxy — so we just show
   // Entry/TP/SL/Mark. No L1/L2 clutter after execution.
-  const dcaSpacing = STRATEGY === 'divflip' ? 0.006 : 0.0085;
+  const dcaSpacing = STRATEGY === 'divflip' ? 0.003 : 0.0085;
   const dcaTargetPrice = p.filled < 2 && p.worstEntry > 0
     ? (p.side === 'LONG' ? p.worstEntry * (1 - dcaSpacing) : p.worstEntry * (1 + dcaSpacing))
     : null;
@@ -644,13 +644,21 @@ function renderSetup(status){
     const bearAge = ind.bars_since_bear_div;
 
     if (STRATEGY === 'divflip') {
-      // Div-flip: only divergence freshness matters (no S/R, no volume, no EOD).
-      const freshLimit = 5;  // matches DIV_FRESH_BARS in core_divflip.py
+      // Div-flip: divergence freshness + RSI level at pivot (no S/R, no volume, no EOD).
+      const freshLimit = 20;  // matches DIV_FRESH_BARS in core_divflip.py
       const bullFresh = bullAge != null && bullAge !== 9999 && bullAge <= freshLimit;
       const bearFresh = bearAge != null && bearAge !== 9999 && bearAge <= freshLimit;
-      if (!bullFresh && !bearFresh) {
+      // The bot's filter also requires RSI at pivot ≤30 (bull) / ≥70 (bear).
+      // We only know if the bot SET the freshness condition (it includes the RSI filter).
+      const bullCondOk = isT(condData.conditions?.['Bull div fresh']);
+      const bearCondOk = isT(condData.conditions?.['Bear div fresh']);
+      if (!bullCondOk && !bearCondOk) {
         const ageStr = (a) => (a != null && a < 9999) ? `${a}b` : 'never';
-        reasons.push(`no fresh divergence (bull: ${ageStr(bullAge)} ago, bear: ${ageStr(bearAge)} ago — need ≤${freshLimit}b)`);
+        if (!bullFresh && !bearFresh) {
+          reasons.push(`no fresh divergence (bull: ${ageStr(bullAge)} ago, bear: ${ageStr(bearAge)} ago — need ≤${freshLimit}b)`);
+        } else {
+          reasons.push(`divergence stale or RSI-at-pivot doesn't qualify (need RSI ≤30 for bull / ≥70 for bear)`);
+        }
       }
     } else {
       // V2.2 S/R logic
@@ -1051,7 +1059,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const sub = document.getElementById('setupSub');
   if (sub) {
     sub.textContent = STRATEGY === 'divflip'
-      ? 'Fires on every fresh RSI divergence (≤5 bars). No S/R, no volume filter. Flips on opposite divergence. TP 0.7%/0.35% (pre/post-DCA) from avg, SL 1% from worst. No EOD.'
+      ? 'Fires on fresh RSI div (≤20 bars) with RSI at pivot ≤30 (bull) or ≥70 (bear). 3 DCA @ 0.3% spacing, martingale 1:2:4 sizing. Trailing SL: 1.8% from L1 (raw), tightens to peak-0.2% after +0.5% favorable. Flips on opposite div. No EOD.'
       : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
   }
   const sel = document.getElementById('strategySelector');
