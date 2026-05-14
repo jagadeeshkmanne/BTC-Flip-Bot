@@ -185,63 +185,58 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
     return pos
 
 
-def maybe_dca_on_div(pos, sig, live_px: float, balance: float, state) -> bool:
-    """Divergence-based DCA — fires ONLY when a new SAME-direction divergence
-    confirms this bar AND the new price improves the current avg entry.
+def _apply_dca_leg(pos, fill_px: float, balance: float, state, reason: str) -> bool:
+    """Add a DCA leg at fill_px. Returns True if filled. Shared helper for
+    fixed-distance and divergence-based DCA paths."""
+    side = pos["side"]
+    qty = per_level_qty(balance, fill_px)
+    qty = round(qty, 3)
+    if qty <= 0:
+        return False
+    # Leverage cap guard — total notional must stay within balance × LEV × 0.95
+    max_total_qty = (balance * 0.95 * LEVERAGE) / fill_px
+    if pos["qty_total"] + qty > max_total_qty:
+        remaining = max_total_qty - pos["qty_total"]
+        if remaining < 0.001:
+            log.info(f"  DCA L{pos['filled']+1} ({reason}) skipped — leverage cap reached")
+            return False
+        qty = round(remaining, 3)
+    fees = fill_px * qty * COMMISSION_PCT
+    state["balance"] -= fees
+    pos["entries"].append({"px": fill_px, "qty": qty})
+    if side == "LONG":
+        pos["worst_entry"] = min(pos["worst_entry"], fill_px)
+    else:
+        pos["worst_entry"] = max(pos["worst_entry"], fill_px)
+    pos["qty_total"] = sum(e["qty"] for e in pos["entries"])
+    pos["filled"] += 1
+    log.warning(f"  DCA L{pos['filled']} {side} {qty}@${fill_px:.2f} ({reason}) | "
+                f"new avg=${avg_entry_of(pos):.2f} worst=${pos['worst_entry']:.2f}")
+    return True
 
-    Replaces fixed-distance DCA (which would average into a trending move
-    against us — the failure mode that caused Trade 1's −$127 loss).
+
+def maybe_dca_fixed(pos, live_px: float, balance: float, state) -> bool:
+    """Fixed-distance DCA — fires at DCA_SPACING adverse from worst entry,
+    up to DCA_LEVELS total. All levels use fixed spacing (no div-confirmation
+    required for L3+).
     """
     if pos["filled"] >= DCA_LEVELS:
         return False
     side = pos["side"]
-    bsb = sig.raw.get("bars_since_bear_div", 9999)
-    bsu = sig.raw.get("bars_since_bull_div", 9999)
-    new_same_dir_div = (
-        (side == "LONG"  and bsu == 0) or
-        (side == "SHORT" and bsb == 0)
-    )
-    if not new_same_dir_div:
+    dca_trigger = dca_price(side, pos["worst_entry"])
+    crossed = (side == "LONG" and live_px <= dca_trigger) or \
+              (side == "SHORT" and live_px >= dca_trigger)
+    if not crossed:
         return False
-    # Skip if live price doesn't actually improve our avg (e.g., div on the
-    # way up after we entered LONG — averaging up doesn't help us).
-    avg_now = avg_entry_of(pos)
-    improves = (side == "LONG" and live_px < avg_now) or (side == "SHORT" and live_px > avg_now)
-    if not improves:
-        log.info(f"  DCA L{pos['filled']+1} skipped — new {side} div fired but live=${live_px:.2f} doesn't improve avg=${avg_now:.2f}")
-        return False
-    qty = per_level_qty(balance, live_px)
-    qty = round(qty, 3)
-    if qty <= 0:
-        return False
-    # Leverage cap guard
-    max_total_qty = (balance * 0.95 * LEVERAGE) / live_px
-    if pos["qty_total"] + qty > max_total_qty:
-        remaining = max_total_qty - pos["qty_total"]
-        if remaining < 0.001:
-            log.info(f"  DCA L{pos['filled']+1} skipped — leverage cap reached")
-            return False
-        qty = round(remaining, 3)
-    fees = live_px * qty * COMMISSION_PCT
-    state["balance"] -= fees
-    pos["entries"].append({"px": live_px, "qty": qty})
-    # worst_entry = furthest-against-us entry; for LONG that's the lowest fill
-    if side == "LONG":
-        pos["worst_entry"] = min(pos["worst_entry"], live_px)
-    else:
-        pos["worst_entry"] = max(pos["worst_entry"], live_px)
-    pos["qty_total"] = sum(e["qty"] for e in pos["entries"])
-    pos["filled"] += 1
-    log.warning(f"  DCA L{pos['filled']} {side} {qty}@${live_px:.2f} ON NEW DIV | "
-                f"new avg=${avg_entry_of(pos):.2f} worst=${pos['worst_entry']:.2f}")
-    return True
+    return _apply_dca_leg(pos, dca_trigger, balance, state, f"fixed -{DCA_SPACING*100:.1f}%")
 
 
 # ─── Main tick ───
 def main():
     log.info("=" * 60)
-    log.info(f"Divergence-Flip Paper Bot — trailing SL ({TRAIL_DIST_PCT*100:.2f}% from peak after BE @{BE_TRIGGER_PCT*100:.2f}%) "
-             f"| div-based DCA ({DCA_LEVELS} legs max) | hard SL {SL_FROM_WORST*100:.1f}% | flip-on-opposite | no EOD")
+    log.info(f"Divergence-Flip Paper Bot — RSI filter ≤30/≥70 | {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% | "
+             f"L1-anchored SL {SL_FROM_WORST*100:.1f}% | BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
+             f"flip | no EOD | fresh {DIV_FRESH_BARS}b")
 
     state = load_state()
 
@@ -298,8 +293,10 @@ def main():
             pos["peak_price"] = min(prev_peak, live_px)
         peak_price = pos["peak_price"]
 
-        # DCA fires only on NEW same-direction divergence (not fixed distance)
-        dca_fired = maybe_dca_on_div(pos, sig, live_px, state["balance"], state)
+        # Fixed-distance DCA — fires when price reaches worst_entry × (1 ∓ DCA_SPACING),
+        # up to DCA_LEVELS total. SL is anchored to L1 (raw_sl uses first_entry), so
+        # DCA can only improve avg — never widens the SL.
+        dca_fired = maybe_dca_fixed(pos, live_px, state["balance"], state)
         if dca_fired:
             pos = state["position"]
             worst_entry = pos["worst_entry"]
