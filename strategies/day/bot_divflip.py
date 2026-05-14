@@ -20,10 +20,13 @@ STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_DIR = os.path.dirname(os.path.dirname(STRATEGY_DIR))
 sys.path.insert(0, STRATEGY_DIR)
 
-from core import build_features  # re-use feature build (RSI, divergence detection)
+from core import build_features, detect_divergence
 from core_divflip import (
     LEVERAGE, RISK_PCT, DCA_LEVELS, DCA_SPACING, SL_FROM_WORST,
     USE_BREAKEVEN, BE_TRIGGER_PCT, BE_BUFFER_PCT, TRAIL_DIST_PCT, DIV_FRESH_BARS,
+    USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
+    USE_TAKE_PROFIT, TP_PCT,
+    DIV_PIVOT_L, DIV_PIVOT_R,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -235,9 +238,11 @@ def maybe_dca_fixed(pos, live_px: float, balance: float, state) -> bool:
 # ─── Main tick ───
 def main():
     log.info("=" * 60)
-    log.info(f"Divergence-Flip Paper Bot — RSI filter ≤30/≥70 | {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% | "
-             f"L1-anchored SL {SL_FROM_WORST*100:.1f}% | BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
-             f"flip | no EOD | fresh {DIV_FRESH_BARS}b")
+    log.info(f"Divergence-Flip Paper Bot — RSI filter ≤{RSI_LONG_MAX:.0f}/≥{RSI_SHORT_MIN:.0f} | {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% | "
+             f"L1-anchored SL {SL_FROM_WORST*100:.1f}% | "
+             f"{'TP ' + format(TP_PCT*100, '.2f') + '% from avg' if USE_TAKE_PROFIT else 'NO TP'} | "
+             f"BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
+             f"{'flip' if USE_FLIP else 'NO flip'} | no EOD | fresh {DIV_FRESH_BARS}b")
 
     state = load_state()
 
@@ -253,6 +258,9 @@ def main():
         return
 
     df = build_features(df_5m, df_1d)
+    # Override pivot R from V2.2's 5/5 to TV-tuned 5/2 — re-runs divergence
+    # detection so bars_since_*_div columns reflect the faster confirmation.
+    df = detect_divergence(df, DIV_PIVOT_L, DIV_PIVOT_R)
     last_idx = len(df) - 2  # last CLOSED 5m bar
     last = df.iloc[last_idx]
     close_px = float(last["close"])
@@ -311,12 +319,20 @@ def main():
         avg_entry = avg_entry_of(pos)
         sl_px = sl_price_divflip(side, worst_entry, first_entry, pos["be_activated"], peak_price)
 
-        # No hard TP — exits via SL/trail/flip only
         exit_reason = None
         exit_px = None
 
+        # Fixed TP from avg entry — primary exit when armed. Recomputed each
+        # tick because DCA updates avg_entry. Checked BEFORE the SL block so
+        # in-profit exits always win.
+        if USE_TAKE_PROFIT:
+            tp_px = avg_entry * (1 + TP_PCT) if side == "LONG" else avg_entry * (1 - TP_PCT)
+            if (side == "LONG" and live_px >= tp_px) or (side == "SHORT" and live_px <= tp_px):
+                exit_reason = "TP"
+                exit_px = tp_px
+
         # Hard SL / trailing SL check
-        if side == "LONG" and live_px <= sl_px:
+        if exit_px is None and side == "LONG" and live_px <= sl_px:
             # Classify exit reason: BE if SL == BE level; TRAIL if SL > BE level; SL otherwise
             be_sl = first_entry * (1 + BE_BUFFER_PCT)
             if pos["be_activated"] and sl_px > be_sl + 0.01:
@@ -326,7 +342,7 @@ def main():
             else:
                 exit_reason = "SL"
             exit_px = sl_px
-        elif side == "SHORT" and live_px >= sl_px:
+        elif exit_px is None and side == "SHORT" and live_px >= sl_px:
             be_sl = first_entry * (1 - BE_BUFFER_PCT)
             if pos["be_activated"] and sl_px < be_sl - 0.01:
                 exit_reason = "TRAIL"
@@ -336,8 +352,9 @@ def main():
                 exit_reason = "SL"
             exit_px = sl_px
 
-        # Flip on opposite divergence (only if no SL/trail fired)
-        if exit_px is None and sig.flip_opposite:
+        # Flip on opposite divergence — gated by USE_FLIP. Currently OFF
+        # (TV-tuned config) — trades ride to SL / trailing exit.
+        if USE_FLIP and exit_px is None and sig.flip_opposite:
             exit_reason = "FLIP"
             exit_px = live_px
             new_pos_after_flip = "SHORT" if side == "LONG" else "LONG"
@@ -386,8 +403,9 @@ def main():
         sl_p = sl_price_divflip(pos["side"], worst_e, first_e, pos["be_activated"], peak_e)
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
         peak_p = ((peak_e - first_e) / first_e * 100) * (1 if pos["side"] == "LONG" else -1)
-        # tp_px = peak_price (informational — that's the high-water "best so far").
-        # No fixed TP — exits via trailing SL or flip.
+        # tp_px = avg_entry × (1 ± TP_PCT). Recomputed each tick — DCA fills
+        # shift avg, so TP moves with it. Trailing SL is the backstop.
+        tp_p = (avg_e * (1 + TP_PCT) if pos["side"] == "LONG" else avg_e * (1 - TP_PCT)) if USE_TAKE_PROFIT else None
         pos_status = {
             "side": pos["side"],
             "first_entry": first_e,
@@ -396,7 +414,7 @@ def main():
             "peak_price": peak_e,
             "qty_total": pos["qty_total"],
             "filled": pos["filled"],
-            "tp_px": peak_e,           # show peak as the "high mark" instead of fixed TP
+            "tp_px": tp_p,
             "sl_px": sl_p,
             "be_activated": pos["be_activated"],
             "fav_pct": fav_p,
@@ -417,7 +435,7 @@ def main():
         "indicators": sig.raw,
         "conditions": sig.conditions,
         "stats": state["stats"],
-        "strategy": f"Divergence-Flip (trail {TRAIL_DIST_PCT*100:.1f}% after BE / div-DCA / SL {SL_FROM_WORST*100:.1f}% / flip / no EOD) [PAPER]",
+        "strategy": f"Divergence-Flip ({'TP ' + format(TP_PCT*100, '.1f') + '% / ' if USE_TAKE_PROFIT else ''}trail {TRAIL_DIST_PCT*100:.1f}% after BE / SL {SL_FROM_WORST*100:.1f}% from L1 / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% mart / {'flip' if USE_FLIP else 'NO flip'} / no EOD) [PAPER]",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),

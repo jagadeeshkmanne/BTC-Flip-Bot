@@ -2,13 +2,13 @@
 
 Always-in-market strategy that flips on every fresh RSI divergence.
 
-Spec:
+Spec (TV-tuned 2026-05-14 — 100.00% WR / +72.50% / PF 582 / 7.52% DD over 103 trades):
   - Entry: fresh bull div -> LONG, fresh bear div -> SHORT (no S/R touch required, no volume filter)
-  - DCA: 2 levels at 0.85% spacing
-  - TP: 0.5% from AVG entry (recomputed when DCA fires — closer to current price post-DCA)
-  - SL: 2% from worst entry
-  - BE: arms at +0.4% favorable from first entry, tightens SL to firstEntry +/- 0.25%
-  - Flip: opposite divergence -> close current position + open reverse
+  - DCA: 3 levels at 0.3% spacing, ANTI-martingale qty 3:3:2 (L1=37.5%, L2=37.5%, L3=25%)
+  - TP: 1% from AVG entry (PRIMARY exit — high hit rate, fires before trail in most trades)
+  - SL: 5% from L1 first entry (WIDE backstop — DCA never widens SL)
+  - BE: arms at +0.55% favorable from first entry, then trails peak ± 0.2% (backstop if TP doesn't hit)
+  - Flip: OFF (rides to TP/SL/trail — opposite divergence does NOT close position)
   - No EOD flatten, multi-cycle (unlimited per day)
   - Leverage cap 2x, 6% risk allocation
 
@@ -22,7 +22,15 @@ import pandas as pd
 import numpy as np
 
 # Re-use indicator computation from V2.2 core
-from core import build_features, detect_divergence, DIV_PIVOT_R  # noqa: F401
+from core import build_features, detect_divergence, DIV_PIVOT_R as _CORE_DIV_PIVOT_R  # noqa: F401
+
+# ═════ Pivot override (TV-tuned: 5L/2R) ═════
+# V2.2 core uses 5/5 (25-min confirmation lag). The TV-tuned divflip config
+# uses 5L/2R — pivot fires 10 min after the low instead of 25, catching
+# reversals 3 bars earlier. Bot runner re-runs detect_divergence with these
+# values after build_features so divergence columns reflect the override.
+DIV_PIVOT_L = 5
+DIV_PIVOT_R = 2
 
 # ═════ Constants ═════
 LEVERAGE       = 2.0
@@ -32,33 +40,47 @@ DCA_LEVELS     = 3
 DCA_SPACING    = 0.003        # 0.3% adverse triggers each DCA leg (L2 at -0.3%, L3 at -0.6%).
                               # Tight spacing fills L3 often (~50% of trades) → deep averaging.
 
-# Martingale sizing — biggest qty at deepest level. With 1:2:4 ratio, L3 has
-# 4× L1's qty. When SL hits, the biggest leg is closest to SL → smallest
-# per-unit loss. Average loss drops meaningfully vs equal-size DCA.
+# ANTI-martingale sizing — biggest qty at BEST (L1) price, smallest at
+# deepest leg. With 3:3:2 ratio: L1=37.5%, L2=37.5%, L3=25% of leverage cap.
+# Rationale: with USE_TAKE_PROFIT=True @ 1% from avg, front-loading L1
+# means TP fires sooner on a reversal. Producing 100.00% WR / PF 582 /
+# +72.50% / 7.52% DD over 103 trades on the user's TV backtest.
 # Total notional still capped by LEVERAGE — ratios just redistribute within cap.
-MARTINGALE_RATIOS = [1.0, 2.0, 4.0]   # qty multiplier per leg (L1, L2, L3)
-SL_FROM_WORST  = 0.018        # 1.8% below first entry — sweet spot from backtest sweep. Same WR as 2.0%, smaller loss per SL hit (~$19 less).
+MARTINGALE_RATIOS = [3.0, 3.0, 2.0]   # qty multiplier per leg (L1, L2, L3) — anti-martingale
+SL_FROM_WORST  = 0.05         # 5% from first entry (L1-anchored). Wide backstop — TV-tuned config relies on
+                              # 1% TP from avg entry (USE_TAKE_PROFIT below) and 0.2% trail-after-BE for actual
+                              # exits. SL only fires on a genuine adverse run (rare → 99% WR / 7.3% DD).
+
+# ─ Fixed TP from avg entry (TV-tuned: ON @ 1%) ─
+# Primary exit. Recomputed when DCA fires (avg moves closer to live), so a deep
+# DCA-filled position needs less recovery to hit TP. Trailing SL is the backstop
+# when price never reaches +1% (rare in TV backtest).
+USE_TAKE_PROFIT = True
+TP_PCT          = 0.01        # 1% from avg entry
 
 # 3Commas-style trailing — only arms at a meaningful profit threshold.
 # Below BE trigger: raw SL only (loss-bound). At BE trigger: trailing arms,
 # locks in min profit via BE_BUFFER floor, then trails peak − TRAIL_DIST_PCT.
 USE_BREAKEVEN  = True
-BE_TRIGGER_PCT = 0.005        # arm BE / trailing at +0.5% favorable from first entry (was 0.3%)
-BE_BUFFER_PCT  = 0.002        # initial floor at firstEntry ± 0.2% (was 0.15% — bigger after-fee lock-in)
+BE_TRIGGER_PCT = 0.0055       # arm BE / trailing at +0.55% favorable from first entry (TV-tuned)
+BE_BUFFER_PCT  = 0.002        # initial floor at firstEntry ± 0.2% (after-fee lock-in)
 TRAIL_DIST_PCT = 0.002        # 0.2% trail below peak (LONG) / above trough (SHORT)
 
-# RSI filter — only fire divergence entries when RSI at the pivot is in
-# extreme oversold (bull) / overbought (bear) territory. Cuts mid-range
-# divergences (the fakeout-prone ones, like the top-left BULL on chart).
-USE_RSI_LEVEL_FILTER = True
-RSI_LONG_MAX  = 30            # bull div: RSI at pivot ≤ 30 (oversold) to qualify
-RSI_SHORT_MIN = 70            # bear div: RSI at pivot ≥ 70 (overbought) to qualify
+# Flip on opposite divergence — OFF in TV-tuned config. Lets trades ride
+# to SL / trailing exit instead of bouncing between sides on every opposite
+# signal. With useFlip=ON, mid-position whipsaws ate into wins.
+USE_FLIP = False
 
-# Divergence freshness — tighter than V2.2's 20-bar window because we're
-# trading the divergence itself (not as a confirm for an S/R touch).
-DIV_FRESH_BARS = 20           # 100-min freshness window — same as V2.2's validated setting.
-                              # With RSI filter active, longer freshness = better outcomes (more
-                              # time to catch real high-quality signals; backtest confirmed).
+# RSI filter — asymmetric (TV-tuned). Loose bull (≤50) lets through most
+# bull divergences in this BTC uptrend regime. Strict bear (≥70) only
+# accepts genuinely overbought tops. Long-biased by design — caught the
+# Apr–May 2026 uptrend with 74.83% WR over 145 trades.
+USE_RSI_LEVEL_FILTER = True
+RSI_LONG_MAX  = 50            # bull div: RSI at pivot ≤ 50 (loose — catches most lows)
+RSI_SHORT_MIN = 70            # bear div: RSI at pivot ≥ 70 (strict — only extreme tops)
+
+# Divergence freshness window — 21 bars on 5m = 105 min.
+DIV_FRESH_BARS = 21
 
 Side = Literal["LONG", "SHORT"]
 
@@ -101,8 +123,10 @@ def evaluate_signal_divflip(df: pd.DataFrame, last_idx: int, current_side: Optio
     # RSI filter at pivot — bull needs RSI ≤ RSI_LONG_MAX (oversold),
     # bear needs RSI ≥ RSI_SHORT_MIN (overbought). Strips out the
     # mid-range divergences that tend to fakeout.
-    rsi_bull_pivot = _rsi_at_pivot(df, last_idx, bars_since_bull) if bull_fresh else None
-    rsi_bear_pivot = _rsi_at_pivot(df, last_idx, bars_since_bear) if bear_fresh else None
+    # Compute RSI@pivot even if not "fresh" so dashboard can show last
+    # pivot's RSI value alongside the freshness check.
+    rsi_bull_pivot = _rsi_at_pivot(df, last_idx, bars_since_bull) if bars_since_bull < 9999 else None
+    rsi_bear_pivot = _rsi_at_pivot(df, last_idx, bars_since_bear) if bars_since_bear < 9999 else None
     if USE_RSI_LEVEL_FILTER:
         if bull_fresh and (rsi_bull_pivot is None or rsi_bull_pivot > RSI_LONG_MAX):
             bull_fresh = False
@@ -126,9 +150,15 @@ def evaluate_signal_divflip(df: pd.DataFrame, last_idx: int, current_side: Optio
     elif current_side == "SHORT" and bull_fresh:
         s.flip_opposite = True
 
+    # Pre-compute pass/fail of the RSI@pivot check for dashboard display
+    bull_rsi_pass = (rsi_bull_pivot is not None) and (rsi_bull_pivot <= RSI_LONG_MAX)
+    bear_rsi_pass = (rsi_bear_pivot is not None) and (rsi_bear_pivot >= RSI_SHORT_MIN)
+
     s.conditions = {
         "Bull div fresh": bull_fresh,
         "Bear div fresh": bear_fresh,
+        f"Bull RSI@pivot ≤{int(RSI_LONG_MAX)}": bull_rsi_pass,
+        f"Bear RSI@pivot ≥{int(RSI_SHORT_MIN)}": bear_rsi_pass,
         f"In position ({current_side})" if current_side else "Flat": current_side is not None,
         "Opposite signal (flip)": s.flip_opposite,
     }
@@ -136,6 +166,10 @@ def evaluate_signal_divflip(df: pd.DataFrame, last_idx: int, current_side: Optio
         "bars_since_bear_div": bars_since_bear,
         "bars_since_bull_div": bars_since_bull,
         "rsi": float(row.get("rsi", 0)) if not pd.isna(row.get("rsi", np.nan)) else None,
+        "rsi_at_bull_pivot": rsi_bull_pivot,
+        "rsi_at_bear_pivot": rsi_bear_pivot,
+        "rsi_long_max": RSI_LONG_MAX,
+        "rsi_short_min": RSI_SHORT_MIN,
         "price": s.price,
     }
     return s

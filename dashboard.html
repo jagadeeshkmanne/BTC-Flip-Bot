@@ -339,20 +339,41 @@ const STRATEGY = new URLSearchParams(location.search).get('strategy') === 'divfl
 // is encoded into the dict key by the bot. Falls back to 1.1× (V2 default).
 const volKey = d => Object.keys(d.conditions || {}).find(k => k.startsWith('Volume >')) || 'Volume > 1.1× avg';
 // Format divergence freshness as "current age / required threshold" in
-// human-readable time. 1 bar = 5 min on the 5m TF; threshold is 20 bars
-// (100 min). Within threshold → green, beyond → red ✗ (caller decides via
-// .met). When no divergence ever fired (count >= 9999), show "none".
+// human-readable time. 1 bar = 5 min on the 5m TF. Threshold differs by
+// strategy: V2.2 = 20 bars (100m), divflip = 21 bars (105m).
 const fmtMins = m => {
   if (m < 60) return Math.round(m) + 'm';
   const h = Math.floor(m / 60), mm = Math.round(m % 60);
   return mm === 0 ? h + 'h' : h + 'h ' + mm + 'm';
 };
+const DIV_FRESH_MAX_BARS = STRATEGY === 'divflip' ? 21 : 20;
+const DIV_FRESH_MAX_MIN  = DIV_FRESH_MAX_BARS * 5;
 const divFreshAge = (d, side) => {
   const k = side === 'LONG' ? 'bars_since_bull_div' : 'bars_since_bear_div';
   const v = d?.[k];
-  if (v == null || v >= 9999) return 'none / 100m max';
+  if (v == null || v >= 9999) return `none / ${DIV_FRESH_MAX_MIN}m max`;
   const ageMin = v * 5;
-  return fmtMins(ageMin) + ' / 100m max';
+  return fmtMins(ageMin) + ` / ${DIV_FRESH_MAX_MIN}m max`;
+};
+// Format "RSI at last divergence pivot / required threshold" — shows the
+// actual RSI value the bot saw at the pivot bar vs the filter threshold.
+// Bot sends: indicators.rsi_at_bull_pivot / rsi_at_bear_pivot / rsi_long_max / rsi_short_min.
+const fmtRsiAtPivot = (d, side) => {
+  const k  = side === 'LONG' ? 'rsi_at_bull_pivot' : 'rsi_at_bear_pivot';
+  const tk = side === 'LONG' ? 'rsi_long_max'      : 'rsi_short_min';
+  const v  = d?.[k];
+  const th = d?.[tk] ?? (side === 'LONG' ? 50 : 70);
+  const cmp = side === 'LONG' ? '≤' : '≥';
+  if (v == null) return `none / ${cmp}${th}`;
+  return `${v.toFixed(1)} / ${cmp}${th}`;
+};
+const checkRsiAtPivot = (d, side) => {
+  const k  = side === 'LONG' ? 'rsi_at_bull_pivot' : 'rsi_at_bear_pivot';
+  const tk = side === 'LONG' ? 'rsi_long_max'      : 'rsi_short_min';
+  const v  = d?.[k];
+  const th = d?.[tk] ?? (side === 'LONG' ? 50 : 70);
+  if (v == null) return false;
+  return side === 'LONG' ? v <= th : v >= th;
 };
 // "Current value / required threshold" pattern so users see why a row is ✗.
 const fmtVolRatio = d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '× / 1.1× min' : '-- / 1.1× min';
@@ -402,12 +423,20 @@ const SR_SHORT_CONDS = [
 ];
 
 // Divergence-flip conditions: freshness of the divergence pivot + RSI level
-// at pivot. No S/R touch, no volume requirement.
+// at pivot (separate rows so you can see WHICH one is failing).
 const DIVFLIP_LONG_CONDS = [
-  {key: 'Bull div fresh + RSI@pivot ≤30 (≤20 bars)', check: d => isT(d.conditions?.['Bull div fresh']),  val: d => divFreshAge(d, 'LONG')},
+  {key: 'Bull div fresh (≤21 bars)', check: d => {
+    const v = d?.bars_since_bull_div;
+    return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
+  }, val: d => divFreshAge(d, 'LONG')},
+  {key: 'RSI @ bull pivot ≤ threshold', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
 ];
 const DIVFLIP_SHORT_CONDS = [
-  {key: 'Bear div fresh + RSI@pivot ≥70 (≤20 bars)', check: d => isT(d.conditions?.['Bear div fresh']),  val: d => divFreshAge(d, 'SHORT')},
+  {key: 'Bear div fresh (≤21 bars)', check: d => {
+    const v = d?.bars_since_bear_div;
+    return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
+  }, val: d => divFreshAge(d, 'SHORT')},
+  {key: 'RSI @ bear pivot ≥ threshold', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
 ];
 
 // Pick the right set based on the URL ?strategy= param.
@@ -572,14 +601,17 @@ function renderSetup(status){
   const ind = status.indicators || {};
   const condData = {...ind, conditions: status.conditions || {}};
   $('setupRsi').textContent = ind.rsi !== undefined ? ind.rsi.toFixed(1) : '--';
-  $('setupVol').textContent = ind.vol && ind.vol_avg ? (ind.vol/ind.vol_avg).toFixed(2) + '×' : '--';
-  const range = (ind.prev_H && ind.prev_L) ? ((ind.prev_H - ind.prev_L) / ind.prev_L * 100) : null;
-  // Lookback suffix — shows "(2d)" when the adaptive S/R cascade fell
-  // back to a multi-day range because prev-day was below the 2% floor.
-  // 1d (the default) is omitted to keep the stat clean.
-  const lookback = ind.prev_lookback || 1;
-  const lbSuffix = lookback > 1 ? ` <span style="color:var(--gold);font-size:11px;font-weight:600">(${lookback}d)</span>` : '';
-  $('setupRange').innerHTML = (range !== null ? range.toFixed(2) + '%' : '--') + lbSuffix;
+  // setupVol / setupRange exist only in S/R-DCA mode — divflip replaces the
+  // stats row with RSI thresholds in DOMContentLoaded, so guard the assignments.
+  const volEl = $('setupVol');
+  if (volEl) volEl.textContent = ind.vol && ind.vol_avg ? (ind.vol/ind.vol_avg).toFixed(2) + '×' : '--';
+  const rangeEl = $('setupRange');
+  if (rangeEl) {
+    const range = (ind.prev_H && ind.prev_L) ? ((ind.prev_H - ind.prev_L) / ind.prev_L * 100) : null;
+    const lookback = ind.prev_lookback || 1;
+    const lbSuffix = lookback > 1 ? ` <span style="color:var(--gold);font-size:11px;font-weight:600">(${lookback}d)</span>` : '';
+    rangeEl.innerHTML = (range !== null ? range.toFixed(2) + '%' : '--') + lbSuffix;
+  }
 
   const renderCondList = (defs, listEl) => {
     listEl.innerHTML = '';
@@ -645,19 +677,25 @@ function renderSetup(status){
 
     if (STRATEGY === 'divflip') {
       // Div-flip: divergence freshness + RSI level at pivot (no S/R, no volume, no EOD).
-      const freshLimit = 20;  // matches DIV_FRESH_BARS in core_divflip.py
+      const freshLimit = DIV_FRESH_MAX_BARS;
       const bullFresh = bullAge != null && bullAge !== 9999 && bullAge <= freshLimit;
       const bearFresh = bearAge != null && bearAge !== 9999 && bearAge <= freshLimit;
-      // The bot's filter also requires RSI at pivot ≤30 (bull) / ≥70 (bear).
-      // We only know if the bot SET the freshness condition (it includes the RSI filter).
-      const bullCondOk = isT(condData.conditions?.['Bull div fresh']);
-      const bearCondOk = isT(condData.conditions?.['Bear div fresh']);
-      if (!bullCondOk && !bearCondOk) {
+      const bullRsiOk = checkRsiAtPivot(condData, 'LONG');
+      const bearRsiOk = checkRsiAtPivot(condData, 'SHORT');
+      const rsiLongMax  = ind.rsi_long_max  ?? 50;
+      const rsiShortMin = ind.rsi_short_min ?? 70;
+      if (!(bullFresh && bullRsiOk) && !(bearFresh && bearRsiOk)) {
         const ageStr = (a) => (a != null && a < 9999) ? `${a}b` : 'never';
         if (!bullFresh && !bearFresh) {
           reasons.push(`no fresh divergence (bull: ${ageStr(bullAge)} ago, bear: ${ageStr(bearAge)} ago — need ≤${freshLimit}b)`);
+        } else if (bullFresh && !bullRsiOk) {
+          const v = ind.rsi_at_bull_pivot;
+          reasons.push(`bull div fresh but RSI@pivot ${v != null ? v.toFixed(1) : '—'} > ${rsiLongMax} (need ≤${rsiLongMax})`);
+        } else if (bearFresh && !bearRsiOk) {
+          const v = ind.rsi_at_bear_pivot;
+          reasons.push(`bear div fresh but RSI@pivot ${v != null ? v.toFixed(1) : '—'} < ${rsiShortMin} (need ≥${rsiShortMin})`);
         } else {
-          reasons.push(`divergence stale or RSI-at-pivot doesn't qualify (need RSI ≤30 for bull / ≥70 for bear)`);
+          reasons.push(`divergence stale or RSI-at-pivot doesn't qualify (need RSI ≤${rsiLongMax} for bull / ≥${rsiShortMin} for bear)`);
         }
       }
     } else {
@@ -1059,8 +1097,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const sub = document.getElementById('setupSub');
   if (sub) {
     sub.textContent = STRATEGY === 'divflip'
-      ? 'Fires on fresh RSI div (≤20 bars) with RSI at pivot ≤30 (bull) or ≥70 (bear). 3 DCA @ 0.3% spacing, martingale 1:2:4 sizing. Trailing SL: 1.8% from L1 (raw), tightens to peak-0.2% after +0.5% favorable. Flips on opposite div. No EOD.'
+      ? 'Fires on fresh RSI div (≤21 bars, pivot 5L/2R) with RSI at pivot ≤50 (bull) or ≥70 (bear) — asymmetric long-bias. 3 DCA @ 0.3% spacing, anti-martingale 3:3:2 sizing. TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. Flip OFF. No EOD.'
       : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
+  }
+  // Divflip has no 20:00 UTC force-flatten — hide the "Closes by 20:00 UTC"
+  // footer entirely (position rides to TP/SL/trail).
+  if (STRATEGY === 'divflip') {
+    document.querySelectorAll('.pos-foot').forEach(el => { el.style.display = 'none'; });
+  }
+  // Repurpose the setup-stats row for divflip: instead of Volume / Range yest.
+  // (S/R-DCA-only metrics), show the RSI@pivot thresholds the bot is filtering on.
+  if (STRATEGY === 'divflip') {
+    const stats = document.querySelector('.setup-stats');
+    if (stats) {
+      stats.innerHTML =
+        '<span>RSI now <b class="num" id="setupRsi">--</b></span>' +
+        '<span>Bull thr <b class="num">≤ 50</b></span>' +
+        '<span>Bear thr <b class="num">≥ 70</b></span>';
+    }
   }
   const sel = document.getElementById('strategySelector');
   if (sel) {
@@ -1499,6 +1553,9 @@ setInterval(() => {
   const utcH = now.getUTCHours();
 
   if (positionSnapshot) {
+    // Divflip has no 20:00 UTC EOD flatten — position rides to TP/SL/trail.
+    // Skip the EOD countdown entirely (footer is hidden by CSS below).
+    if (STRATEGY === 'divflip') return;
     // EOD countdown for the active position
     const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
     if (now >= eod) eod.setUTCDate(eod.getUTCDate() + 1);
@@ -1509,6 +1566,15 @@ setInterval(() => {
   // Flat — update setup card title with cycle countdown
   const titleEl = $('setupTitle');
   if (!titleEl || $('setupCard').style.display === 'none') return;
+
+  // Divergence-flip has NO EOD cutoff and NO 1-cycle-per-day cap — trades
+  // can fire 24/7 on fresh divergence. So no countdown is meaningful; just
+  // show the static "Waiting for Setup" title and let the conds card below
+  // explain what's needed (bull/bear div freshness + RSI@pivot).
+  if (STRATEGY === 'divflip') {
+    titleEl.textContent = 'Waiting for Setup';
+    return;
+  }
 
   const cycleDoneToday = lastHeroState.cycleClosedDay && (() => {
     // Compare lastHeroState.cycleClosedDay with current UTC date string
