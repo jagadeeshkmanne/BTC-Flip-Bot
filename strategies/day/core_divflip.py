@@ -30,7 +30,7 @@ RISK_PCT       = 0.06
 
 DCA_LEVELS     = 2
 DCA_SPACING    = 0.006        # 0.6% adverse triggers L2 (fixed). 2 levels — RSI filter cuts most trades to 1-leg anyway, bigger per-leg sizing gives bigger wins.
-SL_FROM_WORST  = 0.02         # 2% below first entry (raw SL — anchored to L1, room for multi-bar pullbacks to recover)
+SL_FROM_WORST  = 0.018        # 1.8% below first entry — sweet spot from backtest sweep. Same WR as 2.0%, smaller loss per SL hit (~$19 less).
 
 # 3Commas-style trailing — only arms at a meaningful profit threshold.
 # Below BE trigger: raw SL only (loss-bound). At BE trigger: trailing arms,
