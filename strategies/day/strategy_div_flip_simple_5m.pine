@@ -46,9 +46,10 @@ dcaSpacing = input.float(0.85, "DCA spacing (%)", minval=0.1, maxval=2.0, step=0
 
 // ─── Take Profit (hybrid) ───
 grpTP = "🎯 Take Profit"
-tpPreDcaPct  = input.float(0.5,  "TP pre-DCA (% from avg)",  minval=0.1, maxval=3.0, step=0.05, group=grpTP) / 100
-tpPostDcaPct = input.float(0.25, "TP post-DCA (% from avg)", minval=0.1, maxval=2.0, step=0.05, group=grpTP,
-     tooltip="Once DCA fires, qty doubles — half the move banks same $.") / 100
+tpPreDcaPct  = input.float(0.3,  "TP pre-DCA (% from avg)",  minval=0.1, maxval=3.0, step=0.05, group=grpTP,
+     tooltip="Tighter TP = higher hit rate. 0.3% catches more 'almost wins' that would otherwise reverse to SL.") / 100
+tpPostDcaPct = input.float(0.15, "TP post-DCA (% from avg)", minval=0.1, maxval=2.0, step=0.05, group=grpTP,
+     tooltip="Once DCA fires, qty doubles — half the move banks same $. 0.15% from doubled qty = similar $ to single-leg 0.3%.") / 100
 
 // ─── Stop Loss ───
 grpSL = "🛡️ Stop Loss"
@@ -93,10 +94,7 @@ useTrendFilter = input.bool(false, "1h EMA trend filter", group=grpQuality,
 trendEmaLen  = input.int(20, "1h EMA length", minval=10, maxval=200, group=grpQuality)
 
 // ─── Flip ───
-grpFlip = "🔄 Flip"
-useFlip = input.bool(true, "Close + reverse on opposite divergence", group=grpFlip)
-smartFlip = input.bool(true, "SMART: only flip if NOT in loss", group=grpFlip,
-     tooltip="Skip flip if current trade is underwater. Prevents 'losing LONG → flip → losing SHORT' chains in choppy trends. When OFF, flips on every opposite signal regardless of P&L.")
+useFlip = input.bool(true, "Close + reverse on opposite divergence", group="🔄 Flip")
 
 // ═════ Indicators ═════
 rsiVal = ta.rsi(close, rsiPeriod)
@@ -254,13 +252,11 @@ if strategy.position_size < 0 and not na(slShortPx) and not na(tpShortPx)
     if filledCount >= 2
         strategy.exit("xS2", from_entry="S2", limit=tpShortPx, stop=slShortPx)
 
-// ─── Flip on opposite divergence (with smart-flip option) ───
-if useFlip and strategy.position_size != 0 and not na(firstEntryPx)
-    favNow = strategy.position_size > 0 ? (close - firstEntryPx) / firstEntryPx : (firstEntryPx - close) / firstEntryPx
-    canFlip = not smartFlip or favNow >= 0
-    if strategy.position_size > 0 and bearDivOk and canFlip
+// ─── Flip on opposite divergence ───
+if useFlip and strategy.position_size != 0
+    if strategy.position_size > 0 and bearDivOk
         strategy.close_all(comment="FLIP→SHORT")
-    if strategy.position_size < 0 and bullDivOk and canFlip
+    if strategy.position_size < 0 and bullDivOk
         strategy.close_all(comment="FLIP→LONG")
 
 // ─── Cycle reset ───
