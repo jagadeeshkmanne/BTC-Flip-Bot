@@ -307,4 +307,4 @@ if barstate.islast
     table.cell(dash, 1, 10, "$" + str.tostring(strategy.equity, "#,###"))
     table.cell(dash, 0, 11, "BE armed")
     table.cell(dash, 1, 11, beActivated ? "YES (trailing)" : "—",
-         text_color=beActivated ? color.gold : color.gray)
+         text_color=beActivated ? color.new(#FFD700, 0) : color.gray)
