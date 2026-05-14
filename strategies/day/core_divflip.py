@@ -30,13 +30,16 @@ RISK_PCT       = 0.06
 
 DCA_LEVELS     = 3
 DCA_SPACING    = 0.004        # 0.4% adverse triggers each DCA leg (3 levels span ~0.8% from L1)
-SL_FROM_WORST  = 0.01         # 1% below worst entry (tighter than V2.2's 2%)
-TP_FROM_AVG_PRE_DCA  = 0.007   # 0.7% from avg entry pre-DCA — ~$33 net win on 1 leg
-TP_FROM_AVG_POST_DCA = 0.0035  # 0.35% from avg entry post-DCA — ~$33 net win on 2 legs (same $ at half the move)
+SL_FROM_WORST  = 0.01         # 1% below worst entry (raw SL — hard floor)
 
+# Trailing-SL config (no fixed TP — exits dynamically once price runs in our favor).
+# After BE arms at +0.3% favorable, SL trails at peak ± TRAIL_DIST_PCT.
+# 0.2% sits just above 5m BTC noise (0.05-0.15%) — wide enough to avoid noise
+# wicks, tight enough to capture reversals quickly.
 USE_BREAKEVEN  = True
-BE_TRIGGER_PCT = 0.003        # arm BE at +0.3% fav (proportional to wider 0.7% TP)
-BE_BUFFER_PCT  = 0.0015       # SL tightens to firstEntry +/- 0.15%
+BE_TRIGGER_PCT = 0.003        # arm BE / trailing at +0.3% favorable from first entry
+BE_BUFFER_PCT  = 0.0015       # initial floor at firstEntry ± 0.15% (when peak doesn't yet exceed this)
+TRAIL_DIST_PCT = 0.002        # 0.2% trail below peak (LONG) / above trough (SHORT)
 
 # Divergence freshness — tighter than V2.2's 20-bar window because we're
 # trading the divergence itself (not as a confirm for an S/R touch).
@@ -109,19 +112,26 @@ def dca_price(side: Side, worst_entry: float) -> float:
     return worst_entry * (1 - DCA_SPACING) if side == "LONG" else worst_entry * (1 + DCA_SPACING)
 
 
-def tp_price_from_avg(side: Side, avg_entry: float, filled_count: int = 1) -> float:
-    """TP at fixed % from current avg entry. Pre-DCA uses 0.5%; post-DCA uses 0.25%
-    (qty has doubled so we take same dollar profit at half the move). Recomputed
-    each tick — when DCA fires, avg AND target shift."""
-    tp_pct = TP_FROM_AVG_POST_DCA if filled_count > 1 else TP_FROM_AVG_PRE_DCA
-    return avg_entry * (1 + tp_pct) if side == "LONG" else avg_entry * (1 - tp_pct)
+def sl_price_divflip(side: Side, worst_entry: float, first_entry: Optional[float] = None,
+                     be_activated: bool = False, peak_price: Optional[float] = None) -> float:
+    """Composite SL with three components, pick the tightest (LONG: highest, SHORT: lowest):
+      - Raw SL    = worst_entry × (1 ∓ SL_FROM_WORST)         [hard floor, always active]
+      - BE SL     = first_entry × (1 ± BE_BUFFER_PCT)         [active when BE armed]
+      - Trail SL  = peak_price × (1 ∓ TRAIL_DIST_PCT)         [active when BE armed and peak set]
 
-
-def sl_price_divflip(side: Side, worst_entry: float, first_entry: Optional[float] = None, be_activated: bool = False) -> float:
-    """SL = worst_entry +/- SL_FROM_WORST. With BE armed, tightens to firstEntry +/- BE_BUFFER."""
-    if USE_BREAKEVEN and be_activated and first_entry is not None:
-        return first_entry * (1 + BE_BUFFER_PCT) if side == "LONG" else first_entry * (1 - BE_BUFFER_PCT)
-    return worst_entry * (1 - SL_FROM_WORST) if side == "LONG" else worst_entry * (1 + SL_FROM_WORST)
+    Before BE arms: only raw SL applies.
+    After BE arms: SL trails peak with a hard floor at firstEntry ± buffer.
+    """
+    raw_sl = worst_entry * (1 - SL_FROM_WORST) if side == "LONG" else worst_entry * (1 + SL_FROM_WORST)
+    if not (USE_BREAKEVEN and be_activated and first_entry is not None):
+        return raw_sl
+    be_sl = first_entry * (1 + BE_BUFFER_PCT) if side == "LONG" else first_entry * (1 - BE_BUFFER_PCT)
+    if peak_price is None or peak_price <= 0:
+        return max(raw_sl, be_sl) if side == "LONG" else min(raw_sl, be_sl)
+    trail_sl = peak_price * (1 - TRAIL_DIST_PCT) if side == "LONG" else peak_price * (1 + TRAIL_DIST_PCT)
+    if side == "LONG":
+        return max(raw_sl, be_sl, trail_sl)
+    return min(raw_sl, be_sl, trail_sl)
 
 
 def be_should_activate(side: Side, first_entry: float, current_price: float) -> bool:

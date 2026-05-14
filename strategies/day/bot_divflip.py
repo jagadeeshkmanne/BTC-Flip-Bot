@@ -23,9 +23,8 @@ sys.path.insert(0, STRATEGY_DIR)
 from core import build_features  # re-use feature build (RSI, divergence detection)
 from core_divflip import (
     LEVERAGE, RISK_PCT, DCA_LEVELS, DCA_SPACING, SL_FROM_WORST,
-    TP_FROM_AVG_PRE_DCA, TP_FROM_AVG_POST_DCA,
-    USE_BREAKEVEN, BE_TRIGGER_PCT, BE_BUFFER_PCT, DIV_FRESH_BARS,
-    evaluate_signal_divflip, dca_price, tp_price_from_avg,
+    USE_BREAKEVEN, BE_TRIGGER_PCT, BE_BUFFER_PCT, TRAIL_DIST_PCT, DIV_FRESH_BARS,
+    evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
 
@@ -173,6 +172,7 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
         "side": side,
         "first_entry": entry_px,
         "worst_entry": entry_px,
+        "peak_price": entry_px,    # high-water (LONG) / low-water (SHORT) mark, drives trailing SL
         "entries": [{"px": entry_px, "qty": qty}],
         "qty_total": qty,
         "filled": 1,
@@ -185,40 +185,54 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
     return pos
 
 
-def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
-    """If DCA trigger hit AND we still have legs to fill, add a leg.
-    Returns True if DCA fired."""
+def maybe_dca_on_div(pos, sig, live_px: float, balance: float, state) -> bool:
+    """Divergence-based DCA — fires ONLY when a new SAME-direction divergence
+    confirms this bar AND the new price improves the current avg entry.
+
+    Replaces fixed-distance DCA (which would average into a trending move
+    against us — the failure mode that caused Trade 1's −$127 loss).
+    """
     if pos["filled"] >= DCA_LEVELS:
         return False
     side = pos["side"]
-    dca_trigger = dca_price(side, pos["worst_entry"])
-    crossed = (side == "LONG" and live_px <= dca_trigger) or \
-              (side == "SHORT" and live_px >= dca_trigger)
-    if not crossed:
+    bsb = sig.raw.get("bars_since_bear_div", 9999)
+    bsu = sig.raw.get("bars_since_bull_div", 9999)
+    new_same_dir_div = (
+        (side == "LONG"  and bsu == 0) or
+        (side == "SHORT" and bsb == 0)
+    )
+    if not new_same_dir_div:
         return False
-    qty = per_level_qty(balance, dca_trigger)
+    # Skip if live price doesn't actually improve our avg (e.g., div on the
+    # way up after we entered LONG — averaging up doesn't help us).
+    avg_now = avg_entry_of(pos)
+    improves = (side == "LONG" and live_px < avg_now) or (side == "SHORT" and live_px > avg_now)
+    if not improves:
+        log.info(f"  DCA L{pos['filled']+1} skipped — new {side} div fired but live=${live_px:.2f} doesn't improve avg=${avg_now:.2f}")
+        return False
+    qty = per_level_qty(balance, live_px)
     qty = round(qty, 3)
     if qty <= 0:
         return False
-    # Leverage cap guard — total notional (existing + new leg) must not exceed
-    # balance × LEVERAGE × 0.95. Protects against over-leverage when DCA_LEVELS
-    # changes mid-position (e.g., 2 → 3): existing legs were sized for the OLD
-    # per-leg split, so adding a new leg blindly would push total > cap.
-    max_total_qty = (balance * 0.95 * LEVERAGE) / dca_trigger
+    # Leverage cap guard
+    max_total_qty = (balance * 0.95 * LEVERAGE) / live_px
     if pos["qty_total"] + qty > max_total_qty:
         remaining = max_total_qty - pos["qty_total"]
-        if remaining < 0.001:  # below BTCUSDT step
-            log.info(f"  DCA L{pos['filled']+1} skipped — leverage cap reached "
-                     f"(total {pos['qty_total']:.3f} ≈ max {max_total_qty:.3f})")
+        if remaining < 0.001:
+            log.info(f"  DCA L{pos['filled']+1} skipped — leverage cap reached")
             return False
-        qty = round(remaining, 3)  # partial leg to top up to the cap
-    fees = dca_trigger * qty * COMMISSION_PCT
+        qty = round(remaining, 3)
+    fees = live_px * qty * COMMISSION_PCT
     state["balance"] -= fees
-    pos["entries"].append({"px": dca_trigger, "qty": qty})
-    pos["worst_entry"] = dca_trigger
+    pos["entries"].append({"px": live_px, "qty": qty})
+    # worst_entry = furthest-against-us entry; for LONG that's the lowest fill
+    if side == "LONG":
+        pos["worst_entry"] = min(pos["worst_entry"], live_px)
+    else:
+        pos["worst_entry"] = max(pos["worst_entry"], live_px)
     pos["qty_total"] = sum(e["qty"] for e in pos["entries"])
     pos["filled"] += 1
-    log.warning(f"  DCA L{pos['filled']} {side} {qty}@${dca_trigger:.2f} | "
+    log.warning(f"  DCA L{pos['filled']} {side} {qty}@${live_px:.2f} ON NEW DIV | "
                 f"new avg=${avg_entry_of(pos):.2f} worst=${pos['worst_entry']:.2f}")
     return True
 
@@ -226,8 +240,8 @@ def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
 # ─── Main tick ───
 def main():
     log.info("=" * 60)
-    log.info(f"Divergence-Flip Paper Bot — TP {TP_FROM_AVG_PRE_DCA*100:.2f}%/{TP_FROM_AVG_POST_DCA*100:.2f}% (pre/post-DCA) "
-             f"| SL {SL_FROM_WORST*100:.1f}% | BE @{BE_TRIGGER_PCT*100:.2f}% | flip-on-opposite | no EOD")
+    log.info(f"Divergence-Flip Paper Bot — trailing SL ({TRAIL_DIST_PCT*100:.2f}% from peak after BE @{BE_TRIGGER_PCT*100:.2f}%) "
+             f"| div-based DCA ({DCA_LEVELS} legs max) | hard SL {SL_FROM_WORST*100:.1f}% | flip-on-opposite | no EOD")
 
     state = load_state()
 
@@ -274,44 +288,57 @@ def main():
         first_entry = pos["first_entry"]
         worst_entry = pos["worst_entry"]
 
-        # DCA fill check (live price)
-        dca_fired = maybe_dca(pos, live_px, state["balance"], state)
+        # Update peak (high-water mark for LONG, low-water for SHORT).
+        # Drives the trailing SL — captured before any DCA fill so trailing
+        # tracks actual price excursion, not the new leg's fill price.
+        prev_peak = pos.get("peak_price", first_entry)
+        if side == "LONG":
+            pos["peak_price"] = max(prev_peak, live_px)
+        else:
+            pos["peak_price"] = min(prev_peak, live_px)
+        peak_price = pos["peak_price"]
+
+        # DCA fires only on NEW same-direction divergence (not fixed distance)
+        dca_fired = maybe_dca_on_div(pos, sig, live_px, state["balance"], state)
         if dca_fired:
             pos = state["position"]
             worst_entry = pos["worst_entry"]
 
-        # BE activation check
+        # BE activation check (uses first_entry — sticky once armed)
         if not pos["be_activated"] and be_should_activate(side, first_entry, live_px):
             pos["be_activated"] = True
-            log.warning(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from entry ${first_entry:.2f})")
+            log.warning(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from entry ${first_entry:.2f}) — trailing SL now active")
 
-        # Current TP / SL — TP uses 0.5% pre-DCA, 0.25% post-DCA (qty doubled)
+        # Composite SL: raw / BE / trailing (whichever is tightest)
         avg_entry = avg_entry_of(pos)
-        tp_px = tp_price_from_avg(side, avg_entry, pos["filled"])
-        sl_px = sl_price_divflip(side, worst_entry, first_entry, pos["be_activated"])
+        sl_px = sl_price_divflip(side, worst_entry, first_entry, pos["be_activated"], peak_price)
 
-        # Exit checks against live price (SL first, then TP, then flip)
+        # No hard TP — exits via SL/trail/flip only
         exit_reason = None
         exit_px = None
 
-        # SL check (worst-case priority)
+        # Hard SL / trailing SL check
         if side == "LONG" and live_px <= sl_px:
-            exit_reason = "BE" if pos["be_activated"] and abs(sl_px - first_entry * (1 + BE_BUFFER_PCT)) < 0.01 else "SL"
+            # Classify exit reason: BE if SL == BE level; TRAIL if SL > BE level; SL otherwise
+            be_sl = first_entry * (1 + BE_BUFFER_PCT)
+            if pos["be_activated"] and sl_px > be_sl + 0.01:
+                exit_reason = "TRAIL"
+            elif pos["be_activated"] and abs(sl_px - be_sl) < 0.01:
+                exit_reason = "BE"
+            else:
+                exit_reason = "SL"
             exit_px = sl_px
         elif side == "SHORT" and live_px >= sl_px:
-            exit_reason = "BE" if pos["be_activated"] and abs(sl_px - first_entry * (1 - BE_BUFFER_PCT)) < 0.01 else "SL"
+            be_sl = first_entry * (1 - BE_BUFFER_PCT)
+            if pos["be_activated"] and sl_px < be_sl - 0.01:
+                exit_reason = "TRAIL"
+            elif pos["be_activated"] and abs(sl_px - be_sl) < 0.01:
+                exit_reason = "BE"
+            else:
+                exit_reason = "SL"
             exit_px = sl_px
 
-        # TP check
-        if exit_px is None:
-            if side == "LONG" and live_px >= tp_px:
-                exit_reason = "TP"
-                exit_px = tp_px
-            elif side == "SHORT" and live_px <= tp_px:
-                exit_reason = "TP"
-                exit_px = tp_px
-
-        # Flip check (only if no TP/SL fired)
+        # Flip on opposite divergence (only if no SL/trail fired)
         if exit_px is None and sig.flip_opposite:
             exit_reason = "FLIP"
             exit_px = live_px
@@ -325,9 +352,10 @@ def main():
         else:
             # No exit fired — log current state
             fav_pct = ((live_px - avg_entry) / avg_entry * 100) * (1 if side == "LONG" else -1)
+            peak_pct = ((peak_price - first_entry) / first_entry * 100) * (1 if side == "LONG" else -1)
             be_tag = " [BE]" if pos["be_activated"] else ""
             log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} "
-                     f"fav={fav_pct:+.2f}% TP=${tp_px:.2f} SL=${sl_px:.2f}{be_tag}")
+                     f"fav={fav_pct:+.2f}% peak=${peak_price:.2f}({peak_pct:+.2f}%) SL=${sl_px:.2f}{be_tag}")
 
     # ─ Entry check (if flat) ─
     # Don't re-enter on the same tick as a natural TP/SL/BE exit — wait for a
@@ -336,7 +364,7 @@ def main():
     if state["position"] is None:
         if new_pos_after_flip:
             open_position(state, new_pos_after_flip, live_px, state["balance"])
-        elif exit_reason_this_tick in ("TP", "SL", "BE"):
+        elif exit_reason_this_tick in ("SL", "BE", "TRAIL"):
             log.info(f"  Just exited via {exit_reason_this_tick} this tick — waiting for new signal")
         elif sig.side:
             open_position(state, sig.side, live_px, state["balance"])
@@ -356,20 +384,25 @@ def main():
         avg_e = avg_entry_of(pos)
         worst_e = pos["worst_entry"]
         first_e = pos["first_entry"]
-        tp_p = tp_price_from_avg(pos["side"], avg_e, pos["filled"])
-        sl_p = sl_price_divflip(pos["side"], worst_e, first_e, pos["be_activated"])
+        peak_e = pos.get("peak_price", first_e)
+        sl_p = sl_price_divflip(pos["side"], worst_e, first_e, pos["be_activated"], peak_e)
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
+        peak_p = ((peak_e - first_e) / first_e * 100) * (1 if pos["side"] == "LONG" else -1)
+        # tp_px = peak_price (informational — that's the high-water "best so far").
+        # No fixed TP — exits via trailing SL or flip.
         pos_status = {
             "side": pos["side"],
             "first_entry": first_e,
             "avg_entry": avg_e,
             "worst_entry": worst_e,
+            "peak_price": peak_e,
             "qty_total": pos["qty_total"],
             "filled": pos["filled"],
-            "tp_px": tp_p,
+            "tp_px": peak_e,           # show peak as the "high mark" instead of fixed TP
             "sl_px": sl_p,
             "be_activated": pos["be_activated"],
             "fav_pct": fav_p,
+            "peak_pct": peak_p,
             "entry_time": pos.get("entry_time"),
         }
 
@@ -386,7 +419,7 @@ def main():
         "indicators": sig.raw,
         "conditions": sig.conditions,
         "stats": state["stats"],
-        "strategy": "Divergence-Flip (TP 0.5% from avg / SL 2% / flip-on-opposite / no EOD) [PAPER]",
+        "strategy": f"Divergence-Flip (trail {TRAIL_DIST_PCT*100:.1f}% after BE / div-DCA / SL {SL_FROM_WORST*100:.1f}% / flip / no EOD) [PAPER]",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
