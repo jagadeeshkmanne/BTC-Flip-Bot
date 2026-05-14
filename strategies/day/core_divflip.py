@@ -28,8 +28,15 @@ from core import build_features, detect_divergence, DIV_PIVOT_R  # noqa: F401
 LEVERAGE       = 2.0
 RISK_PCT       = 0.06
 
-DCA_LEVELS     = 2
-DCA_SPACING    = 0.006        # 0.6% adverse triggers L2 (fixed). 2 levels — RSI filter cuts most trades to 1-leg anyway, bigger per-leg sizing gives bigger wins.
+DCA_LEVELS     = 3
+DCA_SPACING    = 0.003        # 0.3% adverse triggers each DCA leg (L2 at -0.3%, L3 at -0.6%).
+                              # Tight spacing fills L3 often (~50% of trades) → deep averaging.
+
+# Martingale sizing — biggest qty at deepest level. With 1:2:4 ratio, L3 has
+# 4× L1's qty. When SL hits, the biggest leg is closest to SL → smallest
+# per-unit loss. Average loss drops meaningfully vs equal-size DCA.
+# Total notional still capped by LEVERAGE — ratios just redistribute within cap.
+MARTINGALE_RATIOS = [1.0, 2.0, 4.0]   # qty multiplier per leg (L1, L2, L3)
 SL_FROM_WORST  = 0.018        # 1.8% below first entry — sweet spot from backtest sweep. Same WR as 2.0%, smaller loss per SL hit (~$19 less).
 
 # 3Commas-style trailing — only arms at a meaningful profit threshold.
@@ -177,9 +184,16 @@ def be_should_activate(side: Side, first_entry: float, current_price: float) -> 
     return fav >= BE_TRIGGER_PCT
 
 
-def per_level_qty(equity: float, price: float) -> float:
-    """Sizing: at LEVERAGE cap, total notional = LEVERAGE × 0.95 × equity.
-    Per leg = total / price / DCA_LEVELS."""
+def per_level_qty(equity: float, price: float, leg_idx: int = 0) -> float:
+    """Martingale-weighted per-leg sizing. Total notional cap = LEVERAGE × 0.95 ×
+    equity is distributed across legs via MARTINGALE_RATIOS.
+
+    For 1:2:4 ratios: L1 = 1/7 of cap, L2 = 2/7, L3 = 4/7. Deepest leg gets
+    biggest qty (averages closer to SL, smallest unit loss when SL hits)."""
     if price <= 0:
         return 0.0
-    return (equity * 0.95 * LEVERAGE) / price / DCA_LEVELS
+    total = (equity * 0.95 * LEVERAGE) / price
+    total_ratio = sum(MARTINGALE_RATIOS[:DCA_LEVELS])
+    if leg_idx >= len(MARTINGALE_RATIOS):
+        return 0.0
+    return total * MARTINGALE_RATIOS[leg_idx] / total_ratio

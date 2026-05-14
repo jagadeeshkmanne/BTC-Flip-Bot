@@ -161,7 +161,7 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
 
 
 def open_position(state, side: str, entry_px: float, balance: float) -> dict:
-    qty = per_level_qty(balance, entry_px)
+    qty = per_level_qty(balance, entry_px, leg_idx=0)   # L1 — martingale qty for first leg
     qty = round(qty, 3)  # BTCUSDT step 0.001
     if qty <= 0:
         log.warning(f"  qty {qty} too small to open")
@@ -186,10 +186,10 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
 
 
 def _apply_dca_leg(pos, fill_px: float, balance: float, state, reason: str) -> bool:
-    """Add a DCA leg at fill_px. Returns True if filled. Shared helper for
-    fixed-distance and divergence-based DCA paths."""
+    """Add a DCA leg at fill_px. Returns True if filled. Uses martingale
+    sizing — leg_idx = current filled count (new leg's index)."""
     side = pos["side"]
-    qty = per_level_qty(balance, fill_px)
+    qty = per_level_qty(balance, fill_px, leg_idx=pos["filled"])
     qty = round(qty, 3)
     if qty <= 0:
         return False
@@ -228,7 +228,8 @@ def maybe_dca_fixed(pos, live_px: float, balance: float, state) -> bool:
               (side == "SHORT" and live_px >= dca_trigger)
     if not crossed:
         return False
-    return _apply_dca_leg(pos, dca_trigger, balance, state, f"fixed -{DCA_SPACING*100:.1f}%")
+    # Use martingale qty for THIS leg's index (filled count = leg_idx for the new leg)
+    return _apply_dca_leg(pos, dca_trigger, balance, state, f"fixed -{DCA_SPACING*100:.1f}% mart{int(__import__('core_divflip').MARTINGALE_RATIOS[pos['filled']])}x")
 
 
 # ─── Main tick ───
