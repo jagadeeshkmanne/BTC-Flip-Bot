@@ -91,6 +91,7 @@
   .scale-tick.sl{background:var(--red)}
   .scale-tick.entry{background:#ffffff;box-shadow:0 0 6px rgba(255,255,255,.55)}
   .scale-tick.dca{background:var(--orange)}
+  .scale-tick.be{background:var(--gold);box-shadow:0 0 6px rgba(240,185,11,.55)}
   /* Top labels: absolutely positioned above the bar so each label sits
      vertically aligned with its tick. When two labels would visually
      collide, the second drops to a 2nd tier underneath the first. */
@@ -106,6 +107,7 @@
   .scale-lbl.entry .scale-lbl-name,.scale-lbl.entry .scale-lbl-price{color:#ffffff}
   .scale-lbl.leg .scale-lbl-name,.scale-lbl.leg .scale-lbl-price{color:#FFB347}
   .scale-lbl.dca .scale-lbl-name,.scale-lbl.dca .scale-lbl-price{color:var(--orange)}
+  .scale-lbl.be .scale-lbl-name,.scale-lbl.be .scale-lbl-price{color:var(--gold)}
   .scale-tick.leg{background:#FFB347}
   .scale-lbl.mark .scale-lbl-name,.scale-lbl.mark .scale-lbl-price{color:var(--blue)}
 
@@ -205,11 +207,12 @@
 <header class="topbar">
   <div class="brand">
     <span class="brand-name">BTC Day Bot</span>
-    <span class="brand-tag" id="brandTag">Paper · Mainnet · 5m S/R DCA</span>
+    <span class="brand-tag" id="brandTag">Paper · Mainnet · Divergence-Flip v1</span>
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
+    <option value="divflip">Divergence-Flip v1</option>
+    <option value="divflip_v2">Divergence-Flip v2</option>
     <option value="sr_dca">V2.2 S/R DCA</option>
-    <option value="divflip">Divergence-Flip</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -352,8 +355,16 @@ const START_BALANCE = 5000;
 // ── URL params parsed early so other code can branch on them ──────
 // URL_ENV defaults to mainnet (paper bot's data source); ?env=testnet for legacy view.
 const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
-// STRATEGY: ?strategy=divflip routes to the Divergence-Flip paper bot.
-const STRATEGY = new URLSearchParams(location.search).get('strategy') === 'divflip' ? 'divflip' : 'sr_dca';
+// RAW_STRATEGY: ?strategy= picks the bot data source — 'divflip' (v1),
+// 'divflip_v2' (3rd bot) or 'sr_dca'. Default landing page = divflip v1.
+const RAW_STRATEGY = (() => {
+  const s = new URLSearchParams(location.search).get('strategy');
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2') ? s : 'divflip';
+})();
+// STRATEGY = rendering family. divflip_v2 renders like divflip; only DCA
+// spacing / leg count differ (handled via the DIVFLIP_V2 flag).
+const STRATEGY = RAW_STRATEGY === 'sr_dca' ? 'sr_dca' : 'divflip';
+const DIVFLIP_V2 = RAW_STRATEGY === 'divflip_v2';
 
 // Entry conditions — V2: Touch + Volume + RSI Divergence (3 per side).
 // Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
@@ -562,7 +573,7 @@ function renderPosition(price){
   //   filled=2: Avg + L3-target                       (filled legs collapsed)
   //   filled=3: Avg only                              (nothing pending)
   const filled = p.filled || 1;
-  const dcaSpacing = STRATEGY === 'divflip' ? 0.0035 : 0.0085;
+  const dcaSpacing = DIVFLIP_V2 ? 0.005 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085);
   // legAt(n) → actual filled price for leg n (null if not filled).
   // Pending DCA targets project from L1 at fixed multiples of the spacing
   // (L2 = L1 ± 0.35%, L3 = L1 ± 0.70%). Using L1 (not worst_entry) keeps
@@ -579,18 +590,28 @@ function renderPosition(price){
     {key:'mark', name:'Mark', price: mark},
   ];
   if (filled === 1) {
-    // Show the L1 entry tick + the two pending DCA targets. Avg label is
-    // omitted since it equals L1 with only one fill.
+    // Show the L1 entry tick + the pending DCA targets. Avg label is
+    // omitted since it equals L1 with only one fill. v2 has no L3.
     rawLevels.push({key:'entry', name:'Entry', price: l1Price});
     rawLevels.push({key:'leg',   name:'L2',    price: projectFromL1(2)});
-    rawLevels.push({key:'leg',   name:'L3',    price: projectFromL1(3)});
+    if (!DIVFLIP_V2) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled === 2) {
     // L1 + L2 collapse into Avg — individual leg prices no longer relevant.
-    // L3 stays as a pending target until it fires.
+    // L3 stays as a pending target until it fires (v1 only — v2 has 2 legs).
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
-    rawLevels.push({key:'leg',   name:'L3',  price: projectFromL1(3)});
+    if (!DIVFLIP_V2) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
+  }
+  // BE arm price — L1 × (1 ± 0.55%). When live crosses this, the bot tightens
+  // SL to trail-from-peak. Tagged "BE ✓" once armed so user sees the state at
+  // a glance. Shown only for divflip (SR_DCA uses a different BE mechanic).
+  if (STRATEGY === 'divflip' && l1Price && l1Price > 0) {
+    const BE_TRIGGER_PCT = 0.0055;
+    const beArmPx = p.side === 'LONG'
+      ? l1Price * (1 + BE_TRIGGER_PCT)
+      : l1Price * (1 - BE_TRIGGER_PCT);
+    rawLevels.push({key:'be', name: p.beActivated ? 'BE ✓' : 'BE arm', price: beArmPx});
   }
   const levels = rawLevels.filter(l => l.price && l.price > 0);
 
@@ -818,7 +839,7 @@ function renderSetup(status){
 // ── Main refresh — pulls bot state every 15s via HTTP ─────────
 async function refresh(){
   try {
-    const stratParam = STRATEGY === 'divflip' ? '?strategy=divflip' : '';
+    const stratParam = '?strategy=' + RAW_STRATEGY;
     const [r1, r2, r3] = await Promise.all([
       fetch('/api/bot/day/state' + stratParam),
       fetch('/api/bot/day/status' + stratParam),
@@ -921,6 +942,13 @@ async function refresh(){
       // sharing the testnet account — that snuck a lev=2 into a 3x divflip
       // position and made the ROI display read half what it should.
       const botLeverage = (state.position && state.position.leverage) || 1;
+      // entry_time of the currently open position — used by the chart to HIDE
+      // signals that fired while the bot was already in a position (irrelevant
+      // since the single-position bot can't act on them).
+      const botEntryTime = (state.position && state.position.entry_time) || null;
+      // Also surface tradeLog onto lastHeroState so renderPriceChart can hide
+      // signals that fell within any closed-trade window.
+      lastHeroState.tradeLog = state.trade_log || [];
       positionSnapshot = livePos ? {
         side: livePos.side,
         entry: avgEntry > 0 ? avgEntry : livePos.entry,
@@ -936,6 +964,7 @@ async function refresh(){
         liveUpnl: livePos.uPnL,
         beActivated,
         eodHeldOnDay,
+        entryTime: botEntryTime,
       } : {
         side: pos.side,
         entry: avgEntry > 0 ? avgEntry : (pos.first_entry || pos.entry_price || 0),
@@ -949,6 +978,7 @@ async function refresh(){
         leverage: botLeverage,
         beActivated,
         eodHeldOnDay,
+        entryTime: botEntryTime,
       };
       $('positionCard').style.display = '';
       $('setupCard').style.display = 'none';
@@ -1032,11 +1062,13 @@ async function refresh(){
 
       $('equityCard').style.display = '';
       const eq = ensureEquityChart();
-      // Group trades by UTC date — strategy is 1-cycle/day so usually one
-      // entry per date, but bucketing handles any future multi-trade days.
+      // Group trades by UTC exit date. divflip bot writes `exit_time`, SR_DCA
+      // bot writes `time` — accept either, else divflip trades fall into a
+      // "NaN-NaN-NaN" bucket and the equity + buy-hold curves break entirely.
       const dayBucket = {};
       tl.forEach(t => {
-        const d = new Date(t.time);
+        const d = new Date(t.exit_time || t.time);
+        if (isNaN(d.getTime())) return;  // skip records with no usable timestamp
         const key = `${d.getUTCFullYear()}-${(d.getUTCMonth()+1).toString().padStart(2,'0')}-${d.getUTCDate().toString().padStart(2,'0')}`;
         if (!dayBucket[key]) dayBucket[key] = {date: key, pnlPct: 0, pnlUsd: 0};
         dayBucket[key].pnlPct += (t.pnl_pct || 0);
@@ -1199,7 +1231,7 @@ let lastBar = null; // most recent kline cache, used to compute change %
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
 // Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
-  const stratLabel = STRATEGY === 'divflip' ? 'Divergence-Flip' : '5m S/R DCA';
+  const stratLabel = DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA');
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy
@@ -1227,11 +1259,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   const sel = document.getElementById('strategySelector');
   if (sel) {
-    sel.value = STRATEGY;
+    sel.value = RAW_STRATEGY;
     sel.addEventListener('change', () => {
       const u = new URL(location.href);
-      if (sel.value === 'divflip') u.searchParams.set('strategy', 'divflip');
-      else u.searchParams.delete('strategy');
+      u.searchParams.set('strategy', sel.value);
       location.href = u.toString();
     });
   }
@@ -1416,55 +1447,29 @@ function renderPriceChart() {
   const heroInd = lastHeroState.indicators || {};
   const rsiLongMax = heroInd.rsi_long_max ?? (STRATEGY === 'divflip' ? 50 : 100);
   const rsiShortMin = heroInd.rsi_short_min ?? (STRATEGY === 'divflip' ? 66 : 0);
+  // Build "was the bot in a position at time X" predicate so we can HIDE
+  // divergences that fired during a trade — they're irrelevant signals
+  // because the single-position bot couldn't act on them anyway.
+  // (tradeLog itself is declared later in this function for the trade markers
+  // pass; reading from lastHeroState directly here avoids the double-declare.)
+  const tradeWindows = (lastHeroState.tradeLog || [])
+    .filter(t => t.entry_time && (t.exit_time || t.time))
+    .map(t => ({entry: new Date(t.entry_time).getTime(), exit: new Date(t.exit_time || t.time).getTime()}));
+  const openEntryMs = (positionSnapshot && positionSnapshot.entryTime)
+    ? new Date(positionSnapshot.entryTime).getTime()
+    : null;
+  const wasInPosition = (barMs) => {
+    for (const w of tradeWindows) {
+      if (barMs >= w.entry && barMs <= w.exit) return true;
+    }
+    if (openEntryMs && barMs >= openEntryMs) return true;
+    return false;
+  };
   const markers = [];
-  // PASS: large filled triangle, bold colored "BULL"/"BEAR" + RSI value
-  // FAIL: tiny hollow circle (outline only), light gray "·" mark, RSI faded.
-  //       Visually unmistakable — the filtered ones look like noise; the
-  //       acted-on ones look like signals.
-  divs.bear.forEach(confirmIdx => {
-    if (confirmIdx >= klines.length) return;
-    const pivotIdx = Math.max(0, confirmIdx - pivotR);
-    const rsiAtPivot = rsi[pivotIdx];
-    const passes = !isNaN(rsiAtPivot) && rsiAtPivot >= rsiShortMin;
-    const rsiTag = !isNaN(rsiAtPivot) ? rsiAtPivot.toFixed(0) : '';
-    if (passes) {
-      markers.push({
-        coord: [times[confirmIdx], highs[confirmIdx]],
-        symbol: 'triangle', symbolSize: 18, symbolRotate: 180, symbolOffset: [0, '-90%'],
-        itemStyle: { color: '#ff5b6e', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
-        label: { show: true, position: 'top', formatter: `BEAR ${rsiTag}`, fontSize: 11, fontWeight: 'bold', color: '#ff5b6e', distance: 8, textBorderColor: '#0d1117', textBorderWidth: 2 },
-      });
-    } else {
-      markers.push({
-        coord: [times[confirmIdx], highs[confirmIdx]],
-        symbol: 'circle', symbolSize: 5, symbolOffset: [0, '-220%'],
-        itemStyle: { color: 'transparent', borderColor: '#7a4348', borderWidth: 1, opacity: 0.6 },
-        label: { show: true, position: 'top', formatter: rsiTag, fontSize: 8, fontWeight: 'normal', color: '#6e4347', distance: 4 },
-      });
-    }
-  });
-  divs.bull.forEach(confirmIdx => {
-    if (confirmIdx >= klines.length) return;
-    const pivotIdx = Math.max(0, confirmIdx - pivotR);
-    const rsiAtPivot = rsi[pivotIdx];
-    const passes = !isNaN(rsiAtPivot) && rsiAtPivot <= rsiLongMax;
-    const rsiTag = !isNaN(rsiAtPivot) ? rsiAtPivot.toFixed(0) : '';
-    if (passes) {
-      markers.push({
-        coord: [times[confirmIdx], lows[confirmIdx]],
-        symbol: 'triangle', symbolSize: 18, symbolOffset: [0, '90%'],
-        itemStyle: { color: '#2ecc6f', borderColor: '#fff', borderWidth: 1.5, shadowColor: 'rgba(0,0,0,0.5)', shadowBlur: 4 },
-        label: { show: true, position: 'bottom', formatter: `BULL ${rsiTag}`, fontSize: 11, fontWeight: 'bold', color: '#2ecc6f', distance: 8, textBorderColor: '#0d1117', textBorderWidth: 2 },
-      });
-    } else {
-      markers.push({
-        coord: [times[confirmIdx], lows[confirmIdx]],
-        symbol: 'circle', symbolSize: 5, symbolOffset: [0, '220%'],
-        itemStyle: { color: 'transparent', borderColor: '#427a4f', borderWidth: 1, opacity: 0.6 },
-        label: { show: true, position: 'bottom', formatter: rsiTag, fontSize: 8, fontWeight: 'normal', color: '#4d6e54', distance: 4 },
-      });
-    }
-  });
+  // Divergence-pivot markers intentionally removed from the chart. The
+  // entry/exit trade markers below tell the actionable story; the raw
+  // divergence pivots were just noise. The pivot-detection machinery still
+  // runs (used elsewhere to validate signals), it's just not plotted here.
 
   // Trade markers — entry (●) at the trade's first_entry, exit (■) at the
   // trade's exit. Colored by side: blue for LONG entries, purple for SHORT
@@ -1487,7 +1492,9 @@ function renderPriceChart() {
   // Labels are rendered with a dark background pill + colored text + border.
   tradeLog.forEach(tr => {
     const entryIdx = findBarIdx(tr.entry_time);
-    const exitIdx  = findBarIdx(tr.time);
+    // divflip writes `exit_time`; SR_DCA writes `time`. Accept either, else
+    // the SHORT exit marker is silently dropped.
+    const exitIdx  = findBarIdx(tr.exit_time || tr.time);
     const isLong = tr.side === 'LONG';
     const won = (tr.pnl_usd || 0) > 0;
     if (entryIdx >= 0 && tr.first_entry) {
@@ -1551,12 +1558,21 @@ function renderPriceChart() {
   if (prevH)   { yMax = Math.max(yMax, prevH); yMin = Math.min(yMin, prevH); }
   if (prevL)   { yMax = Math.max(yMax, prevL); yMin = Math.min(yMin, prevL); }
   if (prevMid) { yMax = Math.max(yMax, prevMid); yMin = Math.min(yMin, prevMid); }
-  const yPad = (yMax - yMin) * 0.05;
+  // Also include trade entry/exit prices so the labels (which extend above
+  // the SHORT entry arrow and below the LONG entry arrow) don't get clipped
+  // by the chart's top/bottom edges.
+  tradeLog.forEach(tr => {
+    if (tr.first_entry) { yMax = Math.max(yMax, +tr.first_entry); yMin = Math.min(yMin, +tr.first_entry); }
+    if (tr.exit)        { yMax = Math.max(yMax, +tr.exit);        yMin = Math.min(yMin, +tr.exit);        }
+  });
+  // 8% padding (was 5%) — extra headroom for label pills above SHORT entries
+  // and below LONG entries.
+  const yPad = (yMax - yMin) * 0.08;
   yMin -= yPad; yMax += yPad;
 
   const chart = ensurePriceChart();
   chart.setOption({
-    grid: { left: 60, right: 100, top: 16, bottom: 86 },
+    grid: { left: 60, right: 100, top: 32, bottom: 86 },
     xAxis: { type: 'category', data: times, axisLabel: { fontSize: 9, color: '#9aa4b2', interval: Math.floor(klines.length / 12) }, splitLine: { show: false } },
     yAxis: { scale: true, min: yMin, max: yMax, axisLabel: { fontSize: 10, color: '#9aa4b2', formatter: v => '$' + (v >= 1000 ? (v/1000).toFixed(1)+'k' : v) }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: params => {

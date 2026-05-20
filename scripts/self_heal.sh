@@ -1,13 +1,14 @@
 #!/bin/bash
 # self_heal.sh — Runs every 10 minutes via cron
-# Checks: (1) dashboard server alive, (2) both paper bots fired recently
+# Checks: (1) dashboard server alive, (2) all three paper bots fired recently
 # Restarts the dashboard server if down; logs an alert if any bot is stale
 
 set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
 SR_DATA_DIR="$BOT_DIR/data/paper"           # V2.2 S/R paper bot
-DIVFLIP_DATA_DIR="$BOT_DIR/data/paper_divflip"  # Divergence-Flip paper bot
+DIVFLIP_DATA_DIR="$BOT_DIR/data/paper_divflip"        # Divergence-Flip v1 paper bot
+DIVFLIP_V2_DATA_DIR="$BOT_DIR/data/paper_divflip_v2"  # Divergence-Flip v2 paper bot (3rd)
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -73,7 +74,10 @@ check_bot() {
 # ── Check 2: V2.2 S/R paper bot ───────────────────────────────────
 check_bot "V2.2 S/R" "$SR_DATA_DIR/bot_paper.log" "$SR_DATA_DIR/state_paper.json"
 
-# ── Check 3: Divergence-Flip paper bot ────────────────────────────
+# ── Check 3: Divergence-Flip v1 paper bot ─────────────────────────
 check_bot "Div-Flip" "$DIVFLIP_DATA_DIR/bot.log" "$DIVFLIP_DATA_DIR/state.json"
+
+# ── Check 4: Divergence-Flip v2 paper bot (3rd bot) ───────────────
+check_bot "Div-Flip v2" "$DIVFLIP_V2_DATA_DIR/bot.log" "$DIVFLIP_V2_DATA_DIR/state.json"
 
 exit 0
