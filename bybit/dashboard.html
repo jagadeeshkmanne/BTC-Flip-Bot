@@ -28,8 +28,9 @@
   .dots { display:flex; gap:14px; margin-left:auto; flex-wrap:wrap; }
   .dot { display:flex; align-items:center; gap:5px; font-size:12px; }
   .dot i { width:9px; height:9px; border-radius:50%; background:var(--mut);
-    display:inline-block; }
+    display:inline-block; transition:background .2s; }
   .dot.ok i { background:var(--grn); } .dot.bad i { background:var(--red); }
+  .dot.live i { background:var(--blu); box-shadow:0 0 6px var(--blu); }
 
   .warn { background:#3a2d12; border:1px solid #5c4514; color:#e3b341;
     padding:8px 12px; border-radius:6px; font-size:12px; margin-bottom:14px; }
@@ -42,6 +43,8 @@
     letter-spacing:.5px; }
   .card .val { font-size:22px; font-weight:600; margin-top:4px; }
   .card .sub { font-size:11px; color:var(--mut); margin-top:2px; }
+  .flash { animation:fl .4s ease-out; }
+  @keyframes fl { from{color:var(--blu);} to{} }
 
   .panel { background:var(--card); border:1px solid var(--line);
     border-radius:8px; padding:14px; margin-top:12px; }
@@ -79,6 +82,7 @@
   <h1>Bybit Divflip v1</h1>
   <span id="mode" class="badge monitor">…</span>
   <div class="dots">
+    <span class="dot" id="d-live"><i></i>Live feed</span>
     <span class="dot" id="d-api"><i></i>API</span>
     <span class="dot" id="d-keys"><i></i>Keys</span>
     <span class="dot" id="d-bot"><i></i>Bot</span>
@@ -89,9 +93,12 @@
   This bot trades real money on that strategy by explicit request.</div>
 
 <div class="grid cards">
+  <div class="card"><div class="lbl">Live price</div>
+    <div class="val mono" id="price">—</div>
+    <div class="sub" id="pricesub">streaming from Bybit…</div></div>
   <div class="card"><div class="lbl">Balance</div>
     <div class="val mono" id="balance">—</div>
-    <div class="sub" id="price">—</div></div>
+    <div class="sub" id="peak">—</div></div>
   <div class="card"><div class="lbl">Unrealised P&L</div>
     <div class="val mono" id="upnl">—</div>
     <div class="sub" id="favpct">—</div></div>
@@ -100,10 +107,7 @@
     <div class="sub" id="trades">—</div></div>
   <div class="card"><div class="lbl">Win rate</div>
     <div class="val mono" id="winrate">—</div>
-    <div class="sub" id="peak">—</div></div>
-  <div class="card"><div class="lbl">Drawdown</div>
-    <div class="val mono" id="dd">—</div>
-    <div class="sub">from peak equity</div></div>
+    <div class="sub" id="dd">—</div></div>
 </div>
 
 <div class="panel">
@@ -135,12 +139,68 @@ const pct = n => (n>=0?"+":"") + Number(n).toFixed(2) + "%";
 const cls = n => n>0 ? "grn" : n<0 ? "red" : "";
 const px = n => n==null ? "—" : "$" + Number(n).toLocaleString(undefined,
   {minimumFractionDigits:1, maximumFractionDigits:1});
+const setDot = (id, ok) => { $(id).className = "dot " + (ok?"ok":"bad"); };
 
-function setDot(id, ok) {
-  const el = $(id); el.className = "dot " + (ok ? "ok" : "bad");
+// ── shared state ──
+let POS = null;          // latest position object from status.json (bot, 1-min)
+let PAIR = "BTCUSDT";
+let wsPrice = null;      // real-time price from the Bybit websocket
+
+// ── LIVE render — runs on every websocket tick (sub-second) ──
+function renderLive() {
+  if (wsPrice == null) return;
+  const el = $("price");
+  el.textContent = px(wsPrice);
+  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  $("pricesub").textContent = PAIR + " · real-time";
+
+  if (POS) {
+    const dir = POS.side === "LONG" ? 1 : -1;
+    const up  = (wsPrice - POS.avg_entry) * POS.qty_total * dir;
+    const fav = (wsPrice / POS.avg_entry - 1) * 100 * dir;
+    $("upnl").textContent = usd(up);
+    $("upnl").className = "val mono " + cls(up);
+    $("favpct").textContent = "fav " + pct(fav);
+    const pu = $("pos-upnl");
+    if (pu) { pu.textContent = usd(up); pu.className = "v mono " + cls(up); }
+    const pf = $("pos-fav");
+    if (pf) { pf.textContent = pct(fav); pf.className = "v mono " + cls(fav); }
+  }
 }
 
-async function tick() {
+// ── Bybit public websocket — real-time BTCUSDT price ──
+let ws = null, wsPing = null;
+function connectWS() {
+  setDot("d-live", false);
+  try { ws = new WebSocket("wss://stream.bybit.com/v5/public/linear"); }
+  catch (e) { setTimeout(connectWS, 3000); return; }
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({op:"subscribe", args:["tickers."+PAIR]}));
+    clearInterval(wsPing);
+    wsPing = setInterval(() => {
+      if (ws && ws.readyState === 1) ws.send(JSON.stringify({op:"ping"}));
+    }, 20000);
+  };
+  ws.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.topic && m.topic.indexOf("tickers") === 0 && m.data) {
+      const lp = m.data.lastPrice;
+      if (lp !== undefined && lp !== null && lp !== "") {
+        wsPrice = parseFloat(lp);
+        $("d-live").className = "dot live";
+        renderLive();
+      }
+    }
+  };
+  ws.onclose = () => {
+    setDot("d-live", false); clearInterval(wsPing); setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+
+// ── SLOW poll — position / SL / TP / balance / trade log (bot, every 5s) ──
+async function poll() {
   let st, state, health;
   try {
     [st, state, health] = await Promise.all([
@@ -148,11 +208,11 @@ async function tick() {
       fetch("/api/state").then(r=>r.json()),
       fetch("/api/health").then(r=>r.json()),
     ]);
-  } catch (e) {
-    $("foot").textContent = "⚠ cannot reach dashboard server"; return;
-  }
+  } catch (e) { $("foot").textContent = "⚠ cannot reach dashboard server"; return; }
 
-  // ── connectivity + mode ──
+  PAIR = st.pair || "BTCUSDT";
+  POS  = st.position || null;
+
   const conn = st.connectivity || {};
   setDot("d-api", conn.public);
   setDot("d-keys", conn.signed);
@@ -161,59 +221,57 @@ async function tick() {
   $("mode").textContent = live ? "LIVE — REAL MONEY" : "MONITOR ONLY";
   $("mode").className = "badge " + (live ? "live" : "monitor");
 
-  // ── stat cards ──
-  $("balance").textContent = st.balance!=null ? usd(st.balance) : "—";
-  $("price").textContent = st.pair + " " + px(st.live_price);
-  $("peak").textContent = "peak " + (st.peak_equity!=null ? usd(st.peak_equity) : "—");
+  // price — only fall back to the bot's 1-min price until the websocket connects
+  if (wsPrice == null) {
+    $("price").textContent = px(st.live_price);
+    $("pricesub").textContent = PAIR + " · bot feed (1-min)";
+  }
 
-  const p = st.position;
-  const up = p ? (p.unrealised_pnl||0) : 0;
-  $("upnl").textContent = p ? usd(up) : "—";
-  $("upnl").className = "val mono " + cls(up);
-  $("favpct").textContent = p && p.fav_pct!=null ? "fav " + pct(p.fav_pct) : "flat";
+  $("balance").textContent = st.balance!=null ? usd(st.balance) : "—";
+  $("peak").textContent = "peak " + (st.peak_equity!=null ? usd(st.peak_equity) : "—");
 
   const stats = st.stats || {total:0,wins:0,pnl:0};
   $("rpnl").textContent = pct(stats.pnl||0);
   $("rpnl").className = "val mono " + cls(stats.pnl||0);
   $("trades").textContent = (stats.total||0) + " trades closed";
-  $("winrate").textContent = stats.total ?
-    Math.round(stats.wins/stats.total*100) + "%" : "—";
+  $("winrate").textContent = stats.total ? Math.round(stats.wins/stats.total*100)+"%" : "—";
   const dd = (st.drawdown_pct||0)*100;
-  $("dd").textContent = pct(dd);
-  $("dd").className = "val mono " + (dd<0 ? "red" : "");
+  $("dd").textContent = "drawdown " + pct(dd);
 
-  // ── position panel ──
-  if (p) {
+  // position panel
+  if (POS) {
     const legs = [1,2,3].map(i =>
-      `<span class="leg ${i<=p.filled?'on':''}">L${i}</span>`).join("");
+      `<span class="leg ${i<=POS.filled?'on':''}">L${i}</span>`).join("");
     $("position").innerHTML = `
       <div class="posrow">
         <div><div class="k">Side</div><div class="v">
-          <span class="side ${p.side}">${p.side}</span></div></div>
-        <div><div class="k">Avg entry</div><div class="v mono">${px(p.avg_entry)}</div></div>
-        <div><div class="k">Quantity</div><div class="v mono">${p.qty_total} BTC</div></div>
+          <span class="side ${POS.side}">${POS.side}</span></div></div>
+        <div><div class="k">Avg entry</div><div class="v mono">${px(POS.avg_entry)}</div></div>
+        <div><div class="k">Quantity</div><div class="v mono">${POS.qty_total} BTC</div></div>
         <div><div class="k">DCA legs</div><div class="v"><div class="legs">${legs}</div></div></div>
-        <div><div class="k">Stop loss</div><div class="v mono red">${px(p.sl_px)}</div></div>
-        <div><div class="k">Take profit</div><div class="v mono grn">${px(p.tp_px)}</div></div>
-        <div><div class="k">Breakeven</div><div class="v">${p.be_activated?
+        <div><div class="k">Stop loss</div><div class="v mono red">${px(POS.sl_px)}</div></div>
+        <div><div class="k">Take profit</div><div class="v mono grn">${px(POS.tp_px)}</div></div>
+        <div><div class="k">Breakeven</div><div class="v">${POS.be_activated?
           '<span class="grn">ARMED</span>':'<span class="mut">not armed</span>'}</div></div>
-        <div><div class="k">Unrealised</div><div class="v mono ${cls(up)}">${usd(up)}</div></div>
+        <div><div class="k">Favourable</div><div class="v mono" id="pos-fav">—</div></div>
+        <div><div class="k">Unrealised P&L</div><div class="v mono" id="pos-upnl">—</div></div>
       </div>`;
   } else {
     $("position").innerHTML = '<div class="flat">FLAT — waiting for a fresh divergence signal</div>';
+    $("upnl").textContent = "—"; $("upnl").className = "val mono";
+    $("favpct").textContent = "flat";
   }
 
-  // ── signal + conditions ──
+  // signal + conditions
   let sig = `<div class="cond"><span>Current signal</span><span class="tick ${
     st.signal?'grn':'mut'}">${st.signal || 'NONE'}</span></div>`;
   const c = st.conditions || {};
-  for (const k in c) {
+  for (const k in c)
     sig += `<div class="cond"><span>${k}</span><span class="tick ${
       c[k]?'grn':'red'}">${c[k]?'✓':'✗'}</span></div>`;
-  }
   $("signal").innerHTML = sig;
 
-  // ── trade log ──
+  // trade log
   const log = (state.trade_log || []).slice().reverse();
   if (log.length) {
     $("trades-body").innerHTML = log.map(t => {
@@ -232,11 +290,14 @@ async function tick() {
   }
 
   const age = health && health.stale_seconds!=null ? health.stale_seconds+"s ago" : "—";
-  $("foot").textContent = `${st.strategy || 'Bybit divflip v1'} · updated ${age}`;
+  $("foot").textContent = `${st.strategy || 'Bybit divflip v1'} · bot updated ${age}`;
+
+  renderLive();  // re-apply live price/P&L over the freshly-rendered panel
 }
 
-tick();
-setInterval(tick, 5000);
+connectWS();
+poll();
+setInterval(poll, 5000);
 </script>
 </body>
 </html>
