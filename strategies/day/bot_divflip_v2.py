@@ -430,6 +430,9 @@ def main():
         # tp_px = avg_entry × (1 ± TP_PCT). Recomputed each tick — DCA fills
         # shift avg, so TP moves with it. Trailing SL is the backstop.
         tp_p = (avg_e * (1 + TP_PCT) if pos["side"] == "LONG" else avg_e * (1 - TP_PCT)) if USE_TAKE_PROFIT else None
+        # be_arm_px — the price at which BE arms. L1-anchored (v2). Written to
+        # status so the dashboard reads it from the bot, never recomputes it.
+        be_arm_px = first_e * (1 + BE_TRIGGER_PCT) if pos["side"] == "LONG" else first_e * (1 - BE_TRIGGER_PCT)
         pos_status = {
             "side": pos["side"],
             "first_entry": first_e,
@@ -440,6 +443,7 @@ def main():
             "filled": pos["filled"],
             "tp_px": tp_p,
             "sl_px": sl_p,
+            "be_arm_px": be_arm_px,
             "be_activated": pos["be_activated"],
             "fav_pct": fav_p,
             "peak_pct": peak_p,

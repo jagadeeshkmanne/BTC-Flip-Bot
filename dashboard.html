@@ -603,16 +603,11 @@ function renderPosition(price){
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
   }
-  // BE arm price — when live crosses this, the bot tightens SL to trail-from-peak.
-  // v1 bot was switched to AVG-anchored BE on 2026-05-20 (arms at avg ×1.0055);
-  // v2 still uses L1-anchored BE. So anchor on avg for v1, on L1 for v2.
-  if (STRATEGY === 'divflip' && l1Price && l1Price > 0) {
-    const BE_TRIGGER_PCT = 0.0055;
-    const beAnchor = DIVFLIP_V2 ? l1Price : (p.avgEntry && p.avgEntry > 0 ? p.avgEntry : l1Price);
-    const beArmPx = p.side === 'LONG'
-      ? beAnchor * (1 + BE_TRIGGER_PCT)
-      : beAnchor * (1 - BE_TRIGGER_PCT);
-    rawLevels.push({key:'be', name: p.beActivated ? 'BE ✓' : 'BE arm', price: beArmPx});
+  // BE arm price — read straight from the bot's status.json (be_arm_px). The
+  // bot computes it with its own anchor (avg for v1, L1 for v2), so the
+  // dashboard never recomputes it and cannot drift from the bot.
+  if (STRATEGY === 'divflip' && p.beArmPx && p.beArmPx > 0) {
+    rawLevels.push({key:'be', name: p.beActivated ? 'BE ✓' : 'BE arm', price: p.beArmPx});
   }
   const levels = rawLevels.filter(l => l.price && l.price > 0);
 
@@ -916,6 +911,7 @@ async function refresh(){
       const statusPos = status.position || {};
       const tpFromStatus = statusPos.tp_px || 0;
       const slFromStatus = statusPos.sl_px || 0;
+      const beArmFromStatus = statusPos.be_arm_px || 0;  // BE-arm price, sourced straight from the bot
       // BE-armed flag — surfaced from bot state so the dashboard can show
       // when the SL has tightened to entry+buffer (locks in small wins on
       // reversal). Bot sets pos.be_activated=true when fav% ≥ BE_TRIGGER_PCT.
@@ -964,6 +960,7 @@ async function refresh(){
         marginType: livePos.marginType,
         liveUpnl: livePos.uPnL,
         beActivated,
+        beArmPx: beArmFromStatus,
         eodHeldOnDay,
         entryTime: botEntryTime,
       } : {
@@ -978,6 +975,7 @@ async function refresh(){
         prevMid: tpFromStatus || liveTp || fallbackPrevMid,
         leverage: botLeverage,
         beActivated,
+        beArmPx: beArmFromStatus,
         eodHeldOnDay,
         entryTime: botEntryTime,
       };
