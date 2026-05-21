@@ -648,18 +648,22 @@ def main():
         worst_entry = min(e["px"] for e in entries) if side == "LONG" else max(e["px"] for e in entries)
         last_bar = df.iloc[last_idx]
 
-        # Breakeven SL — once favorable% from FIRST entry crosses BE_TRIGGER_PCT,
-        # arm BE so SL tightens to first_entry × (1 ± BE_BUFFER_PCT). Sticky:
+        # Weighted average entry across all filled legs — BE is avg-anchored
+        # (matches the divflip bots, user request).
+        avg_entry = sum(e["px"] * e["qty"] for e in entries) / qty_total if qty_total > 0 else first_entry
+
+        # Breakeven SL — once favorable% from AVG entry crosses BE_TRIGGER_PCT,
+        # arm BE so SL tightens to avg_entry × (1 ± BE_BUFFER_PCT). Sticky:
         # once armed, stays armed until cycle resets, so a reversal exits at BE.
         be_activated = pos.get("be_activated", False)
-        if not be_activated and be_should_activate(side, first_entry, live_px):
+        if not be_activated and be_should_activate(side, avg_entry, live_px):
             be_activated = True
             pos["be_activated"] = True
-            log.info(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from entry ${first_entry:.2f})")
+            log.info(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from avg ${avg_entry:.2f})")
 
-        # Recompute SL accounting for BE. After BE arms, SL anchors to first_entry
+        # Recompute SL accounting for BE. After BE arms, SL anchors to avg_entry
         # (not worst_entry) and is much tighter — converts losers into small wins.
-        new_sl = sl_price(side, worst_entry, first_entry=first_entry, be_activated=be_activated)
+        new_sl = sl_price(side, worst_entry, first_entry=avg_entry, be_activated=be_activated)
         if (side == "LONG" and new_sl > cur_sl) or (side == "SHORT" and new_sl < cur_sl):
             pos["sl"] = new_sl
             cur_sl = new_sl
@@ -704,10 +708,11 @@ def main():
                         pos["entries"] = entries
                         pos["qty_total"] = qty_total + dca_qty
                         qty_total = pos["qty_total"]
-                        # Recompute SL with new worst entry (BE-aware: if BE was already
-                        # armed, sl_price keeps the tighter BE SL anchored to first_entry).
+                        # Recompute SL with new worst + new avg entry (BE-aware:
+                        # if BE was armed, sl_price keeps the tighter avg-anchored BE SL).
                         worst_entry = min(e["px"] for e in entries) if side == "LONG" else max(e["px"] for e in entries)
-                        pos["sl"] = sl_price(side, worst_entry, first_entry=first_entry, be_activated=be_activated)
+                        avg_entry = sum(e["px"] * e["qty"] for e in entries) / qty_total
+                        pos["sl"] = sl_price(side, worst_entry, first_entry=avg_entry, be_activated=be_activated)
                         cur_sl = pos["sl"]
                         log.info(f"  DCA L{len(entries)} filled {dca_qty}@${dca_fill:.2f} | new worst=${worst_entry:.2f} SL=${cur_sl:.2f}")
                         # Replace resting exits to cover the new total qty + updated SL.
