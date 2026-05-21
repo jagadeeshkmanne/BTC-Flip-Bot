@@ -106,14 +106,23 @@ python3 bot_divflip_bybit.py --dry      # fetches Bybit data, places nothing
 
 ### Step 5 — Deploy to GCP
 
+> **Region matters.** Bybit blocks US IP addresses (same as Binance). GCP's
+> free tier is **US-only**, so a free-tier VM will **not** work for Bybit. Host
+> in a Bybit-allowed region: `europe-west1` (Belgium), `europe-west3`
+> (Frankfurt), `asia-northeast1` (Tokyo) or `asia-south1` (Mumbai). **Avoid**
+> any `us-*`, `asia-southeast1` (Singapore), `asia-east2` (Hong Kong),
+> `europe-west2` (London) and Canada regions — all Bybit-restricted. Simplest
+> option: deploy onto your existing EU VM — it installs to a separate folder
+> (`~/BTC-Flip-Bot-Bybit/`) and its own `bybit-divflip` timer, so it won't
+> touch the Binance bots.
+
 ```bash
 bash scripts/deploy_bybit.sh
 ```
 
-The script is interactive — it lists your authenticated **Google accounts**, then
-**projects**, then **VMs** (or creates a free-tier e2-micro), uploads the bot,
-and installs a systemd timer that runs it every minute. To switch the Google
-account it deploys to, just re-run it and pick a different one.
+Interactive — pick your **Google account → project → VM** (an existing one, or
+create a new e2-micro in a Bybit-allowed region), then it uploads the bot and
+installs a 1-minute systemd timer. Re-run it and pick differently to switch.
 
 ---
 

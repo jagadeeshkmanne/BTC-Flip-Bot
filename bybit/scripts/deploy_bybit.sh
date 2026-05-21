@@ -72,15 +72,23 @@ echo "✓ Project: $PROJECT"
 echo ""
 echo "── Step 3/4 · VM ──"
 mapfile -t VMS < <(gcloud compute instances list --format="value(name,zone)" 2>/dev/null || true)
+NEW_VM_LABEL="+ Create a new e2-micro VM"
 PS3="Select a VM, or create one (number): "
-select CHOICE in "${VMS[@]}" "+ Create a new free-tier e2-micro VM"; do
+select CHOICE in "${VMS[@]}" "$NEW_VM_LABEL"; do
   [ -n "${CHOICE:-}" ] && break
 done
 
-if [ "$CHOICE" = "+ Create a new free-tier e2-micro VM" ]; then
+if [ "$CHOICE" = "$NEW_VM_LABEL" ]; then
+  echo ""
+  echo "  Bybit blocks US IPs (like Binance). GCP free tier is US-only and will"
+  echo "  NOT work for Bybit. Use a Bybit-allowed region, e.g.:"
+  echo "    europe-west1-b (Belgium)   europe-west3-c (Frankfurt)"
+  echo "    asia-northeast1-a (Tokyo)  asia-south1-a (Mumbai)"
+  echo "  Avoid: us-*, asia-southeast1 (Singapore), asia-east2 (Hong Kong),"
+  echo "         europe-west2 (London), northamerica-* (Canada) — all blocked."
   read -rp "New VM name [bybit-bot]: " VM_NAME;  VM_NAME="${VM_NAME:-bybit-bot}"
-  read -rp "Zone [us-central1-a]: " ZONE;        ZONE="${ZONE:-us-central1-a}"
-  echo "Creating e2-micro VM '$VM_NAME' in $ZONE (free tier)..."
+  read -rp "Zone [europe-west1-b]: " ZONE;       ZONE="${ZONE:-europe-west1-b}"
+  echo "Creating e2-micro VM '$VM_NAME' in $ZONE ..."
   gcloud compute instances create "$VM_NAME" \
     --zone="$ZONE" --machine-type=e2-micro \
     --image-family=ubuntu-2204-lts --image-project=ubuntu-os-cloud \
