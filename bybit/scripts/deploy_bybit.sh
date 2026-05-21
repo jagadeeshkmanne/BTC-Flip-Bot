@@ -87,7 +87,16 @@ if [ "$CHOICE" = "$NEW_VM_LABEL" ]; then
   echo "  Avoid: us-*, asia-southeast1 (Singapore), asia-east2 (Hong Kong),"
   echo "         europe-west2 (London), northamerica-* (Canada) — all blocked."
   read -rp "New VM name [bybit-bot]: " VM_NAME;  VM_NAME="${VM_NAME:-bybit-bot}"
-  read -rp "Zone [europe-west1-b]: " ZONE;       ZONE="${ZONE:-europe-west1-b}"
+  # Reject Bybit-restricted regions outright — the bot would just be blocked.
+  while true; do
+    read -rp "Zone [europe-west1-b]: " ZONE; ZONE="${ZONE:-europe-west1-b}"
+    case "$ZONE" in
+      us-*|northamerica-northeast*|asia-southeast1*|asia-east2*|europe-west2*)
+        echo "  ✗ '$ZONE' is a Bybit-restricted region — the bot would be blocked there."
+        echo "    Choose another: europe-west1-b, europe-west3-c, asia-northeast1-a, asia-south1-a" ;;
+      *) break ;;
+    esac
+  done
   echo "Creating e2-micro VM '$VM_NAME' in $ZONE ..."
   gcloud compute instances create "$VM_NAME" \
     --zone="$ZONE" --machine-type=e2-micro \
