@@ -15,7 +15,7 @@ Routes:
 from __future__ import annotations
 import json, os
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BOT_DIR, "data")
@@ -23,6 +23,8 @@ PORT = int(os.environ.get("BYBIT_DASH_PORT", "8889"))
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 15  # drop a stuck client instead of hanging its thread
+
     def _send(self, code, body, ctype):
         if isinstance(body, str):
             body = body.encode("utf-8")
@@ -87,4 +89,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"Bybit divflip dashboard — http://0.0.0.0:{PORT}")
-    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    # ThreadingHTTPServer — each request gets its own thread, so one slow or
+    # stuck client can't block the whole dashboard (the single-threaded
+    # HTTPServer would hang the listen queue and stop responding entirely).
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

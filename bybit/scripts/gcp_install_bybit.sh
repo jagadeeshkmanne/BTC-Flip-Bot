@@ -71,6 +71,30 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
+# Self-heal — restarts the dashboard if it stops responding (every 5 min)
+sudo tee /etc/systemd/system/bybit-selfheal.service > /dev/null << EOF
+[Unit]
+Description=Bybit bot self-heal check
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/bin/bash $BOT_DIR/scripts/self_heal.sh
+EOF
+
+sudo tee /etc/systemd/system/bybit-selfheal.timer > /dev/null << EOF
+[Unit]
+Description=Run Bybit bot self-heal every 5 min
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 sudo systemctl daemon-reload
 
 # ─── Dashboard server — start regardless (so you can watch status) ───
@@ -78,6 +102,8 @@ echo ""
 echo "=== Starting dashboard server (port 8889) ==="
 sudo systemctl enable bybit-divflip-server.service >/dev/null 2>&1 || true
 sudo systemctl restart bybit-divflip-server.service
+sudo systemctl enable --now bybit-selfheal.timer >/dev/null 2>&1 || true
+echo "self-heal timer: $(systemctl is-active bybit-selfheal.timer 2>/dev/null)"
 
 # ─── Connectivity preflight — gate the trading timer ───
 echo ""
