@@ -334,14 +334,16 @@ def main():
             pos = state["position"]
             worst_entry = pos["worst_entry"]
 
-        # BE activation check (uses first_entry — sticky once armed)
-        if not pos["be_activated"] and be_should_activate(side, first_entry, live_px):
-            pos["be_activated"] = True
-            log.warning(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from entry ${first_entry:.2f}) — trailing SL now active")
-
-        # Composite SL: raw / BE / trailing (whichever is tightest)
+        # BE activation check — avg-anchored (matches v1): arms at +BE_TRIGGER
+        # from AVG entry (not L1); the BE floor is avg-anchored too. Sticky.
         avg_entry = avg_entry_of(pos)
-        sl_px = sl_price_divflip(side, worst_entry, first_entry, pos["be_activated"], peak_price)
+        if not pos["be_activated"] and be_should_activate(side, avg_entry, live_px):
+            pos["be_activated"] = True
+            log.warning(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from avg ${avg_entry:.2f}) — trailing SL now active")
+
+        # Composite SL: raw / BE / trailing (whichever is tightest). avg_entry
+        # passed as the BE-anchor arg so the BE floor is avg ± buffer.
+        sl_px = sl_price_divflip(side, worst_entry, avg_entry, pos["be_activated"], peak_price)
 
         exit_reason = None
         exit_px = None
@@ -358,7 +360,7 @@ def main():
         # Hard SL / trailing SL check
         if exit_px is None and side == "LONG" and live_px <= sl_px:
             # Classify exit reason: BE if SL == BE level; TRAIL if SL > BE level; SL otherwise
-            be_sl = first_entry * (1 + BE_BUFFER_PCT)
+            be_sl = avg_entry * (1 + BE_BUFFER_PCT)
             if pos["be_activated"] and sl_px > be_sl + 0.01:
                 exit_reason = "TRAIL"
             elif pos["be_activated"] and abs(sl_px - be_sl) < 0.01:
@@ -367,7 +369,7 @@ def main():
                 exit_reason = "SL"
             exit_px = sl_px
         elif exit_px is None and side == "SHORT" and live_px >= sl_px:
-            be_sl = first_entry * (1 - BE_BUFFER_PCT)
+            be_sl = avg_entry * (1 - BE_BUFFER_PCT)
             if pos["be_activated"] and sl_px < be_sl - 0.01:
                 exit_reason = "TRAIL"
             elif pos["be_activated"] and abs(sl_px - be_sl) < 0.01:
@@ -424,15 +426,15 @@ def main():
         worst_e = pos["worst_entry"]
         first_e = pos["first_entry"]
         peak_e = pos.get("peak_price", first_e)
-        sl_p = sl_price_divflip(pos["side"], worst_e, first_e, pos["be_activated"], peak_e)
+        sl_p = sl_price_divflip(pos["side"], worst_e, avg_e, pos["be_activated"], peak_e)
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
         peak_p = ((peak_e - first_e) / first_e * 100) * (1 if pos["side"] == "LONG" else -1)
         # tp_px = avg_entry × (1 ± TP_PCT). Recomputed each tick — DCA fills
         # shift avg, so TP moves with it. Trailing SL is the backstop.
         tp_p = (avg_e * (1 + TP_PCT) if pos["side"] == "LONG" else avg_e * (1 - TP_PCT)) if USE_TAKE_PROFIT else None
-        # be_arm_px — the price at which BE arms. L1-anchored (v2). Written to
-        # status so the dashboard reads it from the bot, never recomputes it.
-        be_arm_px = first_e * (1 + BE_TRIGGER_PCT) if pos["side"] == "LONG" else first_e * (1 - BE_TRIGGER_PCT)
+        # be_arm_px — the price at which BE arms. avg-anchored (matches v1).
+        # Written to status so the dashboard reads it, never recomputes it.
+        be_arm_px = avg_e * (1 + BE_TRIGGER_PCT) if pos["side"] == "LONG" else avg_e * (1 - BE_TRIGGER_PCT)
         pos_status = {
             "side": pos["side"],
             "first_entry": first_e,
