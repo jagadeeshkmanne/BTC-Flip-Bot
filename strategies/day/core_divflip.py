@@ -63,9 +63,10 @@ DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35
 # TV backtest (Apr 6 – May 14 2026, BTCUSDT 5m).
 # Total notional still capped by LEVERAGE — ratios just redistribute within cap.
 MARTINGALE_RATIOS = [3.0, 4.0, 1.5]   # qty multiplier per leg (L1, L2, L3) — mixed shape
-SL_FROM_WORST  = 0.05         # 5% from first entry (L1-anchored). Wide backstop — TV-tuned config relies on
-                              # 1% TP from avg entry (USE_TAKE_PROFIT below) and 0.2% trail-after-BE for actual
-                              # exits. SL only fires on a genuine adverse run (rare → 99% WR / 7.3% DD).
+SL_FROM_WORST  = 0.01         # 1% from WORST entry (L3-anchored). Set 2026-05-20 at the user's
+                              # explicit, repeated request — AGAINST the backtest: year-wise OOS
+                              # shows 1% worst-anchored loses MORE than the wide 5% stop every year.
+                              # Kept only because the user asked for it on the paper bot.
 
 # ─ Fixed TP from avg entry (TV-tuned: ON @ 1%) ─
 # Primary exit. Recomputed when DCA fires (avg moves closer to live), so a deep
@@ -199,21 +200,18 @@ def dca_price(side: Side, worst_entry: float) -> float:
 
 def sl_price_divflip(side: Side, worst_entry: float, first_entry: Optional[float] = None,
                      be_activated: bool = False, peak_price: Optional[float] = None) -> float:
-    """Composite SL — anchored to FIRST entry (not worst), so DCA only ever
-    improves avg, never widens SL. Max loss is bounded regardless of legs.
+    """Composite SL — raw stop anchored to WORST entry (L3 once fully filled),
+    set 2026-05-20 at user request. The raw stop rides down with each DCA leg.
 
     Components (LONG — symmetric for SHORT):
-      - Raw SL    = first_entry × (1 − SL_FROM_WORST)         [hard floor, always active]
+      - Raw SL    = worst_entry × (1 − SL_FROM_WORST)         [hard floor, always active]
       - BE SL     = first_entry × (1 + BE_BUFFER_PCT)         [active when BE armed]
       - Trail SL  = peak_price × (1 − TRAIL_DIST_PCT)         [active when BE armed]
 
-    Note: param name `worst_entry` is kept for backward compatibility, but the
-    SL uses `first_entry` only — `worst_entry` is no longer consulted here.
-
-    Before BE arms: only raw SL applies (≤1% loss from L1).
-    After BE arms: SL trails peak with floor at firstEntry + buffer.
+    BE floor + trailing still anchor to first_entry / peak — only the raw
+    stop's anchor is worst_entry.
     """
-    anchor = first_entry if first_entry is not None else worst_entry
+    anchor = worst_entry
     raw_sl = anchor * (1 - SL_FROM_WORST) if side == "LONG" else anchor * (1 + SL_FROM_WORST)
     if not (USE_BREAKEVEN and be_activated and first_entry is not None):
         return raw_sl

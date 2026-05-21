@@ -257,7 +257,7 @@ def maybe_dca_fixed(pos, live_px: float, balance: float, state) -> bool:
 def main():
     log.info("=" * 60)
     log.info(f"Divergence-Flip Paper Bot — RSI filter ≤{RSI_LONG_MAX:.0f}/≥{RSI_SHORT_MIN:.0f} | {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% | "
-             f"L1-anchored SL {SL_FROM_WORST*100:.1f}% | "
+             f"L3-anchored SL {SL_FROM_WORST*100:.1f}% | "
              f"{'TP ' + format(TP_PCT*100, '.2f') + '% from avg' if USE_TAKE_PROFIT else 'NO TP'} | "
              f"BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
              f"{'flip' if USE_FLIP else 'NO flip'} | no EOD | fresh {DIV_FRESH_BARS}b")
@@ -333,14 +333,17 @@ def main():
             pos = state["position"]
             worst_entry = pos["worst_entry"]
 
-        # BE activation check (uses first_entry — sticky once armed)
-        if not pos["be_activated"] and be_should_activate(side, first_entry, live_px):
-            pos["be_activated"] = True
-            log.warning(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from entry ${first_entry:.2f}) — trailing SL now active")
-
-        # Composite SL: raw / BE / trailing (whichever is tightest)
+        # BE activation check — avg-anchored (user request 2026-05-20): arms at
+        # +BE_TRIGGER from AVG entry (not L1); the BE floor is avg-anchored too.
+        # Sticky once armed.
         avg_entry = avg_entry_of(pos)
-        sl_px = sl_price_divflip(side, worst_entry, first_entry, pos["be_activated"], peak_price)
+        if not pos["be_activated"] and be_should_activate(side, avg_entry, live_px):
+            pos["be_activated"] = True
+            log.warning(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from avg ${avg_entry:.2f}) — trailing SL now active")
+
+        # Composite SL: raw / BE / trailing (whichever is tightest). avg_entry
+        # passed as the BE-anchor arg so the BE floor is avg ± buffer.
+        sl_px = sl_price_divflip(side, worst_entry, avg_entry, pos["be_activated"], peak_price)
 
         exit_reason = None
         exit_px = None
@@ -423,7 +426,7 @@ def main():
         worst_e = pos["worst_entry"]
         first_e = pos["first_entry"]
         peak_e = pos.get("peak_price", first_e)
-        sl_p = sl_price_divflip(pos["side"], worst_e, first_e, pos["be_activated"], peak_e)
+        sl_p = sl_price_divflip(pos["side"], worst_e, avg_e, pos["be_activated"], peak_e)
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
         peak_p = ((peak_e - first_e) / first_e * 100) * (1 if pos["side"] == "LONG" else -1)
         # tp_px = avg_entry × (1 ± TP_PCT). Recomputed each tick — DCA fills
@@ -458,7 +461,7 @@ def main():
         "indicators": sig.raw,
         "conditions": sig.conditions,
         "stats": state["stats"],
-        "strategy": f"Divergence-Flip ({'TP ' + format(TP_PCT*100, '.1f') + '% / ' if USE_TAKE_PROFIT else ''}trail {TRAIL_DIST_PCT*100:.1f}% after BE / SL {SL_FROM_WORST*100:.1f}% from L1 / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% mart / {'flip' if USE_FLIP else 'NO flip'} / no EOD) [PAPER]",
+        "strategy": f"Divergence-Flip ({'TP ' + format(TP_PCT*100, '.1f') + '% / ' if USE_TAKE_PROFIT else ''}trail {TRAIL_DIST_PCT*100:.1f}% after BE / SL {SL_FROM_WORST*100:.1f}% from L3 / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% mart / {'flip' if USE_FLIP else 'NO flip'} / no EOD) [PAPER]",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),

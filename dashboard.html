@@ -603,14 +603,15 @@ function renderPosition(price){
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
   }
-  // BE arm price — L1 × (1 ± 0.55%). When live crosses this, the bot tightens
-  // SL to trail-from-peak. Tagged "BE ✓" once armed so user sees the state at
-  // a glance. Shown only for divflip (SR_DCA uses a different BE mechanic).
+  // BE arm price — when live crosses this, the bot tightens SL to trail-from-peak.
+  // v1 bot was switched to AVG-anchored BE on 2026-05-20 (arms at avg ×1.0055);
+  // v2 still uses L1-anchored BE. So anchor on avg for v1, on L1 for v2.
   if (STRATEGY === 'divflip' && l1Price && l1Price > 0) {
     const BE_TRIGGER_PCT = 0.0055;
+    const beAnchor = DIVFLIP_V2 ? l1Price : (p.avgEntry && p.avgEntry > 0 ? p.avgEntry : l1Price);
     const beArmPx = p.side === 'LONG'
-      ? l1Price * (1 + BE_TRIGGER_PCT)
-      : l1Price * (1 - BE_TRIGGER_PCT);
+      ? beAnchor * (1 + BE_TRIGGER_PCT)
+      : beAnchor * (1 - BE_TRIGGER_PCT);
     rawLevels.push({key:'be', name: p.beActivated ? 'BE ✓' : 'BE arm', price: beArmPx});
   }
   const levels = rawLevels.filter(l => l.price && l.price > 0);
