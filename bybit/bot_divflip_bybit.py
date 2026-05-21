@@ -110,9 +110,13 @@ def write_status(payload):
 
 # ─── Rounding helpers ───
 def round_qty(q, step):
+    """Round a quantity to the NEAREST exchange lot (qtyStep) — not down.
+    Flooring systematically under-deploys v1's per-leg sizing on BTCUSDT's
+    coarse 0.001-BTC lot (e.g. 0.00196 -> 0.001, nearly half lost); rounding
+    to nearest keeps each leg as close to its true v1 size as the lot allows."""
     if step <= 0:
         return round(q, 3)
-    return round(q - (q % step), 8)
+    return round(round(q / step) * step, 8)
 
 
 def round_price(p, tick):
@@ -244,21 +248,30 @@ def place_dca_orders(client, symbol, info, pos, balance):
     pos_lev = pos.get("leverage", LEVERAGE)
     orders = []
     prev_px = pos["first_entry"]
-    for leg_idx in range(1, DCA_LEVELS):              # 1 -> L2, 2 -> L3
+    cum_qty = pos["qty_total"]                          # L1 — already filled
+    # v1 deployment cap: total notional <= equity * 0.95 * leverage. A leg that
+    # would push past it is skipped and its capital left idle (as instructed).
+    cap_qty = (balance * 0.95 * pos_lev) / pos["first_entry"]
+    for leg_idx in range(1, DCA_LEVELS):                # 1 -> L2, 2 -> L3
         trig = (prev_px * (1 - DCA_SPACING) if side == "LONG"
                 else prev_px * (1 + DCA_SPACING))
         trig = round_price(trig, info["tick"])
         qty = round_qty(per_level_qty(balance, trig, leg_idx=leg_idx, leverage=pos_lev),
                         info["qty_step"])
         if qty < info["min_qty"]:
-            log.info(f"  L{leg_idx+1} DCA limit skipped — qty {qty} below "
-                     f"min {info['min_qty']} (needs more balance)")
+            log.info(f"  L{leg_idx+1} DCA limit skipped — qty {qty} below min {info['min_qty']}")
+            prev_px = trig
+            continue
+        if cum_qty + qty > cap_qty + 1e-9:
+            log.info(f"  L{leg_idx+1} DCA limit skipped — would exceed the v1 deploy "
+                     f"cap ({cum_qty+qty:.4f} > {cap_qty:.4f} BTC); its capital stays idle")
             prev_px = trig
             continue
         resp = client.limit_order(symbol, side_api, fmt_qty(qty, info["qty_step"]), str(trig))
         if resp and resp.get("orderId"):
             orders.append({"level": leg_idx + 1, "order_id": resp["orderId"],
                            "price": trig, "qty": qty, "filled": False})
+            cum_qty += qty
             log.warning(f"  L{leg_idx+1} DCA limit order placed: {qty}@${trig:,.2f}")
         else:
             log.error(f"  L{leg_idx+1} DCA limit order REJECTED by Bybit")
