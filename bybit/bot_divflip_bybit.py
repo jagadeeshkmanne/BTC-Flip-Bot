@@ -233,6 +233,47 @@ def sync_trading_stop(client, symbol, pos, info, live_px):
     return sl_r, tp_r, False
 
 
+# ─── DCA resting limit orders ───
+def place_dca_orders(client, symbol, info, pos, balance):
+    """Place resting LIMIT orders for the DCA legs (L2..L{DCA_LEVELS}) at the
+    exact divflip trigger prices. A limit order fills AT the trigger (or better)
+    — replicating the paper bot's marked-at-trigger fills with no market-order
+    slippage and no missed wicks. Returns a list of dca-order records."""
+    side = pos["side"]
+    side_api = "Buy" if side == "LONG" else "Sell"
+    pos_lev = pos.get("leverage", LEVERAGE)
+    orders = []
+    prev_px = pos["first_entry"]
+    for leg_idx in range(1, DCA_LEVELS):              # 1 -> L2, 2 -> L3
+        trig = (prev_px * (1 - DCA_SPACING) if side == "LONG"
+                else prev_px * (1 + DCA_SPACING))
+        trig = round_price(trig, info["tick"])
+        qty = round_qty(per_level_qty(balance, trig, leg_idx=leg_idx, leverage=pos_lev),
+                        info["qty_step"])
+        if qty < info["min_qty"]:
+            log.info(f"  L{leg_idx+1} DCA limit skipped — qty {qty} below "
+                     f"min {info['min_qty']} (needs more balance)")
+            prev_px = trig
+            continue
+        resp = client.limit_order(symbol, side_api, fmt_qty(qty, info["qty_step"]), str(trig))
+        if resp and resp.get("orderId"):
+            orders.append({"level": leg_idx + 1, "order_id": resp["orderId"],
+                           "price": trig, "qty": qty, "filled": False})
+            log.warning(f"  L{leg_idx+1} DCA limit order placed: {qty}@${trig:,.2f}")
+        else:
+            log.error(f"  L{leg_idx+1} DCA limit order REJECTED by Bybit")
+        prev_px = trig
+    return orders
+
+
+def cancel_dca_orders(client, symbol, pos):
+    """Cancel any still-resting DCA limit orders — call when the position closes
+    so a stale leg can't re-open a position later."""
+    for d in (pos.get("dca_orders") or []):
+        if not d.get("filled"):
+            client.cancel_order(symbol, d["order_id"])
+
+
 # ─── Connectivity preflight ───
 def run_connectivity_check(client, symbol, api_key, api_secret) -> bool:
     """Test API reachability + key validity before the bot is allowed to run.
@@ -406,7 +447,8 @@ def main():
                         f"{pos['qty_total']}@${pos['first_entry']:.2f}")
         elif pos is not None and exch["side"] is None:
             # We thought we held a position; exchange is flat -> SL/TP fired
-            # server-side between ticks. Log the closed trade.
+            # server-side between ticks. Cancel resting DCA legs, log the trade.
+            cancel_dca_orders(client, SYMBOL, pos)
             log_closed_trade(state, pos, client, SYMBOL)
             state["position"] = None
             pos = None
@@ -424,45 +466,33 @@ def main():
         prev_peak = pos.get("peak_price", pos["first_entry"])
         pos["peak_price"] = max(prev_peak, live_px) if side == "LONG" else min(prev_peak, live_px)
 
-        # ── DCA — fixed-distance legs, martingale-sized (same as paper) ──
-        if pos["filled"] < DCA_LEVELS:
-            trigger = dca_price(side, pos["worst_entry"])
-            # crossing checked against live price ONLY — identical to the paper
-            # bot's maybe_dca_fixed (core_divflip.py), no bar-wick check.
-            crossed = ((side == "LONG" and live_px <= trigger) or
-                       (side == "SHORT" and live_px >= trigger))
-            if crossed and TRADING_ENABLED:
-                pos_lev = pos.get("leverage", LEVERAGE)
-                qty = per_level_qty(balance, trigger, leg_idx=pos["filled"], leverage=pos_lev)
-                # leverage-cap guard — total notional within balance*lev*0.95
-                max_total = (balance * 0.95 * pos_lev) / trigger
-                if pos["qty_total"] + qty > max_total:
-                    qty = max(0.0, max_total - pos["qty_total"])
-                qty = round_qty(qty, info["qty_step"])
-                if qty >= info["min_qty"]:
-                    side_api = "Buy" if side == "LONG" else "Sell"
-                    resp = client.market_order(SYMBOL, side_api, fmt_qty(qty, info["qty_step"]))
-                    if resp:
-                        time.sleep(1.0)  # let the fill settle before re-reading
-                        ex2 = client.position(SYMBOL)
-                        if ex2 and ex2["side"]:
-                            pos["avg_entry"] = ex2["avg_price"]
-                            pos["qty_total"] = ex2["qty"]
-                        if side == "LONG":
-                            pos["worst_entry"] = min(pos["worst_entry"], trigger)
-                        else:
-                            pos["worst_entry"] = max(pos["worst_entry"], trigger)
+        # ── DCA — resting LIMIT orders at the trigger prices ──
+        # L2..Ln are placed as limit orders right after L1 opens (see the entry
+        # block / place_dca_orders) so they fill AT the trigger price like the
+        # paper bot's marked fills. Here we (a) place them retroactively if a
+        # position predates this feature, and (b) detect fills.
+        if TRADING_ENABLED and pos.get("dca_orders") is None and pos["filled"] < DCA_LEVELS:
+            log.info("  no DCA orders on this position — placing them now")
+            pos["dca_orders"] = place_dca_orders(
+                client, SYMBOL, info, pos, pos.get("balance_at_entry", balance))
+
+        if TRADING_ENABLED and pos.get("dca_orders"):
+            oo = client.open_orders(SYMBOL)
+            if oo is not None:
+                open_ids = {o["order_id"] for o in oo}
+                for d in pos["dca_orders"]:
+                    # An order gone from the open list has filled — we only
+                    # cancel DCA orders when the position itself closes.
+                    if not d["filled"] and d["order_id"] not in open_ids:
+                        d["filled"] = True
                         pos["filled"] += 1
-                        pos.setdefault("leg_fills", []).append(trigger)
-                        ratio = MARTINGALE_RATIOS[min(pos["filled"] - 1, len(MARTINGALE_RATIOS) - 1)]
-                        log.warning(f"  DCA L{pos['filled']} {side} {qty}@~${trigger:.2f} "
-                                    f"(mart {ratio}x) | new avg=${pos['avg_entry']:.2f} "
-                                    f"worst=${pos['worst_entry']:.2f}")
-                else:
-                    log.info(f"  DCA L{pos['filled']+1} skipped — qty {qty} below min {info['min_qty']}")
-            elif crossed:
-                log.info(f"  DCA L{pos['filled']+1} trigger ${trigger:.2f} crossed — "
-                         f"monitor-only, no order")
+                        if side == "LONG":
+                            pos["worst_entry"] = min(pos["worst_entry"], d["price"])
+                        else:
+                            pos["worst_entry"] = max(pos["worst_entry"], d["price"])
+                        log.warning(f"  L{d['level']} DCA limit FILLED @${d['price']:,.2f}"
+                                    f" — filled {pos['filled']}/{DCA_LEVELS}, "
+                                    f"worst=${pos['worst_entry']:,.2f} (SL anchors here)")
 
         # ── BE arm — avg-anchored, sticky (identical to paper bot) ──
         if not pos.get("be_activated") and be_should_activate(side, pos["avg_entry"], live_px):
@@ -487,6 +517,7 @@ def main():
                         log.error("  gap-close order placed but position still "
                                   "open — will retry next tick")
                     else:
+                        cancel_dca_orders(client, SYMBOL, pos)
                         log_closed_trade(state, pos, client, SYMBOL)
                         state["position"] = None
                         pos = None
@@ -552,10 +583,14 @@ def main():
                         "entry_ms": int(time.time() * 1000),
                     }
                     state["position"] = pos
-                    # Place the initial server-side SL + TP immediately.
+                    # Place the server-side SL + TP IMMEDIATELY — the position
+                    # is protected the instant L1 fills, before anything else.
                     sync_trading_stop(client, SYMBOL, pos, info, live_px)
+                    # Then place the resting DCA limit orders (L2..Ln).
+                    pos["dca_orders"] = place_dca_orders(client, SYMBOL, info, pos, balance)
                     log.warning(f"  OPENED {sig.side} {qty_total}@${fill:.2f} | "
-                                f"SL=${pos.get('last_sl')} TP=${pos.get('last_tp')}")
+                                f"SL=${pos.get('last_sl')} TP=${pos.get('last_tp')} | "
+                                f"{len(pos['dca_orders'])} DCA limit order(s) resting")
 
     # ─ Persist + status ─
     stats = state["stats"]

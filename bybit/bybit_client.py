@@ -221,6 +221,51 @@ class BybitClient:
             log.error(f"  market_order failed: {e}")
             return None
 
+    def limit_order(self, symbol: str, side: str, qty: str, price: str,
+                    reduce_only: bool = False) -> Optional[dict]:
+        """Place a GTC limit order. Used for the DCA legs — they rest on the
+        book and fill at the exact trigger price (no market-order slippage),
+        replicating the paper bot's marked-at-trigger fills."""
+        params = {
+            "category": "linear", "symbol": symbol,
+            "side": side, "orderType": "Limit",
+            "qty": qty, "price": price,
+            "positionIdx": 0, "timeInForce": "GTC",
+        }
+        if reduce_only:
+            params["reduceOnly"] = True
+        try:
+            return self._request("POST", "/v5/order/create", params, signed=True)
+        except BybitError as e:
+            log.error(f"  limit_order failed: {e}")
+            return None
+
+    def open_orders(self, symbol: str) -> Optional[list]:
+        """Open (un-filled, un-cancelled) orders → list of
+        {order_id, price, qty, side}, or None on fetch failure."""
+        try:
+            res = self._request("GET", "/v5/order/realtime", {
+                "category": "linear", "symbol": symbol}, signed=True)
+        except BybitError as e:
+            log.warning(f"  open_orders: {e}")
+            return None
+        if not res or "list" not in res:
+            return None
+        return [{"order_id": o.get("orderId"),
+                 "price": float(o.get("price", 0) or 0),
+                 "qty": float(o.get("qty", 0) or 0),
+                 "side": o.get("side")} for o in res["list"]]
+
+    def cancel_order(self, symbol: str, order_id: str) -> bool:
+        try:
+            self._request("POST", "/v5/order/cancel", {
+                "category": "linear", "symbol": symbol,
+                "orderId": order_id}, signed=True)
+            return True
+        except BybitError as e:
+            log.info(f"  cancel_order {order_id}: {e}")
+            return False
+
     def set_trading_stop(self, symbol: str, take_profit: Optional[str] = None,
                          stop_loss: Optional[str] = None) -> bool:
         """Set the position's server-side SL/TP (tpslMode=Full → closes the
