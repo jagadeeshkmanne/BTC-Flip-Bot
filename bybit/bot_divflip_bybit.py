@@ -481,18 +481,33 @@ def main():
             if oo is not None:
                 open_ids = {o["order_id"] for o in oo}
                 for d in pos["dca_orders"]:
-                    # An order gone from the open list has filled — we only
-                    # cancel DCA orders when the position itself closes.
-                    if not d["filled"] and d["order_id"] not in open_ids:
+                    # An order gone from the open list has filled.
+                    if d.get("order_id") and not d["filled"] and d["order_id"] not in open_ids:
                         d["filled"] = True
                         pos["filled"] += 1
-                        if side == "LONG":
-                            pos["worst_entry"] = min(pos["worst_entry"], d["price"])
-                        else:
-                            pos["worst_entry"] = max(pos["worst_entry"], d["price"])
                         log.warning(f"  L{d['level']} DCA limit FILLED @${d['price']:,.2f}"
-                                    f" — filled {pos['filled']}/{DCA_LEVELS}, "
-                                    f"worst=${pos['worst_entry']:,.2f} (SL anchors here)")
+                                    f" — filled {pos['filled']}/{DCA_LEVELS}")
+
+        # ── SL anchor — v1 behaviour ──
+        # The stop anchors to each DCA leg's PRICE LEVEL the moment the market
+        # reaches it — even if that leg's order was too small to place (e.g.
+        # L3 at a small balance). So the position always carries the full v1
+        # stop room: the SL rides to 1% below L1 -> L2 -> L3 as price reaches
+        # each level, whether or not that leg actually traded. Sticky (min/max)
+        # — once a level is reached the SL stays anchored there.
+        proj = pos["first_entry"]
+        for leg in range(1, DCA_LEVELS):
+            proj = proj * (1 - DCA_SPACING) if side == "LONG" else proj * (1 + DCA_SPACING)
+            reached = ((side == "LONG" and live_px <= proj) or
+                       (side == "SHORT" and live_px >= proj))
+            if reached:
+                new_worst = (min(pos["worst_entry"], proj) if side == "LONG"
+                             else max(pos["worst_entry"], proj))
+                if abs(new_worst - pos["worst_entry"]) > 1e-9:
+                    pos["worst_entry"] = new_worst
+                    log.warning(f"  Price reached L{leg+1} level ${proj:,.2f} — SL anchored "
+                                f"there (worst=${new_worst:,.2f}, "
+                                f"SL ≈ ${new_worst*(1-SL_FROM_WORST):,.2f})")
 
         # ── BE arm — avg-anchored, sticky (identical to paper bot) ──
         if not pos.get("be_activated") and be_should_activate(side, pos["avg_entry"], live_px):
