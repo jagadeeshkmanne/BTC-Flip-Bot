@@ -35,8 +35,8 @@ Type=oneshot
 User=$USER
 WorkingDirectory=$BOT_DIR
 ExecStart=/usr/bin/python3 $BOT_DIR/bot_divflip_bybit.py
-StandardOutput=append:$BOT_DIR/data/bot.log
-StandardError=append:$BOT_DIR/data/bot.log
+StandardOutput=journal
+StandardError=journal
 EOF
 
 sudo tee /etc/systemd/system/bybit-divflip.timer > /dev/null << EOF
