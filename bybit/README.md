@@ -75,8 +75,8 @@ Bybit → Profile → **API** → **Create New Key**:
 - **Type:** System-generated API Key
 - **Permissions:** Contract → **Orders & Positions** (mandatory for copy trading)
 - **Account:** the Copy Trading Master Trader account
-- **IP restriction:** recommended — whitelist your GCP VM's external IP
-  (`gcloud compute instances list`)
+- **IP restriction:** recommended — whitelist your VM's external IP.
+  Get it (and optionally lock it as a static IP) with `bash scripts/vm_ip.sh`
 
 A read-only key silently fails on order placement — make sure Orders &
 Positions is ticked.
@@ -123,6 +123,7 @@ account it deploys to, just re-run it and pick a different one.
 # logs
 gcloud compute ssh <VM> --zone=<ZONE> --command='tail -f ~/BTC-Flip-Bot-Bybit/data/bot.log'
 
+# VM external IP (for the Bybit key whitelist) — bash scripts/vm_ip.sh
 # pause trading        — set "trading_enabled": false in config, redeploy
 # stop the bot         — sudo systemctl disable --now bybit-divflip.timer
 # timer status         — sudo systemctl list-timers | grep bybit
