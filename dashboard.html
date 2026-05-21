@@ -160,7 +160,7 @@
   .chart-btn:hover{background:rgba(76,201,255,0.15);border-color:#4cc9ff;color:#4cc9ff}
   .chart-btn:active{background:rgba(76,201,255,0.25)}
   .empty{padding:24px;text-align:center;color:var(--muted);font-size:13px}
-  /* Horizontal scroll on mobile so the 8-col trades table doesn't squish. */
+  /* Horizontal scroll on mobile so the 9-col trades table doesn't squish. */
   .trades-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
   table{width:100%;border-collapse:collapse;min-width:560px}
   th{padding:10px 12px;font-size:11px;color:var(--muted);font-weight:700;text-align:right;text-transform:uppercase;letter-spacing:.4px;background:rgba(0,0,0,.18);border-bottom:1px solid var(--border);white-space:nowrap}
@@ -1028,17 +1028,19 @@ async function refresh(){
         }
         const rTag = `<span class="side-tag" style="background:${t.reason==='TP'?'rgba(46,160,67,.15)':t.reason==='SL'?'rgba(248,81,73,.15)':'rgba(110,118,129,.15)'};color:${t.reason==='TP'?'var(--green-2)':t.reason==='SL'?'var(--red)':'var(--muted-2)'}">${t.reason || '?'}</span>`;
         const sideTag = `<span class="side-tag ${t.side==='LONG'?'long':'short'}">${t.side}</span>`;
-        return {cls, entryPx, exitPx, pnlUsd, tStr, holdStr, rTag, sideTag, pnlPct: t.pnl_pct};
+        return {cls, entryPx, exitPx, pnlUsd, tStr, holdStr, rTag, sideTag, pnlPct: t.pnl_pct,
+                legs: t.entries || 1};
       });
 
       const tableHtml =
-        '<div class="trades-table"><table><thead><tr><th>Time</th><th>Side</th><th>Entry</th><th>Exit</th><th>Hold</th><th>Exit&nbsp;Reason</th><th>PnL&nbsp;USD</th><th>PnL %</th></tr></thead><tbody>' +
+        '<div class="trades-table"><table><thead><tr><th>Time</th><th>Side</th><th>Entry</th><th>Exit</th><th>Hold</th><th>Legs</th><th>Exit&nbsp;Reason</th><th>PnL&nbsp;USD</th><th>PnL %</th></tr></thead><tbody>' +
         trades.map(x =>
           `<tr class="${x.cls === 'pos' ? 'win' : 'loss'}"><td class="mute" style="font-size:12px">${x.tStr}</td>` +
           `<td>${x.sideTag}</td>` +
           `<td class="num">$${Number(x.entryPx).toFixed(0)}</td>` +
           `<td class="num">$${Number(x.exitPx).toFixed(0)}</td>` +
           `<td class="num mute" style="font-size:12px">${x.holdStr}</td>` +
+          `<td class="num">${x.legs}</td>` +
           `<td>${x.rTag}</td>` +
           `<td class="num ${x.cls}" style="font-weight:700">${x.pnlUsd !== undefined ? fmtUsd(x.pnlUsd) : '--'}</td>` +
           `<td class="num ${x.cls}" style="font-weight:700">${fmtPct(x.pnlPct)}</td></tr>`
@@ -1053,6 +1055,7 @@ async function refresh(){
           <div class="trade-card-detail">
             <span><b>$${Number(x.entryPx).toFixed(0)}</b> → <b>$${Number(x.exitPx).toFixed(0)}</b></span>
             <span>Hold <b>${x.holdStr}</b></span>
+            <span>Legs <b>${x.legs}</b></span>
           </div>
         </div>
       `).join('') + '</div>';
