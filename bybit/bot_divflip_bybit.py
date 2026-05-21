@@ -569,12 +569,16 @@ def main():
     if pos:
         fav = ((live_px - pos["avg_entry"]) / pos["avg_entry"] * 100) * \
               (1 if pos["side"] == "LONG" else -1)
+        # BE arm price — avg-anchored (divflip v1), same anchor as the paper bot.
+        be_arm = (pos["avg_entry"] * (1 + BE_TRIGGER_PCT) if pos["side"] == "LONG"
+                  else pos["avg_entry"] * (1 - BE_TRIGGER_PCT))
         pos_status = {
             "side": pos["side"], "first_entry": pos["first_entry"],
             "avg_entry": pos["avg_entry"], "worst_entry": pos["worst_entry"],
             "peak_price": pos.get("peak_price"), "qty_total": pos["qty_total"],
             "filled": pos["filled"], "sl_px": pos.get("last_sl"),
             "tp_px": pos.get("last_tp"), "be_activated": pos.get("be_activated"),
+            "be_arm_px": be_arm,
             "fav_pct": fav, "unrealised_pnl": pos.get("unrealised_pnl"),
             "entry_time": pos.get("entry_time"),
         }
