@@ -118,11 +118,23 @@ echo "── Step 4/4 · Upload + install ──"
 SSH="gcloud compute ssh $VM_NAME --zone=$ZONE --command"
 SCP="gcloud compute scp --zone=$ZONE"
 
+# Open the dashboard port 8889 (idempotent).
+echo "Ensuring firewall allows the dashboard port 8889..."
+if gcloud compute firewall-rules describe bybit-divflip-dash >/dev/null 2>&1; then
+  echo "  ✓ firewall rule 'bybit-divflip-dash' already exists"
+else
+  gcloud compute firewall-rules create bybit-divflip-dash \
+    --allow=tcp:8889 --source-ranges=0.0.0.0/0 \
+    --description="Bybit divflip bot dashboard" >/dev/null \
+    && echo "  ✓ firewall rule 'bybit-divflip-dash' created (tcp:8889)"
+fi
+
 $SSH "mkdir -p ~/$REMOTE_DIR/config ~/$REMOTE_DIR/scripts ~/$REMOTE_DIR/data"
 
 # Upload code (NOT data/ — preserves remote state on redeploy).
 $SCP "$BYBIT_DIR"/bot_divflip_bybit.py "$BYBIT_DIR"/bybit_client.py \
      "$BYBIT_DIR"/core.py "$BYBIT_DIR"/core_divflip.py \
+     "$BYBIT_DIR"/server.py "$BYBIT_DIR"/dashboard.html \
      "$BYBIT_DIR"/requirements.txt "$BYBIT_DIR"/README.md \
      "$BYBIT_DIR"/.env.example \
      "$VM_NAME":~/"$REMOTE_DIR"/
@@ -141,17 +153,21 @@ echo ""
 echo "Running the install script on the VM..."
 $SSH "cd ~/$REMOTE_DIR && bash scripts/gcp_install_bybit.sh"
 
+VM_IP="$(gcloud compute instances describe "$VM_NAME" --zone="$ZONE" \
+          --format='get(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || echo '<VM-IP>')"
 echo ""
 echo "════════════════════════════════════════════════════════"
 echo "  ✓ Deployed to $VM_NAME ($ZONE) · project $PROJECT"
 echo ""
+echo "  Dashboard:  http://$VM_IP:8889/"
+echo ""
 if [ ! -f "$BYBIT_DIR/.env" ]; then
-  echo "  NEXT — add your Bybit API keys on the VM:"
+  echo "  NEXT — add your Bybit API keys on the VM, then re-run install:"
   echo "    gcloud compute ssh $VM_NAME --zone=$ZONE"
   echo "    cd ~/$REMOTE_DIR && cp .env.example .env && nano .env"
+  echo "    bash scripts/gcp_install_bybit.sh"
   echo ""
 fi
-echo "  Watch it:"
-echo "    gcloud compute ssh $VM_NAME --zone=$ZONE \\"
-echo "      --command='tail -f ~/$REMOTE_DIR/data/bot.log'"
+echo "  Logs:  gcloud compute ssh $VM_NAME --zone=$ZONE \\"
+echo "           --command='tail -f ~/$REMOTE_DIR/data/bot.log'"
 echo "════════════════════════════════════════════════════════"

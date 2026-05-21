@@ -233,11 +233,59 @@ def sync_trading_stop(client, symbol, pos, info, live_px):
     return sl_r, tp_r, False
 
 
+# ─── Connectivity preflight ───
+def run_connectivity_check(client, symbol, api_key, api_secret) -> bool:
+    """Test API reachability + key validity before the bot is allowed to run.
+    Returns True only if every check passes. The install script gates the
+    systemd timer on this — the bot is not started unless this passes."""
+    log.info("─── Connectivity preflight ───")
+    ok = True
+
+    info = client.instrument_info(symbol)
+    if info:
+        log.info(f"  [PASS] public API — {symbol} reachable (copyTrading={info['copy_trading']})")
+    else:
+        log.error("  [FAIL] public API — cannot reach Bybit market data")
+        ok = False
+
+    px = client.live_price(symbol)
+    if px:
+        log.info(f"  [PASS] price feed — {symbol} last = ${px:,.2f}")
+    else:
+        log.error("  [FAIL] price feed — ticker unavailable")
+        ok = False
+
+    if not api_key or not api_secret:
+        log.error("  [FAIL] API keys — BYBIT_API_KEY / BYBIT_API_SECRET not set in .env")
+        ok = False
+    else:
+        bal = client.wallet_balance()
+        if bal is not None:
+            log.info(f"  [PASS] signed API — keys valid, wallet equity ${bal:,.2f}")
+        else:
+            log.error("  [FAIL] signed API — keys rejected or wallet unreadable "
+                      "(check key permissions, IP whitelist, or set balance_override)")
+            ok = False
+        posn = client.position(symbol)
+        if posn is not None:
+            log.info("  [PASS] position read — account positions accessible")
+        else:
+            log.error("  [FAIL] position read — /v5/position/list failed")
+            ok = False
+
+    log.info("─── Preflight: " +
+             ("ALL CHECKS PASSED — safe to start the bot" if ok
+              else "FAILED — fix the above before the bot will trade") + " ───")
+    return ok
+
+
 # ─── Main tick ───
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=os.path.join(BOT_DIR, "config", "bybit_live.json"))
     ap.add_argument("--dry", action="store_true", help="Compute + log only, place NO orders")
+    ap.add_argument("--check", action="store_true",
+                    help="Connectivity preflight — test API reachability + keys, then exit")
     args, _ = ap.parse_known_args()
 
     load_dotenv(os.path.join(BOT_DIR, ".env"))
@@ -261,6 +309,12 @@ def main():
         return
 
     client = BybitClient(API_KEY, API_SECRET, BASE_URL)
+
+    # Connectivity preflight — `--check` tests the API + keys and exits. The
+    # install script runs this and only starts the bot's timer if it passes.
+    if args.check:
+        sys.exit(0 if run_connectivity_check(client, SYMBOL, API_KEY, API_SECRET) else 1)
+
     state = load_state()
 
     # ─ Instrument info (qty step, min qty, tick) ─
@@ -528,6 +582,7 @@ def main():
     write_status({
         "env": "bybit_live", "exchange": "bybit", "pair": SYMBOL,
         "trading_enabled": TRADING_ENABLED,
+        "connectivity": {"public": True, "signed": exch is not None},
         "price": close_px, "live_price": live_px,
         "balance": balance, "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos_status, "signal": sig.side,

@@ -20,15 +20,18 @@ endpoint).
 
 ```
 bybit/
-  bot_divflip_bybit.py   — the live bot (cron/systemd, every 1 min)
+  bot_divflip_bybit.py   — the live bot (systemd, every 1 min)
   bybit_client.py        — Bybit V5 signed REST client (orders, leverage, SL/TP)
   core.py                — indicators (copied verbatim from the paper bot)
   core_divflip.py        — divflip v1 strategy params + SL/BE/TP logic (copied verbatim)
+  server.py              — standalone dashboard server (port 8889)
+  dashboard.html         — the Bybit bot's own dashboard
   config/bybit_live.json — exchange / account / symbol settings
   .env.example           — API-key template (copy to .env)
   scripts/
     deploy_bybit.sh      — interactive GCP deploy (pick account/project/VM)
-    gcp_install_bybit.sh — VM-side installer (systemd 1-min timer)
+    gcp_install_bybit.sh — VM-side installer (connectivity check + systemd)
+    vm_ip.sh             — print/lock the VM external IP (Bybit key whitelist)
     run_bybit.sh         — runner
   data/                  — state.json, status.json, bot.log (created at runtime)
 ```
@@ -121,10 +124,36 @@ bash scripts/deploy_bybit.sh
 ```
 
 Interactive — pick your **Google account → project → VM** (an existing one, or
-create a new e2-micro in a Bybit-allowed region), then it uploads the bot and
-installs a 1-minute systemd timer. Re-run it and pick differently to switch.
+create a new e2-micro in a Bybit-allowed region). It uploads the bot, opens the
+dashboard firewall port, runs a connectivity preflight, starts the dashboard,
+and starts the 1-minute trading timer **only if the preflight passes**. Re-run
+it and pick differently to switch.
 
 ---
+
+## Dashboard
+
+The bot has its **own** dashboard — separate process, separate port (`8889`),
+fully decoupled from the main project's `server.py` and dashboards.
+
+```
+http://<VM-IP>:8889/
+```
+
+It shows connectivity (API / keys / bot-alive dots), balance, the open position
+(side, avg entry, the 3 DCA legs, SL / TP / breakeven, unrealised P&L), the live
+signal + conditions, and the realised trade log — polling `data/status.json`
+and `data/state.json` every 5 seconds. `gcp_install_bybit.sh` runs it as the
+always-on `bybit-divflip-server` service.
+
+## Connectivity check before the bot starts
+
+`gcp_install_bybit.sh` runs a **preflight** (`bot_divflip_bybit.py --check`)
+before enabling the trading timer — it tests public API reachability, key
+validity, and account access. **The trading bot starts only if the preflight
+passes.** If it fails (most often the API key's IP whitelist doesn't match the
+VM's IP), the dashboard still runs so you can see the problem; fix it and re-run
+the install script.
 
 ## Operating it
 
@@ -133,10 +162,9 @@ installs a 1-minute systemd timer. Re-run it and pick differently to switch.
 gcloud compute ssh <VM> --zone=<ZONE> --command='tail -f ~/BTC-Flip-Bot-Bybit/data/bot.log'
 
 # VM external IP (for the Bybit key whitelist) — bash scripts/vm_ip.sh
-# pause trading        — set "trading_enabled": false in config, redeploy
-# stop the bot         — sudo systemctl disable --now bybit-divflip.timer
-# timer status         — sudo systemctl list-timers | grep bybit
+# connectivity preflight  — python3 bot_divflip_bybit.py --check
+# pause trading           — set "trading_enabled": false in config, redeploy
+# stop the bot            — sudo systemctl disable --now bybit-divflip.timer
+# stop the dashboard      — sudo systemctl disable --now bybit-divflip-server
+# timer status            — sudo systemctl list-timers | grep bybit
 ```
-
-`data/status.json` holds the current position, signal, SL/TP and stats —
-machine-readable for a dashboard.

@@ -169,8 +169,12 @@ class BybitClient:
     def position(self, symbol: str) -> Optional[dict]:
         """Current net position. Returns dict with side LONG/SHORT/None,
         qty, avg_price, unrealised_pnl, leverage — or None on fetch failure."""
-        res = self._request("GET", "/v5/position/list", {
-            "category": "linear", "symbol": symbol}, signed=True)
+        try:
+            res = self._request("GET", "/v5/position/list", {
+                "category": "linear", "symbol": symbol}, signed=True)
+        except BybitError as e:
+            log.warning(f"  position fetch failed: {e}")
+            return None
         if res is None or "list" not in res:
             return None
         for p in res["list"]:
