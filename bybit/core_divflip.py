@@ -60,7 +60,10 @@ RISK_PCT       = 0.06
 DCA_LEVELS     = 2            # was 3 — L3 removed
 DCA_SPACING    = 0.0035       # 0.35% adverse triggers L2.
 MARTINGALE_RATIOS = [3.0, 4.0]   # was [3, 4, 1.5] — L1/L2 weights kept (L1=43%, L2=57%)
-SL_FROM_WORST  = 0.01         # 1% — kept value but anchor changes
+SL_FROM_WORST  = 0.008        # 0.8% — tightened from 1.0% (2026-05-23, post-sweep)
+                              # Backtest May 14–23 (incl May 17 cat loss): 0.8%/L1
+                              # cut total loss from -7.13% → -4.61%. Exits fast
+                              # after L2 fills + price keeps dropping.
 SL_ANCHOR_FIRST = True        # NEW: anchor SL to first_entry (was worst)
 SL_COOLDOWN_HOURS = 2         # NEW: skip new entries for 2h after SL/TIME_STOP
 MAX_HOLD_HOURS = 24           # NEW: force-exit underwater positions held > 24h
@@ -93,16 +96,19 @@ USE_RSI_LEVEL_FILTER = True
 RSI_LONG_MAX  = 50            # bull div: RSI at pivot ≤ 50 (loose — catches most lows)
 RSI_SHORT_MIN = 66            # bear div: RSI at pivot ≥ 66 (TV-tuned: was 70 — looser bear catches +14 trades)
 
-# v4+: 3-day range_pos filter — added 2026-05-23 after replaying 17 paper v1 trades:
-# would have turned −$216 into +$165 by blocking 2 of 3 catastrophic losses
-# (both were LONG entries at rp_3d ≈ 73-74%). Filter rule:
-#   range_pos = (live_px − rolling_low_864bars) / (rolling_high − rolling_low) × 100
-#   LONG entry only if range_pos ≤ RP_LONG_MAX  (price near bottom of 3d range)
-#   SHORT entry only if range_pos ≥ RP_SHORT_MIN (price near top of 3d range)
+# range_pos filter — added 2026-05-23, refined same day.
+# Tiered lookback (mirrors SR DCA's MIN_PREV_RANGE_PCT pattern):
+#   start with 1-day window; if range < 2% extend to 2-day.
+# Stays responsive in normal markets, stable on quiet days.
+#   range_pos = (live_px − rolling_low) / (rolling_high − rolling_low) × 100
+#   LONG entry only if range_pos ≤ RP_LONG_MAX  (price near bottom)
+#   SHORT entry only if range_pos ≥ RP_SHORT_MIN (price near top)
 USE_RANGE_POS_FILTER = True
-RP_LOOKBACK_BARS = 864         # 3 days × 288 5m bars
-RP_LONG_MAX = 30               # block LONG if rp_3d > 30
-RP_SHORT_MIN = 70              # block SHORT if rp_3d < 70
+RP_LOOKBACK_BARS_BASE = 288    # 1 day × 288 5m bars (initial lookback)
+RP_LOOKBACK_BARS_MAX  = 576    # 2 days × 288 5m bars (extended when range tight)
+RP_MIN_RANGE_PCT = 0.02        # 2% range floor — below this, extend lookback
+RP_LONG_MAX = 30               # block LONG if range_pos > 30
+RP_SHORT_MIN = 70              # block SHORT if range_pos < 70
 
 # Divergence freshness window — 21 bars on 5m = 105 min.
 DIV_FRESH_BARS = 21

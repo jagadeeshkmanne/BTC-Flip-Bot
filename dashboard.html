@@ -211,7 +211,7 @@
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="divflip">Divergence-Flip v1</option>
-    <option value="divflip_v1f">Divflip v1f (Paper Bot 4)</option>
+    <option value="divflip_v1f">Bybit PT (paper mirror of Bybit live)</option>
     <option value="divflip_15m">Divflip 15m (Paper Bot 5)</option>
     <option value="sr_dca">V2.2 S/R DCA</option>
   </select>
@@ -472,7 +472,7 @@ const DIVFLIP_LONG_CONDS = [
   {key: 'range_pos 3d ≤ 30 (price near 3d low)', check: d => {
     if (!d?.range_pos_filter?.enabled || d.range_pos_3d == null) return true;
     return d.range_pos_3d <= d.range_pos_filter.long_max;
-  }, val: d => d?.range_pos_3d != null ? d.range_pos_3d.toFixed(1) : '—'},
+  }, val: d => fmtRangePos(d)},
 ];
 const DIVFLIP_SHORT_CONDS = [
   {key: 'Bear div fresh (≤21 bars)', check: d => {
@@ -483,8 +483,23 @@ const DIVFLIP_SHORT_CONDS = [
   {key: 'range_pos 3d ≥ 70 (price near 3d high)', check: d => {
     if (!d?.range_pos_filter?.enabled || d.range_pos_3d == null) return true;
     return d.range_pos_3d >= d.range_pos_filter.short_min;
-  }, val: d => d?.range_pos_3d != null ? d.range_pos_3d.toFixed(1) : '—'},
+  }, val: d => fmtRangePos(d)},
 ];
+
+// Compact range_pos display: "31.7  |  lo $73,500 → now $75,420 → hi $77,200"
+// so the user can see WHERE the current price sits in the 3d band.
+function fmtRangePos(d) {
+  if (d?.range_pos_3d == null) return '—';
+  const rp = d.range_pos_3d.toFixed(1);
+  const px = d?.price ?? d?.indicators?.price;
+  if (d.rp_3d_low != null && d.rp_3d_high != null && px != null) {
+    return `${rp}  |  lo $${Math.round(d.rp_3d_low).toLocaleString()} → now $${Math.round(px).toLocaleString()} → hi $${Math.round(d.rp_3d_high).toLocaleString()}`;
+  }
+  if (d.rp_3d_low != null && d.rp_3d_high != null) {
+    return `${rp}  (lo $${Math.round(d.rp_3d_low).toLocaleString()} → hi $${Math.round(d.rp_3d_high).toLocaleString()})`;
+  }
+  return rp;
+}
 
 // Pick the right set based on the URL ?strategy= param.
 // FIX 2026-05-23: was `STRATEGY === 'divflip'` which left divflip_v1f / divflip_v2 /
@@ -717,7 +732,10 @@ function renderSetup(status){
     ...ind,
     conditions: status.conditions || {},
     range_pos_3d: status.range_pos_3d,
+    rp_3d_high: status.rp_3d_high,
+    rp_3d_low: status.rp_3d_low,
     range_pos_filter: status.range_pos_filter,
+    price: status.live_price ?? status.price,
   };
   $('setupRsi').textContent = ind.rsi !== undefined ? ind.rsi.toFixed(1) : '--';
   // setupVol / setupRange exist only in S/R-DCA mode — divflip replaces the
@@ -1253,7 +1271,7 @@ let lastBar = null; // most recent kline cache, used to compute change %
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
 // Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
-  const stratLabel = DIVFLIP_15M ? 'Divflip 15m (Paper Bot 5)' : (DIVFLIP_V1F ? 'Divflip v1f (Paper Bot 4)' : (DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA')));
+  const stratLabel = DIVFLIP_15M ? 'Divflip 15m (Paper Bot 5)' : (DIVFLIP_V1F ? 'Bybit PT (paper mirror of Bybit live)' : (DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA')));
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy

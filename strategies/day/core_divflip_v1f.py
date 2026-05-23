@@ -64,7 +64,11 @@ DCA_LEVELS     = 2            # was 3 — remove L3
 DCA_SPACING    = 0.0035       # unchanged 0.35%
 MARTINGALE_RATIOS = [3.0, 4.0]  # was [3, 4, 1.5] — L1/L2 weights kept
 
-SL_FROM_WORST  = 0.01         # 1% — kept value but anchor changes (see below)
+SL_FROM_WORST  = 0.008        # 0.8% — tightened from 1.0% (2026-05-23, post-sweep)
+                              # Backtest May 14–23 (incl May 17 cat loss): 0.8%/L1
+                              # cut total loss from -7.13% → -4.61%. Tighter SL
+                              # exits fast after L2 fills + price keeps dropping
+                              # (matches the "L2 fill + drop = losing trade" insight).
 SL_ANCHOR_FIRST = True        # NEW: anchor SL to first_entry (not worst_entry)
 SL_COOLDOWN_HOURS = 2         # 2026-05-23: tightened 24h → 2h per cooldown sweep.
                               # On 45d, 2h cooldown gave best PF (0.90) and -$222 net
@@ -110,9 +114,15 @@ RSI_SHORT_MIN = 66            # bear div: RSI at pivot ≥ 66 (TV-tuned: was 70 
 #   LONG entry only if range_pos ≤ RP_LONG_MAX
 #   SHORT entry only if range_pos ≥ RP_SHORT_MIN
 USE_RANGE_POS_FILTER = True
-RP_LOOKBACK_BARS = 864         # 3 days × 288 5m bars
-RP_LONG_MAX = 30               # block LONG if rp_3d > 30
-RP_SHORT_MIN = 70              # block SHORT if rp_3d < 70
+# Tiered lookback (matches SR DCA pattern in core.py):
+#   start with 1-day window; if range < MIN_RANGE_PCT extend to 2-day.
+# 2026-05-23: changed from fixed 3d (864 bars) → tiered 1d/2d so the filter
+# stays responsive in normal markets but doesn't whipsaw on quiet days.
+RP_LOOKBACK_BARS_BASE = 288    # 1 day × 288 5m bars (initial lookback)
+RP_LOOKBACK_BARS_MAX  = 576    # 2 days × 288 5m bars (extended when range tight)
+RP_MIN_RANGE_PCT = 0.02        # 2% range floor — below this, extend lookback
+RP_LONG_MAX = 30               # block LONG if range_pos > 30
+RP_SHORT_MIN = 70              # block SHORT if range_pos < 70
 
 # Divergence freshness window — 21 bars on 5m = 105 min.
 DIV_FRESH_BARS = 21

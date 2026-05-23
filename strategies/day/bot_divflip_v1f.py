@@ -31,7 +31,8 @@ from core_divflip_v1f import (
     USE_TAKE_PROFIT, TP_PCT,
     DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD,
     SL_COOLDOWN_HOURS, SL_ANCHOR_FIRST, MAX_HOLD_HOURS,
-    USE_RANGE_POS_FILTER, RP_LOOKBACK_BARS, RP_LONG_MAX, RP_SHORT_MIN,
+    USE_RANGE_POS_FILTER, RP_LOOKBACK_BARS_BASE, RP_LOOKBACK_BARS_MAX,
+    RP_MIN_RANGE_PCT, RP_LONG_MAX, RP_SHORT_MIN,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -262,7 +263,7 @@ def maybe_dca_fixed(pos, live_px: float, balance: float, state) -> bool:
 def main():
     log.info("=" * 60)
     sl_anchor_lbl = "L1-anchored" if SL_ANCHOR_FIRST else "L3-anchored"
-    log.info(f"Divflip v1f (Paper Bot 4) — RSI ≤{RSI_LONG_MAX:.0f}/≥{RSI_SHORT_MIN:.0f} | "
+    log.info(f"Bybit PT (paper mirror of Bybit live) — RSI ≤{RSI_LONG_MAX:.0f}/≥{RSI_SHORT_MIN:.0f} | "
              f"{DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% mart {':'.join(str(int(r)) for r in [3,4])} | "
              f"SL {SL_FROM_WORST*100:.1f}% {sl_anchor_lbl} | "
              f"TP {TP_PCT*100:.2f}% | BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
@@ -427,22 +428,34 @@ def main():
             log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} "
                      f"fav={fav_pct:+.2f}% peak=${peak_price:.2f}({peak_pct:+.2f}%) SL=${sl_px:.2f}{be_tag}")
 
-    # ─ v4+: 3-day range_pos filter ─
-    # Block LONG if price near top of 3d range, SHORT if near bottom.
-    # Validated 2026-05-23 on 17 paper v1 trades — would have saved $381.
+    # ─ v4+: tiered range_pos filter (1d → 2d auto-extend) ─
+    # Mirrors SR DCA's MIN_PREV_RANGE_PCT pattern: start with 1-day lookback,
+    # but if that window's range is < 2% of price (too tight to give a meaningful
+    # position signal), extend to 2-day. Keeps the filter responsive on volatile
+    # days, stable on quiet ones.
     range_pos = None
-    if USE_RANGE_POS_FILTER and len(df) >= RP_LOOKBACK_BARS + 1:
-        window = df.iloc[-(RP_LOOKBACK_BARS + 1):-1]
-        rp_high = window["high"].max()
-        rp_low = window["low"].min()
-        rp_span = rp_high - rp_low
+    rp_high = None
+    rp_low = None
+    rp_lookback_used = None
+    if USE_RANGE_POS_FILTER and len(df) >= RP_LOOKBACK_BARS_MAX + 1:
+        # Try 1-day window first
+        for lb in (RP_LOOKBACK_BARS_BASE, RP_LOOKBACK_BARS_MAX):
+            window = df.iloc[-(lb + 1):-1]
+            rp_high = float(window["high"].max())
+            rp_low = float(window["low"].min())
+            rp_span = rp_high - rp_low
+            range_pct = rp_span / rp_low if rp_low > 0 else 0
+            if range_pct >= RP_MIN_RANGE_PCT or lb == RP_LOOKBACK_BARS_MAX:
+                rp_lookback_used = lb
+                break
         if rp_span > 0:
             range_pos = (live_px - rp_low) / rp_span * 100
+            lb_days = rp_lookback_used // 288
             if sig.side == "LONG" and range_pos > RP_LONG_MAX:
-                log.warning(f"  Signal LONG BLOCKED by range_pos filter — rp_3d={range_pos:.1f} > {RP_LONG_MAX} (price too high in 3d range)")
+                log.warning(f"  Signal LONG BLOCKED by range_pos filter — rp_{lb_days}d={range_pos:.1f} > {RP_LONG_MAX} (range ${rp_low:.0f}–${rp_high:.0f})")
                 sig.side = None
             elif sig.side == "SHORT" and range_pos < RP_SHORT_MIN:
-                log.warning(f"  Signal SHORT BLOCKED by range_pos filter — rp_3d={range_pos:.1f} < {RP_SHORT_MIN} (price too low in 3d range)")
+                log.warning(f"  Signal SHORT BLOCKED by range_pos filter — rp_{lb_days}d={range_pos:.1f} < {RP_SHORT_MIN} (range ${rp_low:.0f}–${rp_high:.0f})")
                 sig.side = None
 
     # ─ Entry check (if flat) ─
@@ -531,12 +544,16 @@ def main():
         "cooldown_msg": cooldown_msg,
         "last_sl_time": state.get("last_sl_time"),
         "range_pos_3d": round(range_pos, 2) if range_pos is not None else None,
+        "rp_3d_high": round(rp_high, 2) if rp_high is not None else None,
+        "rp_3d_low": round(rp_low, 2) if rp_low is not None else None,
+        "rp_lookback_days": (rp_lookback_used // 288) if rp_lookback_used else None,
         "range_pos_filter": {
             "enabled": USE_RANGE_POS_FILTER,
             "long_max": RP_LONG_MAX, "short_min": RP_SHORT_MIN,
-            "lookback_bars": RP_LOOKBACK_BARS,
+            "lookback_bars": rp_lookback_used or RP_LOOKBACK_BARS_BASE,
+            "min_range_pct": RP_MIN_RANGE_PCT,
         },
-        "strategy": f"Divflip v1f [PAPER]: {DCA_LEVELS} DCAs @ {DCA_SPACING*100:.1f}% mart / SL {SL_FROM_WORST*100:.1f}% from L1 / TP {TP_PCT*100:.1f}% / BE +{BE_TRIGGER_PCT*100:.2f}% / {SL_COOLDOWN_HOURS}h cooldown / rp_3d filter {RP_LONG_MAX}/{RP_SHORT_MIN}",
+        "strategy": f"Bybit PT [PAPER mirror of Bybit live]: {DCA_LEVELS} DCAs @ {DCA_SPACING*100:.1f}% mart / SL {SL_FROM_WORST*100:.1f}% from L1 / TP {TP_PCT*100:.1f}% / BE +{BE_TRIGGER_PCT*100:.2f}% / {SL_COOLDOWN_HOURS}h cooldown / rp tiered 1d→2d (min {RP_MIN_RANGE_PCT*100:.0f}%) {RP_LONG_MAX}/{RP_SHORT_MIN}",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
