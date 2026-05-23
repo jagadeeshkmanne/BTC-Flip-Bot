@@ -79,7 +79,7 @@ CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries
 # vs V2.1 baseline +28.31% / PF 12.41 — same DD, +4.82% return on winners
 # that were getting cut at 20:00 UTC.
 HOLD_PAST_EOD_IF_FAV = True
-HOLD_MIN_FAV_PCT     = 0.015  # 1.5% — above BE trigger so BE is armed
+HOLD_MIN_FAV_PCT     = 0.005  # 0.5% — lowered 2026-05-23 (was 1.5%). Trade-log analysis: 4/8 trades EOD-flattened with avg +$4 because the 1.5% threshold was above where the typical winner sits at 20:00 UTC. 0.5% lets modest-favourable trades mature into TP next session; losing trades still EOD-flatten (overnight safety preserved); 24h hard cap unchanged.
 
 # Entry filters
 VOL_MULT       = 1.1          # V2: 1.1× (V1 was 1.2×) — slightly more permissive given divergence gate
