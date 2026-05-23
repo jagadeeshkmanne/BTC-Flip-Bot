@@ -42,6 +42,7 @@ from core_divflip import (
     USE_TAKE_PROFIT, TP_PCT,
     DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD, MARTINGALE_RATIOS,
     SL_ANCHOR_FIRST, SL_COOLDOWN_HOURS, MAX_HOLD_HOURS,
+    USE_RANGE_POS_FILTER, RP_LOOKBACK_BARS, RP_LONG_MAX, RP_SHORT_MIN,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -381,7 +382,8 @@ def main():
              f"copyTrading={info['copy_trading']}")
 
     # ─ Market data ─
-    rows_5m = client.klines(SYMBOL, "5", 500)
+    # 1000 5m bars = 83h — enough for 864-bar (3-day) range_pos filter + buffer
+    rows_5m = client.klines(SYMBOL, "5", 1000)
     rows_1d = client.klines(SYMBOL, "D", 100)
     df_5m = klines_to_df(rows_5m)
     df_1d = klines_to_df(rows_1d)
@@ -490,7 +492,7 @@ def main():
         # block / place_dca_orders) so they fill AT the trigger price like the
         # paper bot's marked fills. Here we (a) place them retroactively if a
         # position predates this feature, and (b) detect fills.
-        if TRADING_ENABLED and pos.get("dca_orders") is None and pos["filled"] < DCA_LEVELS:
+        if TRADING_ENABLED and not pos.get("dca_orders") and pos["filled"] < DCA_LEVELS:
             log.info("  no DCA orders on this position — placing them now")
             pos["dca_orders"] = place_dca_orders(
                 client, SYMBOL, info, pos, pos.get("balance_at_entry", balance))
@@ -618,6 +620,26 @@ def main():
         except Exception as e:
             log.error(f"  cooldown check failed: {e}")
 
+    # ─ v4+: 3-day range_pos filter ─
+    # Compute price's position within the last 864 5m bars (3 days).
+    # Block LONG entries if price is in top of range; block SHORT if in bottom.
+    # Validated 2026-05-23 on 17 paper v1 trades — would have saved $381 by
+    # blocking 2 of 3 catastrophic LONG-near-top losses.
+    range_pos = None
+    if USE_RANGE_POS_FILTER and len(df) >= RP_LOOKBACK_BARS + 1:
+        window = df.iloc[-(RP_LOOKBACK_BARS + 1):-1]  # exclude current forming bar
+        rp_high = window["high"].max()
+        rp_low = window["low"].min()
+        rp_span = rp_high - rp_low
+        if rp_span > 0:
+            range_pos = (live_px - rp_low) / rp_span * 100
+            if sig.side == "LONG" and range_pos > RP_LONG_MAX:
+                log.warning(f"  Signal LONG BLOCKED by range_pos filter — rp_3d={range_pos:.1f} > {RP_LONG_MAX} (price too high in 3d range)")
+                sig.side = None
+            elif sig.side == "SHORT" and range_pos < RP_SHORT_MIN:
+                log.warning(f"  Signal SHORT BLOCKED by range_pos filter — rp_3d={range_pos:.1f} < {RP_SHORT_MIN} (price too low in 3d range)")
+                sig.side = None
+
     # ─ Entry — open a new position if flat and a fresh divergence fired ─
     if state.get("position") is None and not closed_this_tick and sig.side and cooldown_active:
         log.info(f"  Signal {sig.side} SKIPPED — cooldown {cooldown_h_left:.1f}h remaining")
@@ -709,11 +731,18 @@ def main():
         "cooldown_active": cooldown_active,
         "cooldown_hours_left": round(cooldown_h_left, 2) if cooldown_active else 0,
         "last_sl_time": state.get("last_sl_time"),
+        "range_pos_3d": round(range_pos, 2) if range_pos is not None else None,
+        "range_pos_filter": {
+            "enabled": USE_RANGE_POS_FILTER,
+            "long_max": RP_LONG_MAX, "short_min": RP_SHORT_MIN,
+            "lookback_bars": RP_LOOKBACK_BARS,
+        },
         "strategy": f"Divflip v1f [Bybit {'LIVE' if TRADING_ENABLED else 'MONITOR'}] "
                     f"({DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / "
                     f"SL {SL_FROM_WORST*100:.1f}% {'L1' if SL_ANCHOR_FIRST else 'L3'}-anchored / "
                     f"TP {TP_PCT*100:.1f}% / BE {BE_TRIGGER_PCT*100:.2f}% / "
-                    f"{SL_COOLDOWN_HOURS}h cooldown / TIME_STOP {MAX_HOLD_HOURS}h)",
+                    f"{SL_COOLDOWN_HOURS}h cooldown / TIME_STOP {MAX_HOLD_HOURS}h / "
+                    f"rp_3d filter {RP_LONG_MAX}/{RP_SHORT_MIN})",
         "state": "IN_POSITION" if pos else "FLAT",
     })
     log.info("=" * 64 + "\n")

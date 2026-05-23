@@ -93,6 +93,17 @@ USE_RSI_LEVEL_FILTER = True
 RSI_LONG_MAX  = 50            # bull div: RSI at pivot ≤ 50 (loose — catches most lows)
 RSI_SHORT_MIN = 66            # bear div: RSI at pivot ≥ 66 (TV-tuned: was 70 — looser bear catches +14 trades)
 
+# v4+: 3-day range_pos filter — added 2026-05-23 after replaying 17 paper v1 trades:
+# would have turned −$216 into +$165 by blocking 2 of 3 catastrophic losses
+# (both were LONG entries at rp_3d ≈ 73-74%). Filter rule:
+#   range_pos = (live_px − rolling_low_864bars) / (rolling_high − rolling_low) × 100
+#   LONG entry only if range_pos ≤ RP_LONG_MAX  (price near bottom of 3d range)
+#   SHORT entry only if range_pos ≥ RP_SHORT_MIN (price near top of 3d range)
+USE_RANGE_POS_FILTER = True
+RP_LOOKBACK_BARS = 864         # 3 days × 288 5m bars
+RP_LONG_MAX = 30               # block LONG if rp_3d > 30
+RP_SHORT_MIN = 70              # block SHORT if rp_3d < 70
+
 # Divergence freshness window — 21 bars on 5m = 105 min.
 DIV_FRESH_BARS = 21
 

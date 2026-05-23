@@ -462,12 +462,17 @@ const SR_SHORT_CONDS = [
 
 // Divergence-flip conditions: freshness of the divergence pivot + RSI level
 // at pivot (separate rows so you can see WHICH one is failing).
+// 2026-05-23: added range_pos 3d filter row (gate added to v4/v1f bot).
 const DIVFLIP_LONG_CONDS = [
   {key: 'Bull div fresh (≤21 bars)', check: d => {
     const v = d?.bars_since_bull_div;
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'LONG')},
   {key: 'RSI at last bull pivot (historical)', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
+  {key: 'range_pos 3d ≤ 30 (price near 3d low)', check: d => {
+    if (!d?.range_pos_filter?.enabled || d.range_pos_3d == null) return true;
+    return d.range_pos_3d <= d.range_pos_filter.long_max;
+  }, val: d => d?.range_pos_3d != null ? d.range_pos_3d.toFixed(1) : '—'},
 ];
 const DIVFLIP_SHORT_CONDS = [
   {key: 'Bear div fresh (≤21 bars)', check: d => {
@@ -475,11 +480,18 @@ const DIVFLIP_SHORT_CONDS = [
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'SHORT')},
   {key: 'RSI at last bear pivot (historical)', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
+  {key: 'range_pos 3d ≥ 70 (price near 3d high)', check: d => {
+    if (!d?.range_pos_filter?.enabled || d.range_pos_3d == null) return true;
+    return d.range_pos_3d >= d.range_pos_filter.short_min;
+  }, val: d => d?.range_pos_3d != null ? d.range_pos_3d.toFixed(1) : '—'},
 ];
 
 // Pick the right set based on the URL ?strategy= param.
-const LONG_CONDS  = STRATEGY === 'divflip' ? DIVFLIP_LONG_CONDS  : SR_LONG_CONDS;
-const SHORT_CONDS = STRATEGY === 'divflip' ? DIVFLIP_SHORT_CONDS : SR_SHORT_CONDS;
+// FIX 2026-05-23: was `STRATEGY === 'divflip'` which left divflip_v1f / divflip_v2 /
+// divflip_15m falling through to V2.2 S/R conditions (Touch prev_L etc.) by mistake.
+const isDivflipStrategy = STRATEGY.startsWith('divflip');
+const LONG_CONDS  = isDivflipStrategy ? DIVFLIP_LONG_CONDS  : SR_LONG_CONDS;
+const SHORT_CONDS = isDivflipStrategy ? DIVFLIP_SHORT_CONDS : SR_SHORT_CONDS;
 
 // ── State caches (used by both refresh() and live WS updates) ───
 let positionSnapshot = null;
@@ -701,7 +713,12 @@ function renderPnl(price){
 // ── Setup tracker (when no position) ─────────────────────────
 function renderSetup(status){
   const ind = status.indicators || {};
-  const condData = {...ind, conditions: status.conditions || {}};
+  const condData = {
+    ...ind,
+    conditions: status.conditions || {},
+    range_pos_3d: status.range_pos_3d,
+    range_pos_filter: status.range_pos_filter,
+  };
   $('setupRsi').textContent = ind.rsi !== undefined ? ind.rsi.toFixed(1) : '--';
   // setupVol / setupRange exist only in S/R-DCA mode — divflip replaces the
   // stats row with RSI thresholds in DOMContentLoaded, so guard the assignments.

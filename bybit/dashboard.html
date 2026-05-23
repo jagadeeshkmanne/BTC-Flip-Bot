@@ -425,13 +425,48 @@ async function poll(){
   } else {
     $("positionCard").style.display="none";
     $("flatCard").style.display="";
-    $("flatMsg").textContent=st.signal
-      ? "Signal: "+st.signal+" — entry fires on the next bot tick"
-      : "FLAT — waiting for a fresh divergence signal";
+
+    // Range_pos filter gate — surfaced here so the user can see WHY entry didn't fire
+    const rp = st.range_pos_3d;
+    const rpf = st.range_pos_filter;
+    const rpEnabled = rpf && rpf.enabled && rp != null;
+    const longAllowed = !rpEnabled || rp <= rpf.long_max;
+    const shortAllowed = !rpEnabled || rp >= rpf.short_min;
+    const sigBlockedByRp = rpEnabled && st.signal === "LONG" && !longAllowed
+                       || rpEnabled && st.signal === "SHORT" && !shortAllowed;
+
+    // Smart flat message — show the actual reason we're not in a trade
+    let msg;
+    if (st.cooldown_active) {
+      msg = "⏸ Cooldown active — " + (st.cooldown_hours_left||0).toFixed(1) + "h remaining (no entries after recent SL/TIME_STOP)";
+    } else if (sigBlockedByRp) {
+      const side = st.signal;
+      const lim = side === "LONG" ? `≤ ${rpf.long_max}` : `≥ ${rpf.short_min}`;
+      msg = `Signal ${side} blocked by range_pos filter — rp_3d=${rp.toFixed(1)} needs ${lim}`;
+    } else if (st.signal) {
+      msg = "Signal: " + st.signal + " — entry fires on the next bot tick";
+    } else {
+      msg = "Waiting for setup conditions";
+    }
+    $("flatMsg").textContent = msg;
+
     let c=`<div class="cond"><span>Current signal</span><span class="t ${st.signal?'pos':'mute'}">${st.signal||'NONE'}</span></div>`;
+
+    // Bot's existing condition gates (divergence freshness, RSI level, etc.)
     const co=st.conditions||{};
     for (const k in co)
       c+=`<div class="cond"><span>${k}</span><span class="t ${co[k]?'pos':'neg'}">${co[k]?'✓':'✗'}</span></div>`;
+
+    // Range_pos filter conditions — new since 2026-05-23
+    if (rpEnabled) {
+      c += `<div class="cond" style="border-top:1px solid #2a2f3a;margin-top:6px;padding-top:6px"><span>range_pos (3d)</span><span class="t" style="font-family:monospace">${rp.toFixed(1)}</span></div>`;
+      c += `<div class="cond"><span>LONG allowed (rp ≤ ${rpf.long_max})</span><span class="t ${longAllowed?'pos':'neg'}">${longAllowed?'✓':'✗'}</span></div>`;
+      c += `<div class="cond"><span>SHORT allowed (rp ≥ ${rpf.short_min})</span><span class="t ${shortAllowed?'pos':'neg'}">${shortAllowed?'✓':'✗'}</span></div>`;
+    }
+
+    // Cooldown row (always visible when in flat card)
+    c += `<div class="cond"><span>Cooldown</span><span class="t ${st.cooldown_active?'neg':'pos'}">${st.cooldown_active ? '⏸ '+(st.cooldown_hours_left||0).toFixed(1)+'h left' : 'clear'}</span></div>`;
+
     $("conds").innerHTML=c;
   }
 
@@ -451,7 +486,8 @@ async function poll(){
 
   const age=health&&health.stale_seconds!=null?health.stale_seconds+"s ago":"—";
   let footExtra = "";
-  if (st.cooldown_active) footExtra = " · ⏸ COOLDOWN " + (st.cooldown_hours_left||0).toFixed(1) + "h";
+  if (st.cooldown_active) footExtra += " · ⏸ COOLDOWN " + (st.cooldown_hours_left||0).toFixed(1) + "h";
+  if (st.range_pos_3d != null) footExtra += " · rp_3d " + st.range_pos_3d.toFixed(1);
   $("foot").textContent=(st.strategy||"Bybit divflip v1f")+footExtra+" · bot updated "+age;
   renderLive();
 }

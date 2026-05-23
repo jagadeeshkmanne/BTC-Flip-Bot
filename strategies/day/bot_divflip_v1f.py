@@ -31,6 +31,7 @@ from core_divflip_v1f import (
     USE_TAKE_PROFIT, TP_PCT,
     DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD,
     SL_COOLDOWN_HOURS, SL_ANCHOR_FIRST, MAX_HOLD_HOURS,
+    USE_RANGE_POS_FILTER, RP_LOOKBACK_BARS, RP_LONG_MAX, RP_SHORT_MIN,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -272,7 +273,8 @@ def main():
     state = load_state()
 
     # ─ Fetch market data ─
-    df_5m = fetch_klines("5m", 500)
+    # 1000 5m bars (~83h) — needed for 864-bar (3-day) range_pos filter
+    df_5m = fetch_klines("5m", 1000)
     df_1d = fetch_klines("1d", 100)
     if df_5m is None or len(df_5m) < 100 or df_1d is None or len(df_1d) < 60:
         log.error("insufficient klines")
@@ -425,6 +427,24 @@ def main():
             log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} "
                      f"fav={fav_pct:+.2f}% peak=${peak_price:.2f}({peak_pct:+.2f}%) SL=${sl_px:.2f}{be_tag}")
 
+    # ─ v4+: 3-day range_pos filter ─
+    # Block LONG if price near top of 3d range, SHORT if near bottom.
+    # Validated 2026-05-23 on 17 paper v1 trades — would have saved $381.
+    range_pos = None
+    if USE_RANGE_POS_FILTER and len(df) >= RP_LOOKBACK_BARS + 1:
+        window = df.iloc[-(RP_LOOKBACK_BARS + 1):-1]
+        rp_high = window["high"].max()
+        rp_low = window["low"].min()
+        rp_span = rp_high - rp_low
+        if rp_span > 0:
+            range_pos = (live_px - rp_low) / rp_span * 100
+            if sig.side == "LONG" and range_pos > RP_LONG_MAX:
+                log.warning(f"  Signal LONG BLOCKED by range_pos filter — rp_3d={range_pos:.1f} > {RP_LONG_MAX} (price too high in 3d range)")
+                sig.side = None
+            elif sig.side == "SHORT" and range_pos < RP_SHORT_MIN:
+                log.warning(f"  Signal SHORT BLOCKED by range_pos filter — rp_3d={range_pos:.1f} < {RP_SHORT_MIN} (price too low in 3d range)")
+                sig.side = None
+
     # ─ Entry check (if flat) ─
     # v1f: 24h cooldown after SL — skip new entries
     cooldown_active = False
@@ -510,7 +530,13 @@ def main():
         "cooldown_active": cooldown_active,
         "cooldown_msg": cooldown_msg,
         "last_sl_time": state.get("last_sl_time"),
-        "strategy": f"Divflip v1f [PAPER]: {DCA_LEVELS} DCAs @ {DCA_SPACING*100:.1f}% mart / SL {SL_FROM_WORST*100:.1f}% from L1 / TP {TP_PCT*100:.1f}% / BE +{BE_TRIGGER_PCT*100:.2f}% / {SL_COOLDOWN_HOURS}h cooldown after SL",
+        "range_pos_3d": round(range_pos, 2) if range_pos is not None else None,
+        "range_pos_filter": {
+            "enabled": USE_RANGE_POS_FILTER,
+            "long_max": RP_LONG_MAX, "short_min": RP_SHORT_MIN,
+            "lookback_bars": RP_LOOKBACK_BARS,
+        },
+        "strategy": f"Divflip v1f [PAPER]: {DCA_LEVELS} DCAs @ {DCA_SPACING*100:.1f}% mart / SL {SL_FROM_WORST*100:.1f}% from L1 / TP {TP_PCT*100:.1f}% / BE +{BE_TRIGGER_PCT*100:.2f}% / {SL_COOLDOWN_HOURS}h cooldown / rp_3d filter {RP_LONG_MAX}/{RP_SHORT_MIN}",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
