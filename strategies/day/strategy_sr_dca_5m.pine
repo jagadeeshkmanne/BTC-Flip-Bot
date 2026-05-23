@@ -51,7 +51,7 @@ riskPct = input.float(6.0, "Total risk per cycle (%)", minval=0.1, maxval=15, st
 grpDCA = "📊 S/R DCA"
 dcaLevels    = input.int(2, "DCA levels", minval=1, maxval=5, group=grpDCA,
      tooltip="Number of legs per cycle (1 entry + N-1 adds). 2 (DEFAULT) tested best on 5m BTC.")
-dcaSpacing   = input.float(0.3, "DCA spacing (%)", minval=0.1, maxval=3, step=0.05, group=grpDCA,
+dcaSpacing   = input.float(0.4, "DCA spacing (%)", minval=0.1, maxval=3, step=0.05, group=grpDCA,
      tooltip="Distance from worst entry where the next DCA leg fills. Wider = more breathing room before SL distance shortens past it.") / 100
 slBelowWorst = input.float(2.0, "SL below worst entry (%)", minval=0.5, maxval=5, step=0.1, group=grpDCA,
      tooltip="With BE-stop ON, looser SL outperforms tight — BE rescues trades that would have noise-stopped tighter.") / 100
