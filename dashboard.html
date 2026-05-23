@@ -212,6 +212,7 @@
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="divflip">Divergence-Flip v1</option>
     <option value="divflip_v2">Divergence-Flip v2</option>
+    <option value="divflip_v1f">Divflip v1f (Paper Bot 4)</option>
     <option value="sr_dca">V2.2 S/R DCA</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
@@ -359,12 +360,13 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // 'divflip_v2' (3rd bot) or 'sr_dca'. Default landing page = divflip v1.
 const RAW_STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2') ? s : 'divflip';
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_v1f') ? s : 'divflip';
 })();
-// STRATEGY = rendering family. divflip_v2 renders like divflip; only DCA
-// spacing / leg count differ (handled via the DIVFLIP_V2 flag).
+// STRATEGY = rendering family. divflip_v2 / v1f render like divflip; only DCA
+// spacing / leg count differ (handled via flags below).
 const STRATEGY = RAW_STRATEGY === 'sr_dca' ? 'sr_dca' : 'divflip';
 const DIVFLIP_V2 = RAW_STRATEGY === 'divflip_v2';
+const DIVFLIP_V1F = RAW_STRATEGY === 'divflip_v1f';
 
 // Entry conditions — V2: Touch + Volume + RSI Divergence (3 per side).
 // Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
@@ -573,7 +575,7 @@ function renderPosition(price){
   //   filled=2: Avg + L3-target                       (filled legs collapsed)
   //   filled=3: Avg only                              (nothing pending)
   const filled = p.filled || 1;
-  const dcaSpacing = DIVFLIP_V2 ? 0.005 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085);
+  const dcaSpacing = DIVFLIP_V2 ? 0.005 : (DIVFLIP_V1F ? 0.0035 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085));
   // legAt(n) → actual filled price for leg n (null if not filled).
   // Pending DCA targets project from L1 at fixed multiples of the spacing
   // (L2 = L1 ± 0.35%, L3 = L1 ± 0.70%). Using L1 (not worst_entry) keeps
@@ -1233,15 +1235,19 @@ let lastBar = null; // most recent kline cache, used to compute change %
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
 // Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
-  const stratLabel = DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA');
+  const stratLabel = DIVFLIP_V1F ? 'Divflip v1f (Paper Bot 4)' : (DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA'));
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy
   const sub = document.getElementById('setupSub');
   if (sub) {
-    sub.textContent = STRATEGY === 'divflip'
-      ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'
-      : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
+    if (DIVFLIP_V1F) {
+      sub.textContent = 'v1f IMPROVEMENTS over v1: 2 DCAs (L3 removed), SL anchored to FIRST entry not worst (catches losses earlier), 24h cooldown after any SL/TIME_STOP (avoids re-entry into downtrend), 24h max-hold time-stop when underwater (winners exit <14h, losses grind 19h+). Same signal: fresh RSI(10) div, pivot 5L/1R, RSI ≤50/≥66. 3x leverage. Flip OFF.';
+    } else {
+      sub.textContent = STRATEGY === 'divflip'
+        ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'
+        : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
+    }
   }
   // Divflip has no 20:00 UTC force-flatten — hide the "Closes by 20:00 UTC"
   // footer entirely (position rides to TP/SL/trail).

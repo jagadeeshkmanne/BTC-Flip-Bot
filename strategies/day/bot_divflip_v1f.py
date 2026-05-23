@@ -30,7 +30,7 @@ from core_divflip_v1f import (
     USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
     USE_TAKE_PROFIT, TP_PCT,
     DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD,
-    SL_COOLDOWN_HOURS, SL_ANCHOR_FIRST,
+    SL_COOLDOWN_HOURS, SL_ANCHOR_FIRST, MAX_HOLD_HOURS,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -265,7 +265,8 @@ def main():
              f"{DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% mart {':'.join(str(int(r)) for r in [3,4])} | "
              f"SL {SL_FROM_WORST*100:.1f}% {sl_anchor_lbl} | "
              f"TP {TP_PCT*100:.2f}% | BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
-             f"{SL_COOLDOWN_HOURS}h cooldown after SL | "
+             f"{SL_COOLDOWN_HOURS}h cooldown after SL/TIME_STOP | "
+             f"TIME_STOP after {MAX_HOLD_HOURS}h underwater | "
              f"fresh {DIV_FRESH_BARS}b")
 
     state = load_state()
@@ -384,6 +385,22 @@ def main():
                 exit_reason = "SL"
             exit_px = sl_px
 
+        # v1f TIME STOP: force exit if held >MAX_HOLD_HOURS and not yet at BE.
+        # Justification: in 15 paper trades, all 13 winners exited <14h,
+        # both losses ground for 19h+. If position is still struggling at 24h
+        # without BE armed, the signal didn't work — cut losses.
+        if exit_px is None and not pos["be_activated"] and pos.get("entry_time"):
+            try:
+                entry_dt = datetime.fromisoformat(pos["entry_time"].replace("Z", "+00:00"))
+                age_h = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600
+                fav_pct = ((live_px - avg_entry)/avg_entry * 100) * (1 if side == "LONG" else -1)
+                if age_h >= MAX_HOLD_HOURS and fav_pct < 0:
+                    exit_reason = "TIME_STOP"
+                    exit_px = live_px
+                    log.warning(f"  TIME STOP after {age_h:.1f}h underwater (fav {fav_pct:+.2f}%) → force exit")
+            except Exception as e:
+                log.error(f"  time-stop check failed: {e}")
+
         # Flip on opposite divergence — gated by USE_FLIP. Currently OFF
         # (TV-tuned config) — trades ride to SL / trailing exit.
         if USE_FLIP and exit_px is None and sig.flip_opposite:
@@ -396,10 +413,10 @@ def main():
             state["position"] = None
             pos = None
             exit_reason_this_tick = exit_reason
-            # v1f: track SL exit time for 24h cooldown
-            if exit_reason == "SL":
+            # v1f: track SL or TIME_STOP exit time for 24h cooldown
+            if exit_reason in ("SL", "TIME_STOP"):
                 state["last_sl_time"] = datetime.now(timezone.utc).isoformat()
-                log.warning(f"  SL exit → cooldown active for {SL_COOLDOWN_HOURS}h")
+                log.warning(f"  {exit_reason} exit → cooldown active for {SL_COOLDOWN_HOURS}h")
         else:
             # No exit fired — log current state
             fav_pct = ((live_px - avg_entry) / avg_entry * 100) * (1 if side == "LONG" else -1)

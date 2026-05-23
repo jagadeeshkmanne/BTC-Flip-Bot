@@ -67,6 +67,9 @@ MARTINGALE_RATIOS = [3.0, 4.0]  # was [3, 4, 1.5] — L1/L2 weights kept
 SL_FROM_WORST  = 0.01         # 1% — kept value but anchor changes (see below)
 SL_ANCHOR_FIRST = True        # NEW: anchor SL to first_entry (not worst_entry)
 SL_COOLDOWN_HOURS = 24        # NEW: skip new entries for 24h after any SL
+MAX_HOLD_HOURS = 24           # NEW: force-exit if underwater + not BE-armed after 24h
+                              # (15 paper trades: all 13 winners held <14h, both losses
+                              # held >19h. 24h timeout would have saved most of loss #3.)
 
 # ─ Fixed TP from avg entry (TV-tuned: ON @ 1%) ─
 # Primary exit. Recomputed when DCA fires (avg moves closer to live), so a deep

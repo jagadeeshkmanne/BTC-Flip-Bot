@@ -462,6 +462,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
+        elif strategy_q == 'divflip_v1f':
+            env_dir = 'paper_divflip_v1f'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
         elif env_q == 'testnet':
             env_dir = 'testnet'
             state_filename = 'state_day.json'
@@ -511,6 +516,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             if env_dir == 'paper_divflip_v2':
                 return self._json_response(_query_paper_position(
                     state_subdir='paper_divflip_v2',
+                    state_filename='state.json',
+                    balance_key='balance',
+                ))
+            if env_dir == 'paper_divflip_v1f':
+                return self._json_response(_query_paper_position(
+                    state_subdir='paper_divflip_v1f',
                     state_filename='state.json',
                     balance_key='balance',
                 ))
