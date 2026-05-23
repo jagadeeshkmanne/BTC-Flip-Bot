@@ -79,7 +79,7 @@ CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries
 # vs V2.1 baseline +28.31% / PF 12.41 — same DD, +4.82% return on winners
 # that were getting cut at 20:00 UTC.
 HOLD_PAST_EOD_IF_FAV = True
-HOLD_MIN_FAV_PCT     = 0.005  # 0.5% — lowered 2026-05-23 (was 1.5%). Trade-log analysis: 4/8 trades EOD-flattened with avg +$4 because the 1.5% threshold was above where the typical winner sits at 20:00 UTC. 0.5% lets modest-favourable trades mature into TP next session; losing trades still EOD-flatten (overnight safety preserved); 24h hard cap unchanged.
+HOLD_MIN_FAV_PCT     = 0.015  # 1.5% — V2.2 tuned default. Reverted to 1.5% on 2026-05-23 after a backtest at 0.5% turned the strategy negative. The 1.5% gate is part of the +33%/PF 14 baseline; modest-favourable trades getting EOD-clipped is by design.
 
 # Entry filters
 VOL_MULT       = 1.1          # V2: 1.1× (V1 was 1.2×) — slightly more permissive given divergence gate
@@ -91,7 +91,7 @@ RSI_HIGH       = 75           # skip short if RSI > (only used when USE_RSI_FILT
 USE_RSI_DIVERGENCE = True
 DIV_PIVOT_L  = 5              # 5 bars left for pivot confirmation
 DIV_PIVOT_R  = 5              # 5 bars right (= 25 min confirmation lag on 5m)
-DIV_FRESH_BARS = 40           # was 20; raised 2026-05-23 — touch+fresh-div coincidence was the trade-frequency bottleneck (8 trades in ~3 weeks). 40 bars (~200 min) roughly doubles the chance an existing div is still valid when a S/R touch happens.
+DIV_FRESH_BARS = 20           # V2.2 tuned default. Briefly raised to 40 on 2026-05-23 to add trade frequency; reverted same day after the wider window turned the strategy negative in backtest — older divergences are weaker signals, the 20-bar (100 min) freshness was tuned for a reason.
 
 RSI_PERIOD     = 14
 VOL_AVG_LEN    = 20

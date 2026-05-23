@@ -63,7 +63,7 @@ closeHour    = input.int(20, "Force flatten at UTC hour", minval=12, maxval=23, 
      tooltip="Only used when EOD flatten is ON. 20 is conservative; 23 lets trades work longer.")
 holdPastEodIfFav = input.bool(true, "Hold past EOD if favorable", group=grpDCA,
      tooltip="When ON: at closeHour UTC, if trade is favorable ≥ holdMinFavPct from first entry, skip the EOD close and let it ride. Hard-closes at next day's closeHour (24h cap).")
-holdMinFavPct = input.float(0.5, "Min favorable % to hold past EOD", minval=0.1, maxval=3.0, step=0.1, group=grpDCA,
+holdMinFavPct = input.float(1.5, "Min favorable % to hold past EOD", minval=0.1, maxval=3.0, step=0.1, group=grpDCA,
      tooltip="Trade must be at least this favorable from first entry to qualify for holding. With BE armed (1% trigger), an overnight reversal exits at first-entry+buffer instead of full SL.") / 100
 
 // ─── Multi-cycle (opt-in) ───
@@ -90,7 +90,7 @@ divPivotL    = input.int(5, "Pivot left bars",  minval=1, maxval=10, group=grpDi
      tooltip="Bars on the left of the pivot that must be lower (highs) / higher (lows) for it to qualify. 5 catches real swing turns; 3 catches noise.")
 divPivotR    = input.int(5, "Pivot right bars", minval=1, maxval=10, group=grpDiv,
      tooltip="Bars on the right that confirm the pivot. 5 = 25 min lag on 5m. Lower confirms faster but pivots can fail to fully form.")
-divFreshBars = input.int(40, "Divergence valid for N bars", minval=1, maxval=100, group=grpDiv,
+divFreshBars = input.int(20, "Divergence valid for N bars", minval=1, maxval=100, group=grpDiv,
      tooltip="How long after a divergence pivot fires the signal stays usable. 20 = ~100 min on 5m.")
 
 // ─── Adaptive S/R range ───
