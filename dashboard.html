@@ -211,8 +211,8 @@
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="divflip">Divergence-Flip v1</option>
-    <option value="divflip_v2">Divergence-Flip v2</option>
     <option value="divflip_v1f">Divflip v1f (Paper Bot 4)</option>
+    <option value="divflip_15m">Divflip 15m (Paper Bot 5)</option>
     <option value="sr_dca">V2.2 S/R DCA</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
@@ -360,13 +360,14 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // 'divflip_v2' (3rd bot) or 'sr_dca'. Default landing page = divflip v1.
 const RAW_STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_v1f') ? s : 'divflip';
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_v1f' || s === 'divflip_15m') ? s : 'divflip';
 })();
-// STRATEGY = rendering family. divflip_v2 / v1f render like divflip; only DCA
-// spacing / leg count differ (handled via flags below).
+// STRATEGY = rendering family. divflip_v2 / v1f / 15m render like divflip;
+// flags below handle the per-variant spacing / leg count.
 const STRATEGY = RAW_STRATEGY === 'sr_dca' ? 'sr_dca' : 'divflip';
 const DIVFLIP_V2 = RAW_STRATEGY === 'divflip_v2';
 const DIVFLIP_V1F = RAW_STRATEGY === 'divflip_v1f';
+const DIVFLIP_15M = RAW_STRATEGY === 'divflip_15m';
 
 // Entry conditions — V2: Touch + Volume + RSI Divergence (3 per side).
 // Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
@@ -575,7 +576,7 @@ function renderPosition(price){
   //   filled=2: Avg + L3-target                       (filled legs collapsed)
   //   filled=3: Avg only                              (nothing pending)
   const filled = p.filled || 1;
-  const dcaSpacing = DIVFLIP_V2 ? 0.005 : (DIVFLIP_V1F ? 0.0035 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085));
+  const dcaSpacing = DIVFLIP_15M ? 0.0075 : (DIVFLIP_V2 ? 0.005 : (DIVFLIP_V1F ? 0.0035 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085)));
   // legAt(n) → actual filled price for leg n (null if not filled).
   // Pending DCA targets project from L1 at fixed multiples of the spacing
   // (L2 = L1 ± 0.35%, L3 = L1 ± 0.70%). Using L1 (not worst_entry) keeps
@@ -596,12 +597,12 @@ function renderPosition(price){
     // omitted since it equals L1 with only one fill. v2 has no L3.
     rawLevels.push({key:'entry', name:'Entry', price: l1Price});
     rawLevels.push({key:'leg',   name:'L2',    price: projectFromL1(2)});
-    if (!DIVFLIP_V2 && !DIVFLIP_V1F) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    if (!DIVFLIP_V2 && !DIVFLIP_V1F && !DIVFLIP_15M) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled === 2) {
     // L1 + L2 collapse into Avg — individual leg prices no longer relevant.
     // L3 stays as a pending target until it fires (v1 only — v2 has 2 legs).
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
-    if (!DIVFLIP_V2 && !DIVFLIP_V1F) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    if (!DIVFLIP_V2 && !DIVFLIP_V1F && !DIVFLIP_15M) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
   }
@@ -1235,13 +1236,15 @@ let lastBar = null; // most recent kline cache, used to compute change %
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
 // Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
-  const stratLabel = DIVFLIP_V1F ? 'Divflip v1f (Paper Bot 4)' : (DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA'));
+  const stratLabel = DIVFLIP_15M ? 'Divflip 15m (Paper Bot 5)' : (DIVFLIP_V1F ? 'Divflip v1f (Paper Bot 4)' : (DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA')));
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy
   const sub = document.getElementById('setupSub');
   if (sub) {
-    if (DIVFLIP_V1F) {
+    if (DIVFLIP_15M) {
+      sub.textContent = 'PAPER BOT 5 — 15-MINUTE timeframe, fully retuned. Pivot 7L/1R, RSI period 7, pivot RSI L≤45/S≥65, 21-bar freshness. 2 DCAs at 0.75% spacing (wider than 5m). SL 2% L1-anchored, BE arms at +2% from avg, trail 0.2% — NO fixed TP, NO cooldown, NO max-hold (BE 2% bar is the filter). 3x leverage. Backtest 45d: +$3,990 (+79.8%) / PF 3.98 / DD 4.7% / 22 trades.';
+    } else if (DIVFLIP_V1F) {
       sub.textContent = 'v1f IMPROVEMENTS over v1: 2 DCAs (L3 removed), SL anchored to FIRST entry not worst (catches losses earlier), 24h cooldown after any SL/TIME_STOP (avoids re-entry into downtrend), 24h max-hold time-stop when underwater (winners exit <14h, losses grind 19h+). Same signal: fresh RSI(10) div, pivot 5L/1R, RSI ≤50/≥66. 3x leverage. Flip OFF.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
