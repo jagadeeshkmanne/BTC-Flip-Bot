@@ -66,8 +66,12 @@ MARTINGALE_RATIOS = [3.0, 4.0]  # was [3, 4, 1.5] — L1/L2 weights kept
 
 SL_FROM_WORST  = 0.01         # 1% — kept value but anchor changes (see below)
 SL_ANCHOR_FIRST = True        # NEW: anchor SL to first_entry (not worst_entry)
-SL_COOLDOWN_HOURS = 24        # NEW: skip new entries for 24h after any SL
-MAX_HOLD_HOURS = 24           # NEW: force-exit if underwater + not BE-armed after 24h
+SL_COOLDOWN_HOURS = 2         # 2026-05-23: tightened 24h → 2h per cooldown sweep.
+                              # On 45d, 2h cooldown gave best PF (0.90) and -$222 net
+                              # vs 24h (-$290) and 48h (-$413). 2h blocks panic re-entry
+                              # in the same 5m window but allows fast-recovery plays
+                              # (like trade #4 +$100 just 1min after Loss #3).
+MAX_HOLD_HOURS = 24           # force-exit if underwater + not BE-armed after 24h
                               # (15 paper trades: all 13 winners held <14h, both losses
                               # held >19h. 24h timeout would have saved most of loss #3.)
 
