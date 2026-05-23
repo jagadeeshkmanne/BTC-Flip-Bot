@@ -302,14 +302,11 @@ function renderScale(p, mark){
   const l1=p.first_entry, filled=p.filled||1;
   const proj=n=>{ const mlt=(n-1)*SP; return p.side==="LONG"?l1*(1-mlt):l1*(1+mlt); };
 
+  // v1f: 2 DCAs (L3 removed)
   const lv=[{k:"tp",n:"TP",v:p.tp_px},{k:"mark",n:"MARK",v:mark}];
   if (filled===1){
     lv.push({k:"entry",n:"Entry",v:l1});
     lv.push({k:"leg",n:"L2",v:proj(2)});
-    lv.push({k:"leg",n:"L3",v:proj(3)});
-  } else if (filled===2){
-    lv.push({k:"entry",n:"Avg",v:p.avg_entry});
-    lv.push({k:"leg",n:"L3",v:proj(3)});
   } else {
     lv.push({k:"entry",n:"Avg",v:p.avg_entry});
   }
@@ -453,7 +450,9 @@ async function poll(){
   }
 
   const age=health&&health.stale_seconds!=null?health.stale_seconds+"s ago":"—";
-  $("foot").textContent=(st.strategy||"Bybit divflip v1")+" · bot updated "+age;
+  let footExtra = "";
+  if (st.cooldown_active) footExtra = " · ⏸ COOLDOWN " + (st.cooldown_hours_left||0).toFixed(1) + "h";
+  $("foot").textContent=(st.strategy||"Bybit divflip v1f")+footExtra+" · bot updated "+age;
   renderLive();
 }
 

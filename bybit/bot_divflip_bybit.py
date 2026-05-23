@@ -41,6 +41,7 @@ from core_divflip import (
     USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
     USE_TAKE_PROFIT, TP_PCT,
     DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD, MARTINGALE_RATIOS,
+    SL_ANCHOR_FIRST, SL_COOLDOWN_HOURS, MAX_HOLD_HOURS,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -466,6 +467,11 @@ def main():
             state["position"] = None
             pos = None
             closed_this_tick = True
+            # v1f: if just-closed trade was SL/TIME_STOP → start cooldown
+            last_trade = (state.get("trade_log") or [{}])[-1]
+            if last_trade.get("reason") in ("SL", "TIME_STOP"):
+                state["last_sl_time"] = datetime.now(timezone.utc).isoformat()
+                log.warning(f"  {last_trade['reason']} → cooldown active for {SL_COOLDOWN_HOURS}h")
         elif pos is not None and exch["side"] is not None:
             # Both agree — exchange is the source of truth for avg/qty/uPnL.
             pos["avg_entry"] = exch["avg_price"] or pos["avg_entry"]
@@ -551,6 +557,11 @@ def main():
                         pos = None
                         closed_this_tick = True
                         log.warning("  Gap exit — market-closed at tick")
+                        # v1f: cooldown if SL/TIME_STOP
+                        last_trade = (state.get("trade_log") or [{}])[-1]
+                        if last_trade.get("reason") in ("SL", "TIME_STOP"):
+                            state["last_sl_time"] = datetime.now(timezone.utc).isoformat()
+                            log.warning(f"  {last_trade['reason']} → cooldown {SL_COOLDOWN_HOURS}h")
         else:
             # monitor-only: still compute the levels so the log/dashboard show them
             sl_unr = sl_price_divflip(side, pos["worst_entry"], pos["avg_entry"],
@@ -569,8 +580,48 @@ def main():
                      f"live=${live_px:.2f} fav={fav:+.2f}% uPnL=${upnl:+.2f} "
                      f"SL=${sl_r} TP=${tp_r}{be_tag}")
 
+            # v1f TIME_STOP — force-close if underwater + not BE + held > MAX_HOLD_HOURS
+            if not pos.get("be_activated") and pos.get("entry_time") and fav < 0:
+                try:
+                    entry_dt = datetime.fromisoformat(pos["entry_time"].replace("Z", "+00:00"))
+                    age_h = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600
+                    if age_h >= MAX_HOLD_HOURS:
+                        log.warning(f"  TIME_STOP after {age_h:.1f}h underwater (fav {fav:+.2f}%) — force closing")
+                        if TRADING_ENABLED:
+                            close_side = "Sell" if side == "LONG" else "Buy"
+                            resp = client.market_order(SYMBOL, close_side,
+                                                       fmt_qty(pos["qty_total"], info["qty_step"]),
+                                                       reduce_only=True)
+                            if resp:
+                                time.sleep(1.0)
+                                cancel_dca_orders(client, SYMBOL, pos)
+                                log_closed_trade(state, pos, client, SYMBOL, exit_reason_hint="TIME_STOP")
+                                state["position"] = None
+                                pos = None
+                                closed_this_tick = True
+                                state["last_sl_time"] = datetime.now(timezone.utc).isoformat()
+                                log.warning(f"  TIME_STOP → cooldown {SL_COOLDOWN_HOURS}h")
+                except Exception as e:
+                    log.error(f"  time-stop check failed: {e}")
+
+    # ─ v1f cooldown check ─
+    cooldown_active = False
+    cooldown_h_left = 0.0
+    last_sl = state.get("last_sl_time")
+    if last_sl:
+        try:
+            last_sl_dt = datetime.fromisoformat(last_sl.replace("Z", "+00:00"))
+            elapsed_h = (datetime.now(timezone.utc) - last_sl_dt).total_seconds() / 3600
+            if elapsed_h < SL_COOLDOWN_HOURS:
+                cooldown_active = True
+                cooldown_h_left = SL_COOLDOWN_HOURS - elapsed_h
+        except Exception as e:
+            log.error(f"  cooldown check failed: {e}")
+
     # ─ Entry — open a new position if flat and a fresh divergence fired ─
-    if state.get("position") is None and not closed_this_tick and sig.side:
+    if state.get("position") is None and not closed_this_tick and sig.side and cooldown_active:
+        log.info(f"  Signal {sig.side} SKIPPED — cooldown {cooldown_h_left:.1f}h remaining")
+    elif state.get("position") is None and not closed_this_tick and sig.side:
         if not TRADING_ENABLED:
             log.info(f"  [monitor] would OPEN {sig.side} @${live_px:.2f}")
         else:
@@ -655,9 +706,14 @@ def main():
         "position": pos_status, "signal": sig.side,
         "indicators": sig.raw, "conditions": sig.conditions,
         "stats": state["stats"],
-        "strategy": f"Divergence-Flip v1 [Bybit {'LIVE' if TRADING_ENABLED else 'MONITOR'}] "
-                    f"({DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / SL {SL_FROM_WORST*100:.1f}% "
-                    f"worst / TP {TP_PCT*100:.1f}% avg / BE {BE_TRIGGER_PCT*100:.2f}%)",
+        "cooldown_active": cooldown_active,
+        "cooldown_hours_left": round(cooldown_h_left, 2) if cooldown_active else 0,
+        "last_sl_time": state.get("last_sl_time"),
+        "strategy": f"Divflip v1f [Bybit {'LIVE' if TRADING_ENABLED else 'MONITOR'}] "
+                    f"({DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / "
+                    f"SL {SL_FROM_WORST*100:.1f}% {'L1' if SL_ANCHOR_FIRST else 'L3'}-anchored / "
+                    f"TP {TP_PCT*100:.1f}% / BE {BE_TRIGGER_PCT*100:.2f}% / "
+                    f"{SL_COOLDOWN_HOURS}h cooldown / TIME_STOP {MAX_HOLD_HOURS}h)",
         "state": "IN_POSITION" if pos else "FLAT",
     })
     log.info("=" * 64 + "\n")

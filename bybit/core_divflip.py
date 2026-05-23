@@ -51,22 +51,19 @@ RSI_PERIOD = 10
 LEVERAGE       = 3.0
 RISK_PCT       = 0.06
 
-DCA_LEVELS     = 3
-DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35%, L3 at -0.7%).
-                              # TV-tuned: wider than 0.3% — DCA fires on deeper dips, better fills.
-
-# Mixed-shape sizing — biggest qty in the MIDDLE leg (L2). With 3:4:1.5 ratio:
-# L1 = 3/8.5 = 35.3%, L2 = 4/8.5 = 47.1%, L3 = 1.5/8.5 = 17.6% of leverage cap.
-# Heavier L2 catches the typical -0.35% dip with the largest weight while
-# L3 is small enough to keep the worst-case SL bounded. Producing +152.00% /
-# 9.39% DD / 124 trades / 97.58% WR / PF 93 / Calmar 16.2 on the user's
-# TV backtest (Apr 6 – May 14 2026, BTCUSDT 5m).
-# Total notional still capped by LEVERAGE — ratios just redistribute within cap.
-MARTINGALE_RATIOS = [3.0, 4.0, 1.5]   # qty multiplier per leg (L1, L2, L3) — mixed shape
-SL_FROM_WORST  = 0.01         # 1% from WORST entry (L3-anchored). Set 2026-05-20 at the user's
-                              # explicit, repeated request — AGAINST the backtest: year-wise OOS
-                              # shows 1% worst-anchored loses MORE than the wide 5% stop every year.
-                              # Kept only because the user asked for it on the paper bot.
+# v1f IMPROVEMENTS (applied to LIVE Bybit bot 2026-05-23):
+#   1. DCA_LEVELS 3→2 — removed L3
+#   2. SL_ANCHOR_FIRST=True — SL anchored to first_entry (not worst)
+#   3. SL_COOLDOWN_HOURS=2 — skip new entries 2h after SL/TIME_STOP
+#   4. MAX_HOLD_HOURS=24 — force-exit underwater positions > 24h
+# Justified by 15 v1 paper trades + 45-day backtests + cooldown sweep.
+DCA_LEVELS     = 2            # was 3 — L3 removed
+DCA_SPACING    = 0.0035       # 0.35% adverse triggers L2.
+MARTINGALE_RATIOS = [3.0, 4.0]   # was [3, 4, 1.5] — L1/L2 weights kept (L1=43%, L2=57%)
+SL_FROM_WORST  = 0.01         # 1% — kept value but anchor changes
+SL_ANCHOR_FIRST = True        # NEW: anchor SL to first_entry (was worst)
+SL_COOLDOWN_HOURS = 2         # NEW: skip new entries for 2h after SL/TIME_STOP
+MAX_HOLD_HOURS = 24           # NEW: force-exit underwater positions held > 24h
 
 # ─ Fixed TP from avg entry (TV-tuned: ON @ 1%) ─
 # Primary exit. Recomputed when DCA fires (avg moves closer to live), so a deep
@@ -200,18 +197,18 @@ def dca_price(side: Side, worst_entry: float) -> float:
 
 def sl_price_divflip(side: Side, worst_entry: float, first_entry: Optional[float] = None,
                      be_activated: bool = False, peak_price: Optional[float] = None) -> float:
-    """Composite SL — raw stop anchored to WORST entry (L3 once fully filled),
-    set 2026-05-20 at user request. The raw stop rides down with each DCA leg.
+    """Composite SL.
+    v1f (2026-05-23): SL_ANCHOR_FIRST=True anchors raw stop to first_entry
+    (not worst). MAE analysis on 15 paper trades: all winners had MAE ≤0.78%,
+    losses had MAE 2-5.5%. First-anchored 1% catches losses earlier without
+    stopping winners.
 
     Components (LONG — symmetric for SHORT):
-      - Raw SL    = worst_entry × (1 − SL_FROM_WORST)         [hard floor, always active]
-      - BE SL     = first_entry × (1 + BE_BUFFER_PCT)         [active when BE armed]
-      - Trail SL  = peak_price × (1 − TRAIL_DIST_PCT)         [active when BE armed]
-
-    BE floor + trailing still anchor to first_entry / peak — only the raw
-    stop's anchor is worst_entry.
+      - Raw SL    = anchor × (1 − SL_FROM_WORST)              [anchor: first or worst]
+      - BE SL     = first_entry × (1 + BE_BUFFER_PCT)         [when BE armed]
+      - Trail SL  = peak_price × (1 − TRAIL_DIST_PCT)         [when BE armed]
     """
-    anchor = worst_entry
+    anchor = first_entry if (SL_ANCHOR_FIRST and first_entry is not None) else worst_entry
     raw_sl = anchor * (1 - SL_FROM_WORST) if side == "LONG" else anchor * (1 + SL_FROM_WORST)
     if not (USE_BREAKEVEN and be_activated and first_entry is not None):
         return raw_sl
