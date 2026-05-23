@@ -596,12 +596,12 @@ function renderPosition(price){
     // omitted since it equals L1 with only one fill. v2 has no L3.
     rawLevels.push({key:'entry', name:'Entry', price: l1Price});
     rawLevels.push({key:'leg',   name:'L2',    price: projectFromL1(2)});
-    if (!DIVFLIP_V2) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    if (!DIVFLIP_V2 && !DIVFLIP_V1F) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled === 2) {
     // L1 + L2 collapse into Avg — individual leg prices no longer relevant.
     // L3 stays as a pending target until it fires (v1 only — v2 has 2 legs).
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
-    if (!DIVFLIP_V2) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    if (!DIVFLIP_V2 && !DIVFLIP_V1F) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
   }
