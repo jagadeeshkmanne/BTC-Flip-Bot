@@ -63,11 +63,12 @@ RANGE_FILTER_MODE  = "extend"
 MIN_PREV_RANGE_PCT = 0.02     # 2% floor
 MAX_LOOKBACK_DAYS  = 2
 
-# Breakeven SL — V2.1 ON. Once fav% from first entry crosses 1.0%, SL tightens
-# to entry × (1 ± 0.25%) to lock in real ~0.20% net profit. With 2.0% SL,
-# BE provides the second protection layer that rescues borderline trades.
+# Breakeven SL — V2.1 ON. Once fav% from first entry crosses BE_TRIGGER_PCT,
+# SL tightens to entry × (1 ± 0.25%) to lock in real ~0.20% net profit.
+# 2026-05-23: trigger lowered 1.0% → 0.75% per 45-day sweep (45d backtest
+# Apr-08 → May-23 went from PF 1.16 / +$38 to PF 3.76 / +$230, DD 2.5% → 1.0%).
 USE_BREAKEVEN  = True
-BE_TRIGGER_PCT = 0.01
+BE_TRIGGER_PCT = 0.0075
 BE_BUFFER_PCT  = 0.0025
 
 CLOSE_HOUR     = 20           # UTC hour to force flatten + block new entries

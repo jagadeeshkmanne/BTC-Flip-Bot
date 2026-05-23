@@ -121,8 +121,8 @@ prevMidOffsetPct = input.float(0.1, "Prev_mid TP offset (%)", minval=-1.0, maxva
 grpBE = "🛡️ Breakeven SL"
 useBreakeven = input.bool(true, "Enable breakeven SL after favorable threshold", group=grpBE,
      tooltip="DEFAULT ON. Locks in profit when fav% > trigger → SL tightens to firstEntry ± buffer.")
-breakevenTriggerPct = input.float(1.0, "BE trigger: favorable % from first entry", minval=0.3, maxval=3.0, step=0.1, group=grpBE,
-     tooltip="Once price moves this far in our favor (vs first entry), SL tightens to entry ± buffer. 1.0% = aggressive lock-in; 1.5% = patient.") / 100
+breakevenTriggerPct = input.float(0.75, "BE trigger: favorable % from first entry", minval=0.3, maxval=3.0, step=0.05, group=grpBE,
+     tooltip="Once price moves this far in our favor (vs first entry), SL tightens to entry ± buffer. 2026-05-23: lowered 1.0% → 0.75% per 45d sweep (PF 1.16→3.76, DD 2.5%→1.0%).") / 100
 breakevenBufferPct = input.float(0.25, "BE buffer above/below entry (%)", minval=0.0, maxval=0.5, step=0.05, group=grpBE,
      tooltip="Tighten SL to firstEntry × (1 ± this%). 0.25% covers ~2× taker fee + slippage cushion → locks in real ~0.20% net profit.") / 100
 
