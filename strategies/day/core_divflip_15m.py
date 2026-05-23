@@ -33,7 +33,9 @@ from core import build_features, detect_divergence, DIV_PIVOT_R as _CORE_DIV_PIV
 # catching reversals 4 bars earlier. Loosest pivot setting → more pivots
 # qualify, more entries. Bot runner re-runs detect_divergence with these
 # values after build_features so divergence columns reflect the override.
-DIV_PIVOT_L = 7      # 15m TUNED: was 5 — wider pivot, fewer noise signals
+DIV_PIVOT_L = 5      # 15m TUNED 2026-05-23: 7→5 per Pareto sweep
+                     # 5L/1R: 21 trades, +$4,425 (+88.5%), PF 4.95, DD 4.7%
+                     # 7L/1R: 22 trades, +$3,990 (+79.8%), PF 3.98, DD 4.7%
 DIV_PIVOT_R = 1
 
 # ═════ RSI period override (15m TUNED: 7) ═════
