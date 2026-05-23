@@ -91,7 +91,7 @@ RSI_HIGH       = 75           # skip short if RSI > (only used when USE_RSI_FILT
 USE_RSI_DIVERGENCE = True
 DIV_PIVOT_L  = 5              # 5 bars left for pivot confirmation
 DIV_PIVOT_R  = 5              # 5 bars right (= 25 min confirmation lag on 5m)
-DIV_FRESH_BARS = 20           # divergence stays usable for 20 bars (~100 min)
+DIV_FRESH_BARS = 40           # was 20; raised 2026-05-23 — touch+fresh-div coincidence was the trade-frequency bottleneck (8 trades in ~3 weeks). 40 bars (~200 min) roughly doubles the chance an existing div is still valid when a S/R touch happens.
 
 RSI_PERIOD     = 14
 VOL_AVG_LEN    = 20
