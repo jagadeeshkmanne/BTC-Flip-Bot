@@ -47,7 +47,7 @@ LEVERAGE       = 2.0
 RISK_PCT       = 0.06         # 6% total risk per cycle
 
 DCA_LEVELS     = 2
-DCA_SPACING    = 0.005        # 0.5% (was 0.85% — tightened 2026-05-21 at user request)
+DCA_SPACING    = 0.003        # 0.3% (was 0.5%, originally 0.85%). Tightened 2026-05-23 at user request — 0.5% spacing only fired DCA on 25% of trades (2/8). 0.3% should roughly double the DCA-fill rate, giving more averaging when the entry zone re-tests.
 SL_BELOW_WORST = 0.020        # V2.1: 2.0% (V2 was 1.4%) — BE-stop rescues noise-stopped trades, looser SL outperforms
 SUPPORT_ZONE   = 0.0005       # 0.05% zone around prev H/L — only direct touches qualify
 
