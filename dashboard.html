@@ -211,8 +211,7 @@
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="divflip">Divergence-Flip v1</option>
-    <option value="divflip_v1f">Bybit PT (paper mirror of Bybit live)</option>
-    <option value="divflip_15m">Divflip 15m (Paper Bot 5)</option>
+    <option value="divflip_v3">Divflip v3 (LOCKED v4.2 — 3 DCAs / FLIP / 5 filters)</option>
     <option value="sr_dca">V2.2 S/R DCA</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
@@ -357,17 +356,15 @@ const START_BALANCE = 5000;
 // URL_ENV defaults to mainnet (paper bot's data source); ?env=testnet for legacy view.
 const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
 // RAW_STRATEGY: ?strategy= picks the bot data source — 'divflip' (v1),
-// 'divflip_v2' (3rd bot) or 'sr_dca'. Default landing page = divflip v1.
+// 'divflip_v3' (LOCKED v4.2 config), or 'sr_dca' (V2.2). Default = divflip v1.
 const RAW_STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_v1f' || s === 'divflip_15m') ? s : 'divflip';
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v3') ? s : 'divflip';
 })();
-// STRATEGY = rendering family. divflip_v2 / v1f / 15m render like divflip;
-// flags below handle the per-variant spacing / leg count.
 const STRATEGY = RAW_STRATEGY === 'sr_dca' ? 'sr_dca' : 'divflip';
-const DIVFLIP_V2 = RAW_STRATEGY === 'divflip_v2';
-const DIVFLIP_V1F = RAW_STRATEGY === 'divflip_v1f';
-const DIVFLIP_15M = RAW_STRATEGY === 'divflip_15m';
+const DIVFLIP_V3 = RAW_STRATEGY === 'divflip_v3';
+// Removed shelf variants: divflip_v2 (3rd bot, dead), divflip_v1f (Bybit PT mirror),
+// divflip_15m (Paper Bot 5). All replaced by v3 = LOCKED v4.2 config.
 
 // Entry conditions — V2: Touch + Volume + RSI Divergence (3 per side).
 // Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
@@ -469,10 +466,17 @@ const DIVFLIP_LONG_CONDS = [
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'LONG')},
   {key: 'RSI at last bull pivot (historical)', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
-  {key: 'range_pos 3d ≤ 30 (price near 3d low)', check: d => {
-    if (!d?.range_pos_filter?.enabled || d.range_pos_3d == null) return true;
-    return d.range_pos_3d <= d.range_pos_filter.long_max;
-  }, val: d => fmtRangePos(d)},
+  // v3 filters: actual vs required (built from status.filters dict)
+  {key: 'BB squeeze (≥ 0.20 rank)', check: d => d?.filters?.bb_squeeze?.pass ?? true,
+    val: d => fmtFilter(d, 'bb_squeeze')},
+  {key: 'Today change (≥ -2%)', check: d => d?.filters?.today_change?.pass ?? true,
+    val: d => fmtFilter(d, 'today_change')},
+  {key: 'ADX ≤ 60 (not extreme trend)', check: d => d?.filters?.adx_cap?.pass ?? true,
+    val: d => fmtFilter(d, 'adx_cap')},
+  {key: 'Min ATR ≥ 0.30%', check: d => d?.filters?.min_atr?.pass ?? true,
+    val: d => fmtFilter(d, 'min_atr')},
+  {key: 'HTF bias (daily slope ≥ -1%)', check: d => d?.filters?.htf_bias?.pass ?? true,
+    val: d => fmtFilter(d, 'htf_bias')},
 ];
 const DIVFLIP_SHORT_CONDS = [
   {key: 'Bear div fresh (≤21 bars)', check: d => {
@@ -480,11 +484,25 @@ const DIVFLIP_SHORT_CONDS = [
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'SHORT')},
   {key: 'RSI at last bear pivot (historical)', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
-  {key: 'range_pos 3d ≥ 70 (price near 3d high)', check: d => {
-    if (!d?.range_pos_filter?.enabled || d.range_pos_3d == null) return true;
-    return d.range_pos_3d >= d.range_pos_filter.short_min;
-  }, val: d => fmtRangePos(d)},
+  {key: 'BB squeeze (≥ 0.20 rank)', check: d => d?.filters?.bb_squeeze?.pass ?? true,
+    val: d => fmtFilter(d, 'bb_squeeze')},
+  {key: 'Today change (≤ +2%)', check: d => d?.filters?.today_change?.pass ?? true,
+    val: d => fmtFilter(d, 'today_change')},
+  {key: 'ADX ≤ 60 (not extreme trend)', check: d => d?.filters?.adx_cap?.pass ?? true,
+    val: d => fmtFilter(d, 'adx_cap')},
+  {key: 'Min ATR ≥ 0.30%', check: d => d?.filters?.min_atr?.pass ?? true,
+    val: d => fmtFilter(d, 'min_atr')},
+  {key: 'HTF bias (daily slope ≤ +1%)', check: d => d?.filters?.htf_bias?.pass ?? true,
+    val: d => fmtFilter(d, 'htf_bias')},
 ];
+
+// v3: format actual / required for a named filter from status.filters
+function fmtFilter(d, name) {
+  const f = d?.filters?.[name];
+  if (!f) return '—';
+  const actual = f.actual != null ? f.actual : '—';
+  return `actual ${actual}  /  ${f.required}`;
+}
 
 // Compact range_pos display: "31.7  |  lo $73,500 → now $75,420 → hi $77,200"
 // so the user can see WHERE the current price sits in the 3d band.
@@ -603,16 +621,21 @@ function renderPosition(price){
   //   filled=2: Avg + L3-target                       (filled legs collapsed)
   //   filled=3: Avg only                              (nothing pending)
   const filled = p.filled || 1;
-  const dcaSpacing = DIVFLIP_15M ? 0.0075 : (DIVFLIP_V2 ? 0.005 : (DIVFLIP_V1F ? 0.0035 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085)));
-  // legAt(n) → actual filled price for leg n (null if not filled).
-  // Pending DCA targets project from L1 at fixed multiples of the spacing
-  // (L2 = L1 ± 0.35%, L3 = L1 ± 0.70%). Using L1 (not worst_entry) keeps
-  // projections stable as more legs fill.
+  // v3 has non-progressive DCA spacing: L2 at L1±0.2%, L3 at L1±0.4% (not 0.2%+0.2%)
+  // v1 has progressive: L2 at L1±0.35%, L3 at L2±0.35% (=L1±0.7%)
+  // SR DCA: 0.85%
+  const dcaSpacing = DIVFLIP_V3 ? 0.002 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085);
+  const v3_l3_spacing = 0.004;
   const legAt = n => (p.legEntries && p.legEntries[n-1] && p.legEntries[n-1].px > 0) ? p.legEntries[n-1].px : null;
   const l1Price = legAt(1);
   const projectFromL1 = (legNum) => {
     if (!l1Price || l1Price <= 0) return null;
-    const mult = (legNum - 1) * dcaSpacing;
+    let mult;
+    if (DIVFLIP_V3) {
+      mult = legNum === 2 ? dcaSpacing : (legNum === 3 ? v3_l3_spacing : 0);
+    } else {
+      mult = (legNum - 1) * dcaSpacing;
+    }
     return p.side === 'LONG' ? l1Price * (1 - mult) : l1Price * (1 + mult);
   };
   const rawLevels = [
@@ -620,16 +643,12 @@ function renderPosition(price){
     {key:'mark', name:'Mark', price: mark},
   ];
   if (filled === 1) {
-    // Show the L1 entry tick + the pending DCA targets. Avg label is
-    // omitted since it equals L1 with only one fill. v2 has no L3.
     rawLevels.push({key:'entry', name:'Entry', price: l1Price});
     rawLevels.push({key:'leg',   name:'L2',    price: projectFromL1(2)});
-    if (!DIVFLIP_V2 && !DIVFLIP_V1F && !DIVFLIP_15M) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    rawLevels.push({key:'leg',   name:'L3',    price: projectFromL1(3)});
   } else if (filled === 2) {
-    // L1 + L2 collapse into Avg — individual leg prices no longer relevant.
-    // L3 stays as a pending target until it fires (v1 only — v2 has 2 legs).
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
-    if (!DIVFLIP_V2 && !DIVFLIP_V1F && !DIVFLIP_15M) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
   }
@@ -736,6 +755,8 @@ function renderSetup(status){
     rp_3d_low: status.rp_3d_low,
     range_pos_filter: status.range_pos_filter,
     price: status.live_price ?? status.price,
+    // v3 filters object (with actual / required / pass for each)
+    filters: status.filters || {},
   };
   $('setupRsi').textContent = ind.rsi !== undefined ? ind.rsi.toFixed(1) : '--';
   // setupVol / setupRange exist only in S/R-DCA mode — divflip replaces the
@@ -1271,16 +1292,14 @@ let lastBar = null; // most recent kline cache, used to compute change %
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
 // Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
-  const stratLabel = DIVFLIP_15M ? 'Divflip 15m (Paper Bot 5)' : (DIVFLIP_V1F ? 'Bybit PT (paper mirror of Bybit live)' : (DIVFLIP_V2 ? 'Divergence-Flip v2' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA')));
+  const stratLabel = DIVFLIP_V3 ? 'Divflip v3 (LOCKED v4.2)' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA');
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy
   const sub = document.getElementById('setupSub');
   if (sub) {
-    if (DIVFLIP_15M) {
-      sub.textContent = 'PAPER BOT 5 — 15-MINUTE timeframe, fully retuned. Pivot 7L/1R, RSI period 7, pivot RSI L≤45/S≥65, 21-bar freshness. 2 DCAs at 0.75% spacing (wider than 5m). SL 2% L1-anchored, BE arms at +2% from avg, trail 0.2% — NO fixed TP, NO cooldown, NO max-hold (BE 2% bar is the filter). 3x leverage. Backtest 45d: +$3,990 (+79.8%) / PF 3.98 / DD 4.7% / 22 trades.';
-    } else if (DIVFLIP_V1F) {
-      sub.textContent = 'v1f IMPROVEMENTS over v1: 2 DCAs (L3 removed), SL anchored to FIRST entry not worst (catches losses earlier), 24h cooldown after any SL/TIME_STOP (avoids re-entry into downtrend), 24h max-hold time-stop when underwater (winners exit <14h, losses grind 19h+). Same signal: fresh RSI(10) div, pivot 5L/1R, RSI ≤50/≥66. 3x leverage. Flip OFF.';
+    if (DIVFLIP_V3) {
+      sub.textContent = 'Divflip v3 LOCKED CONFIG (validated 5y backtest: +175,628% / 95% WR / 28% DD). RSI(7) divergence, pivot 5L/1R, fresh 21 bars. 3 DCAs progressive sizing 1:2:4, spacing 0.2%/0.4%. 5 filters: BB squeeze block, today change ±2%, ADX>60 block, min ATR 0.30%, daily EMA50 HTF bias ±1% (with oversold override on extreme reversal setups). Exits: FLIP on opposite div + min +0.2% profit, L3 lock at +0.2% from avg, hard SL -1.8% from L1. 1h cooldown after SL, NO time stop. 3x leverage.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
         ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'

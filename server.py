@@ -441,11 +441,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        # ── Bot API (public, no auth). Day bot is the only active strategy. ──
+        # ── Bot API (public, no auth). Three active strategies: ──
         # Routes by ?strategy= (preferred) or legacy ?env=:
         #   ?strategy=sr_dca     → V2.2 S/R paper bot (data/paper/state_paper.json)
         #   ?strategy=divflip    → Divergence-flip v1 paper bot (data/paper_divflip/state.json)
-        #   ?strategy=divflip_v2 → Divergence-flip v2 paper bot (data/paper_divflip_v2/state.json)
+        #   ?strategy=divflip_v3 → Divflip v3 — LOCKED v4.2 config (data/paper_divflip_v3/)
         #   ?env=testnet         → legacy testnet bot data (mostly empty after paper migration)
         from urllib.parse import parse_qs
         qs = parse_qs(parsed.query)
@@ -457,18 +457,8 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
-        elif strategy_q == 'divflip_v2':
-            env_dir = 'paper_divflip_v2'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'divflip_v1f':
-            env_dir = 'paper_divflip_v1f'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'divflip_15m':
-            env_dir = 'paper_divflip_15m'
+        elif strategy_q == 'divflip_v3':
+            env_dir = 'paper_divflip_v3'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -518,21 +508,9 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     state_filename='state.json',
                     balance_key='balance',
                 ))
-            if env_dir == 'paper_divflip_v2':
+            if env_dir == 'paper_divflip_v3':
                 return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip_v2',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_divflip_v1f':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip_v1f',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_divflip_15m':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip_15m',
+                    state_subdir='paper_divflip_v3',
                     state_filename='state.json',
                     balance_key='balance',
                 ))

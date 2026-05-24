@@ -1,6 +1,0 @@
-# Never commit secrets or runtime state
-.env
-data/
-*.log
-__pycache__/
-*.pyc
