@@ -461,47 +461,51 @@ const SR_SHORT_CONDS = [
 // at pivot (separate rows so you can see WHICH one is failing).
 // 2026-05-23: added range_pos 3d filter row (gate added to v4/v1f bot).
 const DIVFLIP_LONG_CONDS = [
-  {key: 'Bull div fresh (≤21 bars)', check: d => {
+  {key: 'Bull div fresh', check: d => {
     const v = d?.bars_since_bull_div;
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'LONG')},
-  {key: 'RSI at last bull pivot (historical)', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
-  // v3 filters: actual vs required (built from status.filters dict)
-  {key: 'BB squeeze (≥ 0.20 rank)', check: d => d?.filters?.bb_squeeze?.pass ?? true,
-    val: d => fmtFilter(d, 'bb_squeeze')},
-  {key: 'Today change (≥ -2%)', check: d => d?.filters?.today_change?.pass ?? true,
-    val: d => fmtFilter(d, 'today_change')},
-  {key: 'ADX ≤ 60 (not extreme trend)', check: d => d?.filters?.adx_cap?.pass ?? true,
-    val: d => fmtFilter(d, 'adx_cap')},
-  {key: 'Min ATR ≥ 0.30%', check: d => d?.filters?.min_atr?.pass ?? true,
-    val: d => fmtFilter(d, 'min_atr')},
-  {key: 'HTF bias (daily slope ≥ -1%)', check: d => d?.filters?.htf_bias?.pass ?? true,
-    val: d => fmtFilter(d, 'htf_bias')},
+  {key: 'RSI at bull pivot', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
+  // v3 filters: compact "actual / threshold" display
+  {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
+  {key: 'Today move',check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
+  {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
+  {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
+  {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
 ];
 const DIVFLIP_SHORT_CONDS = [
-  {key: 'Bear div fresh (≤21 bars)', check: d => {
+  {key: 'Bear div fresh', check: d => {
     const v = d?.bars_since_bear_div;
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'SHORT')},
-  {key: 'RSI at last bear pivot (historical)', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
-  {key: 'BB squeeze (≥ 0.20 rank)', check: d => d?.filters?.bb_squeeze?.pass ?? true,
-    val: d => fmtFilter(d, 'bb_squeeze')},
-  {key: 'Today change (≤ +2%)', check: d => d?.filters?.today_change?.pass ?? true,
-    val: d => fmtFilter(d, 'today_change')},
-  {key: 'ADX ≤ 60 (not extreme trend)', check: d => d?.filters?.adx_cap?.pass ?? true,
-    val: d => fmtFilter(d, 'adx_cap')},
-  {key: 'Min ATR ≥ 0.30%', check: d => d?.filters?.min_atr?.pass ?? true,
-    val: d => fmtFilter(d, 'min_atr')},
-  {key: 'HTF bias (daily slope ≤ +1%)', check: d => d?.filters?.htf_bias?.pass ?? true,
-    val: d => fmtFilter(d, 'htf_bias')},
+  {key: 'RSI at bear pivot', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
+  {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
+  {key: 'Today move',check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
+  {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
+  {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
+  {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
 ];
 
-// v3: format actual / required for a named filter from status.filters
-function fmtFilter(d, name) {
-  const f = d?.filters?.[name];
-  if (!f) return '—';
-  const actual = f.actual != null ? f.actual : '—';
-  return `actual ${actual}  /  ${f.required}`;
+// v3: compact filter formatters — "actual / threshold" in 1-line form.
+function fmtBB(d) {
+  const a = d?.filters?.bb_squeeze?.actual;
+  return a == null ? '—' : `${(a*100).toFixed(0)}% (need ≥20%)`;
+}
+function fmtToday(d) {
+  const a = d?.filters?.today_change?.actual;
+  return a == null ? '—' : `${a >= 0 ? '+' : ''}${a.toFixed(2)}% (need ±2%)`;
+}
+function fmtADX(d) {
+  const a = d?.filters?.adx_cap?.actual;
+  return a == null ? '—' : `${a.toFixed(0)} (need ≤60)`;
+}
+function fmtATR(d) {
+  const a = d?.filters?.min_atr?.actual;
+  return a == null ? '—' : `${a.toFixed(2)}% (need ≥0.30%)`;
+}
+function fmtHTF(d) {
+  const a = d?.filters?.htf_bias?.actual;
+  return a == null ? '—' : `${a >= 0 ? '+' : ''}${a.toFixed(2)}% (need ±1%)`;
 }
 
 // Compact range_pos display: "31.7  |  lo $73,500 → now $75,420 → hi $77,200"
