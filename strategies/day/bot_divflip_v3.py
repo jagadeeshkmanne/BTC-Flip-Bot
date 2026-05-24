@@ -49,7 +49,11 @@ LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
 PAIR = "BTCUSDT"
 INITIAL_BALANCE = 5000.0
 COMMISSION_PCT = 0.0004
-RP_LOOKBACK_BARS = 288   # 1-day on 5m bars
+# v3 uses 15m bars to match backtest calibration.
+# All thresholds (MIN_ATR_PCT=0.30%, BB_SQUEEZE_RANK=0.20, etc.) were calibrated
+# on 15m data — 5m would have ATR 3× smaller and never satisfy MIN_ATR_PCT.
+TIMEFRAME = "15m"
+RP_LOOKBACK_BARS = 96    # 1-day on 15m bars (24h × 4 bars/h)
 BINANCE_BASE = "https://fapi.binance.com"
 
 # ─── Logging ───
@@ -119,8 +123,9 @@ def write_status(status):
 
 
 # ─── Indicator computation ───
-def compute_indicators(df_5m, df_1d):
-    """Add all v3 indicators to df_5m."""
+def compute_indicators(df_15m, df_1d):
+    """Add all v3 indicators to df_15m (15m bars per v3 calibration)."""
+    df_5m = df_15m  # alias kept to minimize diff — variable named df_5m below but holds 15m data
     h, l, c, v = df_5m["high"], df_5m["low"], df_5m["close"], df_5m["volume"]
     pc = c.shift(1)
 
@@ -274,19 +279,19 @@ def close_position(state, exit_px, reason):
 def main():
     state = load_state()
 
-    # Fetch market data
-    df_5m = fetch_klines("5m", 500)
+    # Fetch market data (v3 uses 15m to match backtest calibration)
+    df_15m = fetch_klines(TIMEFRAME, 500)
     df_1d = fetch_klines("1d", 200)
-    if df_5m is None or len(df_5m) < 100 or df_1d is None or len(df_1d) < 60:
+    if df_15m is None or len(df_15m) < 100 or df_1d is None or len(df_1d) < 60:
         log.error("insufficient klines")
         return
 
     live_px = fetch_live_price()
     if live_px is None:
-        live_px = float(df_5m.iloc[-1]["close"])
+        live_px = float(df_15m.iloc[-1]["close"])
 
     # Compute base features + divergence (V2.2 core does this)
-    df = build_features(df_5m, df_1d)
+    df = build_features(df_15m, df_1d)
     df = detect_divergence(df, DIV_PIVOT_L, DIV_PIVOT_R)
     # Override RSI with v3 period + recompute all the v3 indicators
     df = compute_indicators(df, df_1d)
