@@ -34,7 +34,7 @@ from core import build_features, detect_divergence, DIV_PIVOT_R as _CORE_DIV_PIV
 # qualify, more entries. Bot runner re-runs detect_divergence with these
 # values after build_features so divergence columns reflect the override.
 DIV_PIVOT_L = 5
-DIV_PIVOT_R = 3   # 2026-05-24: 1 → 3 (stronger pivot confirmation, filters micro-noise)
+DIV_PIVOT_R = 1   # Pro: loose pivot (1-bar confirm) — relies on 15m EMA + ATR for quality
 
 # ═════ RSI period override (TV-tuned: 10) ═════
 # V2.2 core uses RSI 14 (Wilder default). divflip uses RSI 10 — faster
@@ -111,16 +111,20 @@ USE_FLIP = False
 # accepts genuinely overbought tops. Long-biased by design — caught the
 # Apr–May 2026 uptrend with 74.83% WR over 145 trades.
 USE_RSI_LEVEL_FILTER = True
-RSI_LONG_MAX  = 38            # 2026-05-24: 50 → 38 (only true oversold exhaustion)
-RSI_SHORT_MIN = 68            # 2026-05-24: 66 → 68 (only true overbought exhaustion)
+RSI_LONG_MAX  = 50            # Pro: loose RSI gate (EMA filter does the quality work)
+RSI_SHORT_MIN = 66            # Pro: loose RSI gate (was 60 — 66 is v1 baseline)
 
 # Divergence freshness window — 21 bars on 5m = 105 min.
 DIV_FRESH_BARS = 21
 
 # ─ Pro-only filters (added 2026-05-24) ─
-# 200 EMA trend regime filter — block counter-trend entries
-USE_EMA_TREND_FILTER = True
-EMA_TREND_PERIOD     = 200
+# Trend regime filter on 15m EMA50 with buffer (looser than 5m EMA200 strict)
+# 15m EMA50 ≈ 12.5h trend, captures real regime without 5m whip
+# 1% buffer = price within 1% of the EMA still allowed (catches dip-buy entries)
+USE_EMA_TREND_FILTER  = True
+EMA_TREND_TIMEFRAME   = "15m"   # resampled from 5m
+EMA_TREND_PERIOD      = 50
+EMA_TREND_BUFFER_PCT  = 0.003   # 0.3% buffer — TIGHT (quality filter)
 
 # ATR volatility guard — block entries when market is too flat/dead
 USE_ATR_GUARD     = True

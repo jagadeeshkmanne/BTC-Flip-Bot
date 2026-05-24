@@ -480,9 +480,11 @@ function fmtEmaTrend(d, side) {
   const ema = d?.ema_trend;
   const px  = d?.close_px ?? d?.price;
   if (ema == null || px == null) return '—';
-  const sign = side === 'LONG' ? '>' : '<';
-  const ok = side === 'LONG' ? px > ema : px < ema;
-  return `$${Math.round(px).toLocaleString()} ${sign} $${Math.round(ema).toLocaleString()} ${ok ? '✓' : '✗'}`;
+  const buf = d?.ema_trend_buffer_pct ?? 0;
+  const lim = side === 'LONG' ? ema * (1 - buf) : ema * (1 + buf);
+  const ok  = side === 'LONG' ? px >= lim : px <= lim;
+  const sign = side === 'LONG' ? '≥' : '≤';
+  return `$${Math.round(px).toLocaleString()} ${sign} $${Math.round(lim).toLocaleString()} ${ok ? '✓' : '✗'} (EMA $${Math.round(ema).toLocaleString()})`;
 }
 function fmtAtrGuard(d) {
   const a = d?.atr;
@@ -500,7 +502,7 @@ const DIVFLIP_LONG_CONDS = [
   // Pro: EMA200 trend + ATR guard. Sharp: UK hours only. v3 legacy: BB/ADX/ATR/HTF
   ...(DIVFLIP_PRO ? [
     {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
-    {key: 'Price > EMA200 (5m)', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price; return e!=null && p!=null && p > e; }, val: d => fmtEmaTrend(d, 'LONG')},
+    {key: 'Price ≥ 15m EMA50 − buffer', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price, b=d?.ema_trend_buffer_pct??0; return e!=null && p!=null && p >= e*(1-b); }, val: d => fmtEmaTrend(d, 'LONG')},
     {key: 'ATR ≥ min (not dead zone)', check: d => { const a=d?.atr, m=d?.atr_min; return a!=null && m!=null && a >= m; }, val: d => fmtAtrGuard(d)},
   ] : DIVFLIP_SHARP ? [
     {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
@@ -521,7 +523,7 @@ const DIVFLIP_SHORT_CONDS = [
   {key: 'RSI at bear pivot', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
   ...(DIVFLIP_PRO ? [
     {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
-    {key: 'Price < EMA200 (5m)', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price; return e!=null && p!=null && p < e; }, val: d => fmtEmaTrend(d, 'SHORT')},
+    {key: 'Price ≤ 15m EMA50 + buffer', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price, b=d?.ema_trend_buffer_pct??0; return e!=null && p!=null && p <= e*(1+b); }, val: d => fmtEmaTrend(d, 'SHORT')},
     {key: 'ATR ≥ min (not dead zone)', check: d => { const a=d?.atr, m=d?.atr_min; return a!=null && m!=null && a >= m; }, val: d => fmtAtrGuard(d)},
   ] : DIVFLIP_SHARP ? [
     {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
@@ -915,12 +917,19 @@ function renderSetup(status){
           reasons.push(`outside UK hours window (UTC ${utcHr}h, need 08-16)`);
         }
       }
-      // Pro-only: EMA200 trend + ATR guard
+      // Pro-only: 15m EMA50 trend (with buffer) + ATR guard
       if (DIVFLIP_PRO) {
         const ema = ind.ema_trend, px = ind.close_px ?? ind.price;
+        const buf = ind.ema_trend_buffer_pct ?? 0;
+        const tf  = ind.ema_trend_tf  ?? '15m';
+        const per = ind.ema_trend_period ?? 50;
         if (ema != null && px != null) {
-          if (px < ema) reasons.push(`price $${Math.round(px).toLocaleString()} below EMA200 $${Math.round(ema).toLocaleString()} — LONG blocked (counter-trend)`);
-          else if (px > ema) reasons.push(`price $${Math.round(px).toLocaleString()} above EMA200 $${Math.round(ema).toLocaleString()} — SHORT blocked (counter-trend)`);
+          const emaLow = ema * (1 - buf), emaHigh = ema * (1 + buf);
+          if (px < emaLow) {
+            reasons.push(`price $${Math.round(px).toLocaleString()} below ${tf} EMA${per} (${(buf*100).toFixed(1)}% buffer = $${Math.round(emaLow).toLocaleString()}) — LONG blocked`);
+          } else if (px > emaHigh) {
+            reasons.push(`price $${Math.round(px).toLocaleString()} above ${tf} EMA${per} (${(buf*100).toFixed(1)}% buffer = $${Math.round(emaHigh).toLocaleString()}) — SHORT blocked`);
+          }
         }
         const atr = ind.atr, atrMin = ind.atr_min;
         if (atr != null && atrMin != null && atr < atrMin) {
@@ -1373,7 +1382,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const sub = document.getElementById('setupSub');
   if (sub) {
     if (DIVFLIP_PRO) {
-      sub.textContent = 'DivFlip Pro (2026-05-24). RSI(14) divergence, pivot 5L/3R (3-bar confirmation), fresh ≤21 bars. RSI@pivot filter ≤38 (bull) / ≥68 (bear). UK hours UTC 08-16. 2-leg DCA @ 0.35%. SL 0.5% from AVG, TP 1%. BE arms @ +0.50%, trail 1%. 3× leverage. NEW filters: 200 EMA trend regime (blocks counter-trend), ATR(14) volatility guard ≥ 0.04% (skips dead zones). Paper-only validation.';
+      sub.textContent = 'DivFlip Pro (2026-05-24). RSI(14) divergence, pivot 5L/1R, fresh ≤21 bars. RSI@pivot filter ≤50 (bull) / ≥66 (bear) — loose, EMA is the quality gate. UK hours UTC 08-16. 2-leg DCA @ 0.35%. SL 0.5% from AVG, TP 1%. BE arms @ +0.50%, trail 1%. 3× leverage. REGIME FILTER: 15m EMA50 with 0.3% buffer (tight — only enters trend-aligned). ATR(14) ≥ 0.04% volatility guard. Paper-only.';
     } else if (DIVFLIP_SHARP) {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-24). RSI(14) divergence, pivot 5L/3R, fresh ≤21 bars. RSI@pivot ≤38 (bull) / ≥68 (bear). UK hours UTC 08-16. 2-leg DCA @ 0.35%. SL 0.5%/avg, TP 1%, BE+Trail 0.5%/1%. 3× leverage. No EMA/ATR filters (those are Pro-only). Under live evaluation.';
     } else {

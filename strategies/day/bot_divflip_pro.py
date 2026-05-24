@@ -29,7 +29,7 @@ from core_divflip_pro import (
     USE_TAKE_PROFIT, TP_PCT,
     USE_MAX_LOSS_CAP, MAX_LOSS_PCT,
     DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD,
-    USE_EMA_TREND_FILTER, EMA_TREND_PERIOD,
+    USE_EMA_TREND_FILTER, EMA_TREND_TIMEFRAME, EMA_TREND_PERIOD, EMA_TREND_BUFFER_PCT,
     USE_ATR_GUARD, ATR_PERIOD, ATR_MIN_PCT,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
@@ -260,7 +260,7 @@ def maybe_dca_fixed(pos, live_px: float, balance: float, state) -> bool:
 # ─── Main tick ───
 def main():
     log.info("=" * 60)
-    log.info(f"DivFlip Pro Paper Bot — RSI div {RSI_LONG_MAX:.0f}/{RSI_SHORT_MIN:.0f}, {DCA_LEVELS}-leg DCA, SL {SL_FROM_AVG*100:.1f}%/avg, TP {TP_PCT*100:.1f}%, BE+Trail {BE_TRIGGER_PCT*100:.2f}%/{TRAIL_DIST_PCT*100:.1f}%, UK {UK_HOUR_START}-{UK_HOUR_END}, EMA{EMA_TREND_PERIOD}+ATR{ATR_PERIOD} filters "
+    log.info(f"DivFlip Pro Paper Bot — RSI div {RSI_LONG_MAX:.0f}/{RSI_SHORT_MIN:.0f}, pivot {DIV_PIVOT_L}L/{DIV_PIVOT_R}R, {DCA_LEVELS}-leg DCA, SL {SL_FROM_AVG*100:.1f}%/avg, TP {TP_PCT*100:.1f}%, BE+Trail {BE_TRIGGER_PCT*100:.2f}%/{TRAIL_DIST_PCT*100:.1f}%, UK {UK_HOUR_START}-{UK_HOUR_END}, {EMA_TREND_TIMEFRAME} EMA{EMA_TREND_PERIOD} ±{EMA_TREND_BUFFER_PCT*100:.1f}%+ATR{ATR_PERIOD} filters "
              f"L3-anchored SL {SL_FROM_AVG*100:.1f}% | "
              f"{'TP ' + format(TP_PCT*100, '.2f') + '% from avg' if USE_TAKE_PROFIT else 'NO TP'} | "
              f"BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
@@ -289,9 +289,14 @@ def main():
     # detection so bars_since_*_div columns reflect the faster confirmation.
     df = detect_divergence(df, DIV_PIVOT_L, DIV_PIVOT_R)
 
-    # ─ Pro-only filters: 200 EMA trend regime + ATR volatility guard ─
+    # ─ Pro-only filters: 15m EMA trend regime + ATR volatility guard ─
     if USE_EMA_TREND_FILTER:
-        df["ema_trend"] = df["close"].ewm(span=EMA_TREND_PERIOD, adjust=False).mean()
+        # Resample 5m → 15m, compute EMA, map back to 5m bars (forward-fill, shift to use prior bar)
+        df_resampled = df.set_index("timestamp").resample(EMA_TREND_TIMEFRAME).agg({"close":"last"}).dropna()
+        df_resampled["ema_trend_htf"] = df_resampled["close"].ewm(span=EMA_TREND_PERIOD, adjust=False).mean()
+        df = df.set_index("timestamp")
+        df["ema_trend"] = df_resampled["ema_trend_htf"].reindex(df.index, method="ffill").shift(1)
+        df = df.reset_index()
     if USE_ATR_GUARD:
         h_l = df["high"] - df["low"]
         h_c = (df["high"] - df["close"].shift()).abs()
@@ -315,14 +320,16 @@ def main():
 
     sig = evaluate_signal_divflip(df, last_idx, current_side)
 
-    # ─ Pro filter: block counter-trend entries against 200 EMA ─
+    # ─ Pro filter: block counter-trend entries against 15m EMA50 (with buffer) ─
     ema_trend_block = None
     if USE_EMA_TREND_FILTER and sig.side and ema_trend_val > 0:
-        if sig.side == "LONG" and close_px < ema_trend_val:
-            ema_trend_block = f"LONG below EMA{EMA_TREND_PERIOD} (${close_px:.0f} < ${ema_trend_val:.0f})"
+        ema_low  = ema_trend_val * (1 - EMA_TREND_BUFFER_PCT)
+        ema_high = ema_trend_val * (1 + EMA_TREND_BUFFER_PCT)
+        if sig.side == "LONG" and close_px < ema_low:
+            ema_trend_block = f"LONG below 15m EMA{EMA_TREND_PERIOD} buffer (${close_px:.0f} < ${ema_low:.0f}, EMA ${ema_trend_val:.0f})"
             sig.side = None
-        elif sig.side == "SHORT" and close_px > ema_trend_val:
-            ema_trend_block = f"SHORT above EMA{EMA_TREND_PERIOD} (${close_px:.0f} > ${ema_trend_val:.0f})"
+        elif sig.side == "SHORT" and close_px > ema_high:
+            ema_trend_block = f"SHORT above 15m EMA{EMA_TREND_PERIOD} buffer (${close_px:.0f} > ${ema_high:.0f}, EMA ${ema_trend_val:.0f})"
             sig.side = None
     # ─ Pro filter: ATR volatility guard (dead-zone block) ─
     atr_block = None
@@ -337,11 +344,16 @@ def main():
     # Expose Pro filter state into status (dashboard reads sig.conditions/raw)
     if USE_EMA_TREND_FILTER:
         sig.raw["ema_trend"] = ema_trend_val
+        sig.raw["ema_trend_low"]  = ema_trend_val * (1 - EMA_TREND_BUFFER_PCT) if ema_trend_val > 0 else 0
+        sig.raw["ema_trend_high"] = ema_trend_val * (1 + EMA_TREND_BUFFER_PCT) if ema_trend_val > 0 else 0
+        sig.raw["ema_trend_buffer_pct"] = EMA_TREND_BUFFER_PCT
+        sig.raw["ema_trend_period"]    = EMA_TREND_PERIOD
+        sig.raw["ema_trend_tf"]        = EMA_TREND_TIMEFRAME
         sig.raw["close_px"] = close_px
-        sig.conditions[f"Price aligned with EMA{EMA_TREND_PERIOD}"] = (
-            (current_side == "LONG" and close_px > ema_trend_val) or
-            (current_side == "SHORT" and close_px < ema_trend_val) or
-            (current_side is None and ema_trend_val > 0)  # passive show
+        sig.conditions[f"Price aligned with {EMA_TREND_TIMEFRAME} EMA{EMA_TREND_PERIOD}"] = (
+            (current_side == "LONG" and close_px > ema_trend_val * (1 - EMA_TREND_BUFFER_PCT)) or
+            (current_side == "SHORT" and close_px < ema_trend_val * (1 + EMA_TREND_BUFFER_PCT)) or
+            (current_side is None and ema_trend_val > 0)
         ) if ema_trend_val > 0 else False
     if USE_ATR_GUARD:
         sig.raw["atr"] = atr_val
@@ -541,7 +553,7 @@ def main():
         "indicators": sig.raw,
         "conditions": sig.conditions,
         "stats": state["stats"],
-        "strategy": f"DivFlip Pro [PAPER]: DCA=2 (no L3) / SL {SL_FROM_AVG*100:.2f}% from avg / TP {TP_PCT*100:.1f}% / BE {BE_TRIGGER_PCT*100:.2f}% / Trail {TRAIL_DIST_PCT*100:.1f}% / UK hours UTC {UK_HOUR_START}-{UK_HOUR_END} / EMA{EMA_TREND_PERIOD} trend filter / ATR{ATR_PERIOD} ≥ {ATR_MIN_PCT*100:.2f}% / no MAX_LOSS",
+        "strategy": f"DivFlip Pro [PAPER]: DCA=2 (no L3) / SL {SL_FROM_AVG*100:.2f}% from avg / TP {TP_PCT*100:.1f}% / BE {BE_TRIGGER_PCT*100:.2f}% / Trail {TRAIL_DIST_PCT*100:.1f}% / UK hours UTC {UK_HOUR_START}-{UK_HOUR_END} / {EMA_TREND_TIMEFRAME} EMA{EMA_TREND_PERIOD} (±{EMA_TREND_BUFFER_PCT*100:.1f}% buf) regime / ATR{ATR_PERIOD} ≥ {ATR_MIN_PCT*100:.2f}% / no MAX_LOSS",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
