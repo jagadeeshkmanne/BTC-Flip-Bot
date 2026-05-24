@@ -210,9 +210,9 @@
     <span class="brand-tag" id="brandTag">Paper · Mainnet · Divergence-Flip v1</span>
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
-    <option value="divflip">Divergence-Flip v1</option>
-    <option value="divflip_v3">Divflip v3 (LOCKED v4.2 — 3 DCAs / FLIP / 5 filters)</option>
-    <option value="sr_dca">V2.2 S/R DCA</option>
+    <option value="divflip">Divflip v1</option>
+    <option value="divflip_v3">Divflip Pro ★</option>
+    <option value="sr_dca">S/R DCA</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -1292,7 +1292,7 @@ let lastBar = null; // most recent kline cache, used to compute change %
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
 // Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
-  const stratLabel = DIVFLIP_V3 ? 'Divflip v3 (LOCKED v4.2)' : (STRATEGY === 'divflip' ? 'Divergence-Flip v1' : '5m S/R DCA');
+  const stratLabel = DIVFLIP_V3 ? 'Divflip Pro' : (STRATEGY === 'divflip' ? 'Divflip v1' : 'S/R DCA');
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy
