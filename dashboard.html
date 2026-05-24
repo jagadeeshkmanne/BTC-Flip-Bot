@@ -468,7 +468,7 @@ const DIVFLIP_LONG_CONDS = [
   {key: 'RSI at bull pivot', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
   // v3 filters: compact "actual / threshold" display
   {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
-  {key: 'Today move',check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
+  {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
   {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
   {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
   {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
@@ -480,7 +480,7 @@ const DIVFLIP_SHORT_CONDS = [
   }, val: d => divFreshAge(d, 'SHORT')},
   {key: 'RSI at bear pivot', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
   {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
-  {key: 'Today move',check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
+  {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
   {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
   {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
   {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
