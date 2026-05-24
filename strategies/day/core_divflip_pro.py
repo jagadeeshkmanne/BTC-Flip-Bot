@@ -117,6 +117,16 @@ RSI_SHORT_MIN = 68            # 2026-05-24: 66 → 68 (only true overbought exha
 # Divergence freshness window — 21 bars on 5m = 105 min.
 DIV_FRESH_BARS = 21
 
+# ─ Pro-only filters (added 2026-05-24) ─
+# 200 EMA trend regime filter — block counter-trend entries
+USE_EMA_TREND_FILTER = True
+EMA_TREND_PERIOD     = 200
+
+# ATR volatility guard — block entries when market is too flat/dead
+USE_ATR_GUARD     = True
+ATR_PERIOD        = 14
+ATR_MIN_PCT       = 0.0004    # 0.04% of price — below this, treat as dead zone
+
 Side = Literal["LONG", "SHORT"]
 
 

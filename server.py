@@ -446,6 +446,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         #   ?strategy=sr_dca       → V2.2 S/R paper bot (data/paper/state_paper.json)
         #   ?strategy=divflip      → Divergence-flip v1 paper bot (data/paper_divflip/state.json)
         #   ?strategy=divflip_sharp  → Divflip v1b paper bot, L3 disabled (data/paper_divflip_sharp/state.json)
+        #   ?strategy=divflip_pro    → Divflip Pro paper bot, EMA200+ATR filters (data/paper_divflip_pro/state.json)
         #   ?env=testnet           → legacy testnet bot data (mostly empty after paper migration)
         from urllib.parse import parse_qs
         qs = parse_qs(parsed.query)
@@ -459,6 +460,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             log_filename = 'bot.log'
         elif strategy_q == 'divflip_sharp':
             env_dir = 'paper_divflip_sharp'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
+        elif strategy_q == 'divflip_pro':
+            env_dir = 'paper_divflip_pro'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -511,6 +517,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             if env_dir == 'paper_divflip_sharp':
                 return self._json_response(_query_paper_position(
                     state_subdir='paper_divflip_sharp',
+                    state_filename='state.json',
+                    balance_key='balance',
+                ))
+            if env_dir == 'paper_divflip_pro':
+                return self._json_response(_query_paper_position(
+                    state_subdir='paper_divflip_pro',
                     state_filename='state.json',
                     balance_key='balance',
                 ))
