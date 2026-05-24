@@ -443,10 +443,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
 
         # ── Bot API (public, no auth). Three active strategies: ──
         # Routes by ?strategy= (preferred) or legacy ?env=:
-        #   ?strategy=sr_dca     → V2.2 S/R paper bot (data/paper/state_paper.json)
-        #   ?strategy=divflip    → Divergence-flip v1 paper bot (data/paper_divflip/state.json)
-        #   ?strategy=divflip_v3 → Divflip v3 — LOCKED v4.2 config (data/paper_divflip_v3/)
-        #   ?env=testnet         → legacy testnet bot data (mostly empty after paper migration)
+        #   ?strategy=sr_dca       → V2.2 S/R paper bot (data/paper/state_paper.json)
+        #   ?strategy=divflip      → Divergence-flip v1 paper bot (data/paper_divflip/state.json)
+        #   ?strategy=divflip_sharp  → Divflip v1b paper bot, L3 disabled (data/paper_divflip_sharp/state.json)
+        #   ?env=testnet           → legacy testnet bot data (mostly empty after paper migration)
         from urllib.parse import parse_qs
         qs = parse_qs(parsed.query)
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
@@ -457,8 +457,8 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
-        elif strategy_q == 'divflip_v3':
-            env_dir = 'paper_divflip_v3'
+        elif strategy_q == 'divflip_sharp':
+            env_dir = 'paper_divflip_sharp'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -508,9 +508,9 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     state_filename='state.json',
                     balance_key='balance',
                 ))
-            if env_dir == 'paper_divflip_v3':
+            if env_dir == 'paper_divflip_sharp':
                 return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip_v3',
+                    state_subdir='paper_divflip_sharp',
                     state_filename='state.json',
                     balance_key='balance',
                 ))

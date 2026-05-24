@@ -207,12 +207,12 @@
 <header class="topbar">
   <div class="brand">
     <span class="brand-name">BTC Day Bot</span>
-    <span class="brand-tag" id="brandTag">Paper · Mainnet · Divergence-Flip v1</span>
+    <span class="brand-tag" id="brandTag">Paper · Mainnet · S/R DCA</span>
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
-    <option value="divflip">Divflip v1</option>
-    <option value="divflip_v3">Div DCA ★</option>
     <option value="sr_dca">S/R DCA</option>
+    <option value="divflip">Divflip v1</option>
+    <option value="divflip_sharp">DivFlip Sharp ⭐</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -274,7 +274,7 @@
       </div>
     </div>
     <div class="pos-foot">
-      <span id="eodLabel">Closes by <b>20:00 UTC</b></span>
+      <span id="eodLabel">Closes by <b>20:00 UTC (01:30 IST)</b></span>
       <span class="countdown">in <span id="eodCountdown">--</span></span>
     </div>
   </section>
@@ -355,16 +355,28 @@ const START_BALANCE = 5000;
 // ── URL params parsed early so other code can branch on them ──────
 // URL_ENV defaults to mainnet (paper bot's data source); ?env=testnet for legacy view.
 const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
-// RAW_STRATEGY: ?strategy= picks the bot data source — 'divflip' (v1),
-// 'divflip_v3' (LOCKED v4.2 config), or 'sr_dca' (V2.2). Default = divflip v1.
-const RAW_STRATEGY = (() => {
+// STRATEGY: ?strategy= picks the bot data source — 'sr_dca' (V2.2), 'divflip' (v1),
+// or 'divflip_sharp' (live-data-tuned: UK+Weekday hours, SL 0.5%/avg, Trail 1%, no L3, no MAX_LOSS).
+// Default = sr_dca (currently the active, working paper bot).
+const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v3') ? s : 'divflip';
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_sharp') ? s : 'sr_dca';
 })();
-const STRATEGY = RAW_STRATEGY === 'sr_dca' ? 'sr_dca' : 'divflip';
-const DIVFLIP_V3 = RAW_STRATEGY === 'divflip_v3';
-// Removed shelf variants: divflip_v2 (3rd bot, dead), divflip_v1f (Bybit PT mirror),
-// divflip_15m (Paper Bot 5). All replaced by v3 = LOCKED v4.2 config.
+const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
+const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
+const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_SHARP;
+const DCA_LEVELS_CFG = DIVFLIP_SHARP ? 2 : 3;
+
+// IST display helper (UTC + 5:30)
+function fmtIST(dateOrTs) {
+  const d = dateOrTs instanceof Date ? dateOrTs : new Date(dateOrTs);
+  // Use Asia/Kolkata timezone
+  return d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' });
+}
+function fmtISTTimeOnly(dateOrTs) {
+  const d = dateOrTs instanceof Date ? dateOrTs : new Date(dateOrTs);
+  return d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+}
 
 // Entry conditions — V2: Touch + Volume + RSI Divergence (3 per side).
 // Volume key is read dynamically since the multiplier (1.1× in V2, 1.2× in V1)
@@ -466,12 +478,17 @@ const DIVFLIP_LONG_CONDS = [
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'LONG')},
   {key: 'RSI at bull pivot', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
-  // v3 filters: compact "actual / threshold" display
-  {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
-  {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
-  {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
-  {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
-  {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
+  // Sharp uses time-of-day filters instead of v3 indicator filters
+  ...(DIVFLIP_SHARP ? [
+    {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+  ] : [
+    // legacy v3 filters (only shown for divflip_v3 — currently retired but kept for any future v3 bot)
+    {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
+    {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
+    {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
+    {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
+    {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
+  ]),
 ];
 const DIVFLIP_SHORT_CONDS = [
   {key: 'Bear div fresh', check: d => {
@@ -479,11 +496,15 @@ const DIVFLIP_SHORT_CONDS = [
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'SHORT')},
   {key: 'RSI at bear pivot', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
-  {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
-  {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
-  {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
-  {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
-  {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
+  ...(DIVFLIP_SHARP ? [
+    {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+  ] : [
+    {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
+    {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
+    {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
+    {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
+    {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
+  ]),
 ];
 
 // v3: compact filter formatters — "actual / threshold" in 1-line form.
@@ -628,7 +649,7 @@ function renderPosition(price){
   // v3 has non-progressive DCA spacing: L2 at L1±0.2%, L3 at L1±0.4% (not 0.2%+0.2%)
   // v1 has progressive: L2 at L1±0.35%, L3 at L2±0.35% (=L1±0.7%)
   // SR DCA: 0.85%
-  const dcaSpacing = DIVFLIP_V3 ? 0.002 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085);
+  const dcaSpacing = DIVFLIP_V3 ? 0.002 : (DIVFLIP_ANY ? 0.0035 : 0.0085);
   const v3_l3_spacing = 0.004;
   const legAt = n => (p.legEntries && p.legEntries[n-1] && p.legEntries[n-1].px > 0) ? p.legEntries[n-1].px : null;
   const l1Price = legAt(1);
@@ -649,17 +670,17 @@ function renderPosition(price){
   if (filled === 1) {
     rawLevels.push({key:'entry', name:'Entry', price: l1Price});
     rawLevels.push({key:'leg',   name:'L2',    price: projectFromL1(2)});
-    rawLevels.push({key:'leg',   name:'L3',    price: projectFromL1(3)});
+    if (DCA_LEVELS_CFG >= 3) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled === 2) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
-    rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
+    if (DCA_LEVELS_CFG >= 3) rawLevels.push({key:'leg', name:'L3', price: projectFromL1(3)});
   } else if (filled >= 3) {
     rawLevels.push({key:'entry', name:'Avg', price: p.avgEntry});
   }
   // BE arm price — read straight from the bot's status.json (be_arm_px). The
   // bot computes it with its own anchor (avg for v1, L1 for v2), so the
   // dashboard never recomputes it and cannot drift from the bot.
-  if (STRATEGY === 'divflip' && p.beArmPx && p.beArmPx > 0) {
+  if (DIVFLIP_ANY && p.beArmPx && p.beArmPx > 0) {
     rawLevels.push({key:'be', name: p.beActivated ? 'BE ✓' : 'BE arm', price: p.beArmPx});
   }
   const levels = rawLevels.filter(l => l.price && l.price > 0);
@@ -898,7 +919,7 @@ function renderSetup(status){
 // ── Main refresh — pulls bot state every 15s via HTTP ─────────
 async function refresh(){
   try {
-    const stratParam = '?strategy=' + RAW_STRATEGY;
+    const stratParam = '?strategy=' + STRATEGY;
     const [r1, r2, r3] = await Promise.all([
       fetch('/api/bot/day/state' + stratParam),
       fetch('/api/bot/day/status' + stratParam),
@@ -1079,7 +1100,7 @@ async function refresh(){
         const pnlUsd  = t.pnl_usd !== undefined ? t.pnl_usd : t.pnl;
         // divflip bot writes `exit_time`; SR_DCA bot writes `time`. Accept both.
         const exitT = t.exit_time || t.time;
-        const tStr = exitT ? new Date(exitT).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '--';
+        const tStr = exitT ? fmtIST(exitT) + ' IST' : '--';
         let holdStr = '--';
         if (t.entry_time && exitT) {
           const hMs = new Date(exitT) - new Date(t.entry_time);
@@ -1296,14 +1317,16 @@ let lastBar = null; // most recent kline cache, used to compute change %
 const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss://fstream.binance.com';
 // Update brand tag + wire strategy selector.
 document.addEventListener('DOMContentLoaded', () => {
-  const stratLabel = DIVFLIP_V3 ? 'Div DCA' : (STRATEGY === 'divflip' ? 'Divflip v1' : 'S/R DCA');
+  const stratLabel = DIVFLIP_SHARP ? 'DivFlip Sharp ⭐'
+                    : STRATEGY === 'divflip' ? 'Divflip v1'
+                    : 'S/R DCA';
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy
   const sub = document.getElementById('setupSub');
   if (sub) {
-    if (DIVFLIP_V3) {
-      sub.textContent = 'Divflip v3 LOCKED CONFIG (validated 5y backtest: +175,628% / 95% WR / 28% DD). RSI(7) divergence, pivot 5L/1R, fresh 21 bars. 3 DCAs progressive sizing 1:2:4, spacing 0.2%/0.4%. 5 filters: BB squeeze block, today change ±2%, ADX>60 block, min ATR 0.30%, daily EMA50 HTF bias ±1% (with oversold override on extreme reversal setups). Exits: FLIP on opposite div + min +0.2% profit, L3 lock at +0.2% from avg, hard SL -1.8% from L1. 1h cooldown after SL, NO time stop. 3x leverage.';
+    if (DIVFLIP_SHARP) {
+      sub.textContent = 'Live-data-tuned divflip (2026-05-24). RSI(10) divergence + RSI level filter ≤50/≥66. Only enters during UK hours UTC 08-16 (IST 13:30-21:30) — all 7 days. 2-leg DCA @ 0.35% (L3 disabled). SL 0.5% from AVG entry. TP 1% from avg. BE arms @ +0.50%, trail 1% from peak. NO MAX_LOSS cap, NO EOD flatten, NO weekday filter. 3× leverage. Under live evaluation — no proven edge yet.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
         ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'
@@ -1312,7 +1335,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Divflip has no 20:00 UTC force-flatten — hide the "Closes by 20:00 UTC"
   // footer entirely (position rides to TP/SL/trail).
-  if (STRATEGY === 'divflip') {
+  if (DIVFLIP_ANY) {
     document.querySelectorAll('.pos-foot').forEach(el => { el.style.display = 'none'; });
   }
   // Repurpose the setup-stats row for divflip: instead of Volume / Range yest.
@@ -1328,7 +1351,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   const sel = document.getElementById('strategySelector');
   if (sel) {
-    sel.value = RAW_STRATEGY;
+    sel.value = STRATEGY;
     sel.addEventListener('change', () => {
       const u = new URL(location.href);
       u.searchParams.set('strategy', sel.value);
@@ -1797,7 +1820,7 @@ setInterval(() => {
   if (positionSnapshot) {
     // Divflip has no 20:00 UTC EOD flatten — position rides to TP/SL/trail.
     // Skip the EOD countdown entirely (footer is hidden by CSS below).
-    if (STRATEGY === 'divflip') return;
+    if (DIVFLIP_ANY) return;
     // EOD countdown for the active position
     const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
     if (now >= eod) eod.setUTCDate(eod.getUTCDate() + 1);
@@ -1813,7 +1836,7 @@ setInterval(() => {
   // can fire 24/7 on fresh divergence. So no countdown is meaningful; just
   // show the static "Waiting for Setup" title and let the conds card below
   // explain what's needed (bull/bear div freshness + RSI@pivot).
-  if (STRATEGY === 'divflip') {
+  if (DIVFLIP_ANY) {
     titleEl.textContent = 'Waiting for Setup';
     return;
   }
@@ -1836,8 +1859,23 @@ setInterval(() => {
     titleEl.innerHTML = `Trading Window Closed — Reopens in <span class="num" style="color:var(--text-bright)">${fmtHMS(next - now)}</span>`;
   } else {
     // Active hunting window — countdown rendered on its own line below.
-    const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
-    titleEl.innerHTML = `Waiting for Setup<div style="font-size:14px;font-weight:500;color:var(--muted);margin-top:8px">Window closes in <span class="num" style="color:var(--text-bright);font-weight:700">${fmtHMS(eod - now)}</span></div>`;
+    if (DIVFLIP_SHARP || STRATEGY === 'divflip') {
+      // Divflip variants have NO EOD flatten — just "Waiting for Setup"
+      const utcH = now.getUTCHours();
+      const wd = now.getUTCDay();
+      const ukOk = utcH >= 8 && utcH < 16;
+      const wdOk = wd >= 1 && wd <= 5;
+      let why = '';
+      if (DIVFLIP_SHARP) {
+        if (!wdOk) why = `<div style="font-size:14px;color:var(--muted);margin-top:6px">Weekend — entries blocked. Resumes Mon UTC 08:00 (IST 13:30)</div>`;
+        else if (!ukOk) why = `<div style="font-size:14px;color:var(--muted);margin-top:6px">Outside UK hours (UTC ${utcH}h) — waits for UTC 08-16 (IST 13:30-21:30)</div>`;
+        else why = `<div style="font-size:14px;color:var(--muted);margin-top:6px">UK hours active — waiting for fresh divergence</div>`;
+      }
+      titleEl.innerHTML = `Waiting for Setup${why}`;
+    } else {
+      const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
+      titleEl.innerHTML = `Waiting for Setup<div style="font-size:14px;font-weight:500;color:var(--muted);margin-top:8px">Window closes in <span class="num" style="color:var(--text-bright);font-weight:700">${fmtHMS(eod - now)}</span></div>`;
+    }
   }
 }, 1000);
 
