@@ -1401,9 +1401,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (DIVFLIP_ANY) {
     const stats = document.querySelector('.setup-stats');
     if (stats) {
-      // Sharp + Pro use ≤38 / ≥68 (tightened 2026-05-24). v1 still ≤50 / ≥66.
-      const bullThr = (DIVFLIP_SHARP || DIVFLIP_PRO) ? '≤ 38' : '≤ 50';
-      const bearThr = (DIVFLIP_SHARP || DIVFLIP_PRO) ? '≥ 68' : '≥ 66';
+      // Sharp = 38/68 (tight). Pro = 50/66 (loose, EMA does quality). v1 = 50/66.
+      const bullThr = DIVFLIP_SHARP ? '≤ 38' : '≤ 50';
+      const bearThr = DIVFLIP_SHARP ? '≥ 68' : '≥ 66';
       stats.innerHTML =
         '<span>RSI live (current bar) <b class="num" id="setupRsi">--</b></span>' +
         '<span>Bull pivot threshold <b class="num">' + bullThr + '</b></span>' +

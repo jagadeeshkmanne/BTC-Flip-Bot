@@ -122,7 +122,7 @@ DIV_FRESH_BARS = 21
 # 15m EMA50 ≈ 12.5h trend, captures real regime without 5m whip
 # 1% buffer = price within 1% of the EMA still allowed (catches dip-buy entries)
 USE_EMA_TREND_FILTER  = True
-EMA_TREND_TIMEFRAME   = "15m"   # resampled from 5m
+EMA_TREND_TIMEFRAME   = "15min"   # resampled from 5m (use "15min", not "15m" — "m" = months in pandas)
 EMA_TREND_PERIOD      = 50
 EMA_TREND_BUFFER_PCT  = 0.003   # 0.3% buffer — TIGHT (quality filter)
 
