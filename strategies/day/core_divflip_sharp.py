@@ -52,7 +52,8 @@ LEVERAGE       = 3.0
 RISK_PCT       = 0.06
 
 DCA_LEVELS     = 2   # v1b: L3 disabled (live data shows L3 fills lose -0.58% avg)
-DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35%, L3 at -0.7%).
+DCA_SPACING    = 0.005        # 0.5% — tuned 2026-05-25 (was 0.35%, too tight, fired on noise).
+                              # Median 2h MAE is -0.31%; 0.5% catches 25%-ile pullback only.
                               # TV-tuned: wider than 0.3% — DCA fires on deeper dips, better fills.
 
 # Mixed-shape sizing — biggest qty in the MIDDLE leg (L2). With 3:4:1.5 ratio:
@@ -73,6 +74,20 @@ SL_FROM_AVG    = 0.005      # 0.5% from AVG entry (tuned 2026-05-24 from live da
 # UK hours + EOD20 + raw SL provide overlapping protection without MAX_LOSS.
 USE_MAX_LOSS_CAP = False
 MAX_LOSS_PCT     = 0.03
+
+# 24h time-stop on LOSS — if position held ≥ TIME_STOP_HOURS AND currently in loss → force close.
+# Saves slow-bleed scenarios where price hovers underwater for hours (like the $701 v1 trade).
+# Profits are NEVER force-closed — winners run.
+USE_TIME_STOP_LOSS = True
+TIME_STOP_HOURS    = 24
+
+# 6h same-direction cooldown after LOSS — catches falling-knife re-entries.
+# After LONG SL: block LONG re-entry for N hours (SHORT still allowed).
+# After SHORT SL: block SHORT re-entry for N hours (LONG still allowed).
+# v1 data: catches May 23 07:52 LONG (-$202, opened 1 min after May 22 LONG SL).
+# Net +$44 on v1 sample (saves $202, costs $158 in blocked wins).
+USE_LOSS_COOLDOWN     = True
+LOSS_COOLDOWN_HOURS   = 6
 
 # v1b ENTRY FILTERS (added 2026-05-24 based on live data + multi-agent analysis):
 # - UK hours: only enter UTC 08-16 (blocks ASIA thin-liquidity + late US/overnight)
@@ -97,9 +112,11 @@ TP_PCT          = 0.01        # 1% from avg entry
 # Below BE trigger: raw SL only (loss-bound). At BE trigger: trailing arms,
 # locks in min profit via BE_BUFFER floor, then trails peak − TRAIL_DIST_PCT.
 USE_BREAKEVEN  = True
-BE_TRIGGER_PCT = 0.005       # arm at +0.50% favorable (tuned 2026-05-24 — was 0.55%, 0.50% adds +$39 in sample)
+BE_TRIGGER_PCT = 0.005       # L1-only: arm at +0.50% favorable from avg (loose, give winners room)
+BE_TRIGGER_AFTER_L2 = 0.003  # After L2 fires: arm at +0.30% (DCA recovery — lock profit fast)
 BE_BUFFER_PCT  = 0.002        # initial floor at firstEntry ± 0.2% (after-fee lock-in)
-TRAIL_DIST_PCT = 0.01       # 1.0% from peak (tuned 2026-05-24 — wider lets winners breathe)
+TRAIL_DIST_PCT = 0.01       # L1-only: 1% from peak (loose)
+TRAIL_DIST_AFTER_L2 = 0.005  # After L2 fires: 0.5% tight trail (lock profit fast)
 
 # Flip on opposite divergence — OFF in TV-tuned config. Lets trades ride
 # to SL / trailing exit instead of bouncing between sides on every opposite
@@ -217,16 +234,13 @@ def dca_price(side: Side, worst_entry: float) -> float:
 
 
 def sl_price_divflip(side: Side, worst_entry: float, first_entry: Optional[float] = None,
-                     be_activated: bool = False, peak_price: Optional[float] = None) -> float:
-    """Composite SL — SHARP config 2026-05-24.
+                     be_activated: bool = False, peak_price: Optional[float] = None,
+                     filled: int = 1) -> float:
+    """Composite SL — SHARP config 2026-05-25.
 
-    In this codebase callers pass the AVG entry as the `first_entry` arg
-    (per the avg-anchored BE design from 2026-05-20). So:
-      - Raw SL    = first_entry × (1 ± SL_FROM_AVG)           [0.5% from avg — tighter]
-      - BE SL     = first_entry × (1 ± BE_BUFFER_PCT)         [BE floor when armed]
-      - Trail SL  = peak_price × (1 ± TRAIL_DIST_PCT)         [1% trail after BE]
+    Callers pass the AVG entry as `first_entry`. Trail distance ASYMMETRIC:
+    L1-only uses TRAIL_DIST_PCT (loose 1%), after L2 uses TRAIL_DIST_AFTER_L2 (tight 0.5%).
     """
-    # Sharp: SL from avg (which callers pass as first_entry)
     anchor = first_entry if first_entry is not None and first_entry > 0 else worst_entry
     raw_sl = anchor * (1 - SL_FROM_AVG) if side == "LONG" else anchor * (1 + SL_FROM_AVG)
     if not (USE_BREAKEVEN and be_activated and first_entry is not None):
@@ -234,18 +248,22 @@ def sl_price_divflip(side: Side, worst_entry: float, first_entry: Optional[float
     be_sl = first_entry * (1 + BE_BUFFER_PCT) if side == "LONG" else first_entry * (1 - BE_BUFFER_PCT)
     if peak_price is None or peak_price <= 0:
         return max(raw_sl, be_sl) if side == "LONG" else min(raw_sl, be_sl)
-    trail_sl = peak_price * (1 - TRAIL_DIST_PCT) if side == "LONG" else peak_price * (1 + TRAIL_DIST_PCT)
+    trail_dist = TRAIL_DIST_AFTER_L2 if filled >= 2 else TRAIL_DIST_PCT
+    trail_sl = peak_price * (1 - trail_dist) if side == "LONG" else peak_price * (1 + trail_dist)
     if side == "LONG":
         return max(raw_sl, be_sl, trail_sl)
     return min(raw_sl, be_sl, trail_sl)
 
 
-def be_should_activate(side: Side, first_entry: float, current_price: float) -> bool:
-    """True if favorable% from first entry crossed BE_TRIGGER_PCT."""
+def be_should_activate(side: Side, first_entry: float, current_price: float, filled: int = 1) -> bool:
+    """True if favorable% from first entry crossed BE trigger.
+    Trigger is ASYMMETRIC: L1-only=BE_TRIGGER_PCT (loose), after L2=BE_TRIGGER_AFTER_L2 (tight).
+    """
     if not USE_BREAKEVEN or first_entry is None or first_entry <= 0:
         return False
     fav = (current_price - first_entry) / first_entry if side == "LONG" else (first_entry - current_price) / first_entry
-    return fav >= BE_TRIGGER_PCT
+    trigger = BE_TRIGGER_AFTER_L2 if filled >= 2 else BE_TRIGGER_PCT
+    return fav >= trigger
 
 
 def per_level_qty(equity: float, price: float, leg_idx: int = 0, leverage: float = None) -> float:

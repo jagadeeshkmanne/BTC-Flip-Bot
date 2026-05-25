@@ -24,7 +24,10 @@ from core import build_features, detect_divergence, rsi_series
 from core_divflip_pro import (
     LEVERAGE, RISK_PCT, DCA_LEVELS, DCA_SPACING, SL_FROM_AVG,
     USE_UK_HOURS_FILTER, UK_HOUR_START, UK_HOUR_END, USE_WEEKDAY_FILTER,
-    USE_BREAKEVEN, BE_TRIGGER_PCT, BE_BUFFER_PCT, TRAIL_DIST_PCT, DIV_FRESH_BARS,
+    USE_BREAKEVEN, BE_TRIGGER_PCT, BE_TRIGGER_AFTER_L2, BE_BUFFER_PCT,
+    TRAIL_DIST_PCT, TRAIL_DIST_AFTER_L2, DIV_FRESH_BARS,
+    USE_TIME_STOP_LOSS, TIME_STOP_HOURS,
+    USE_LOSS_COOLDOWN, LOSS_COOLDOWN_HOURS,
     USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
     USE_TAKE_PROFIT, TP_PCT,
     USE_MAX_LOSS_CAP, MAX_LOSS_PCT,
@@ -171,6 +174,9 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
     state["stats"]["pnl"] += pnl_pct
     if net > 0:
         state["stats"]["wins"] += 1
+    elif reason == "SL":
+        # Only REAL SL hits trigger cooldown. TIME24 / BE / TRAIL don't.
+        state.setdefault("last_loss_exit", {})[side] = trade_record["exit_time"]
     log.warning(f"  EXIT {side} via {reason} @${exit_px:.2f} | avg_entry ${avg_entry:.2f} | "
                 f"gross ${gross:+.2f} − fees ${fees:.2f} = net ${net:+.2f} "
                 f"(price {price_move_pct:+.2f}% / balance {pnl_pct:+.2f}%) | "
@@ -260,11 +266,11 @@ def maybe_dca_fixed(pos, live_px: float, balance: float, state) -> bool:
 # ─── Main tick ───
 def main():
     log.info("=" * 60)
-    log.info(f"DivFlip Pro Paper Bot — RSI div {RSI_LONG_MAX:.0f}/{RSI_SHORT_MIN:.0f}, pivot {DIV_PIVOT_L}L/{DIV_PIVOT_R}R, {DCA_LEVELS}-leg DCA, SL {SL_FROM_AVG*100:.1f}%/avg, TP {TP_PCT*100:.1f}%, BE+Trail {BE_TRIGGER_PCT*100:.2f}%/{TRAIL_DIST_PCT*100:.1f}%, UK {UK_HOUR_START}-{UK_HOUR_END}, {EMA_TREND_TIMEFRAME} EMA{EMA_TREND_PERIOD} ±{EMA_TREND_BUFFER_PCT*100:.1f}%+ATR{ATR_PERIOD} filters "
-             f"L3-anchored SL {SL_FROM_AVG*100:.1f}% | "
-             f"{'TP ' + format(TP_PCT*100, '.2f') + '% from avg' if USE_TAKE_PROFIT else 'NO TP'} | "
-             f"BE @{BE_TRIGGER_PCT*100:.2f}% trail {TRAIL_DIST_PCT*100:.2f}% | "
-             f"{'flip' if USE_FLIP else 'NO flip'} | no EOD | fresh {DIV_FRESH_BARS}b")
+    log.info(f"DivFlip Pro Paper Bot — RSI({RSI_PERIOD}) div {RSI_LONG_MAX:.0f}/{RSI_SHORT_MIN:.0f}, pivot {DIV_PIVOT_L}L/{DIV_PIVOT_R}R, {DCA_LEVELS}-leg DCA @{DCA_SPACING*100:.1f}%, "
+             f"SL {SL_FROM_AVG*100:.2f}%/avg, "
+             f"{'TP '+format(TP_PCT*100,'.2f')+'%/avg' if USE_TAKE_PROFIT else 'NO TP'}, "
+             f"BE L1:+{BE_TRIGGER_PCT*100:.2f}%/Trail{TRAIL_DIST_PCT*100:.1f}% L2:+{BE_TRIGGER_AFTER_L2*100:.2f}%/Trail{TRAIL_DIST_AFTER_L2*100:.1f}%, "
+             f"UK {UK_HOUR_START}-{UK_HOUR_END}, {EMA_TREND_TIMEFRAME} EMA{EMA_TREND_PERIOD} ±{EMA_TREND_BUFFER_PCT*100:.1f}% + ATR{ATR_PERIOD} ≥{ATR_MIN_PCT*100:.2f}%, fresh {DIV_FRESH_BARS}b")
 
     state = load_state()
 
@@ -402,21 +408,19 @@ def main():
         # +BE_TRIGGER from AVG entry (not L1); the BE floor is avg-anchored too.
         # Sticky once armed.
         avg_entry = avg_entry_of(pos)
-        if not pos["be_activated"] and be_should_activate(side, avg_entry, live_px):
+        filled = pos.get("filled", 1)
+        if not pos["be_activated"] and be_should_activate(side, avg_entry, live_px, filled=filled):
             pos["be_activated"] = True
-            log.warning(f"  BE armed at live=${live_px:.2f} (fav crossed {BE_TRIGGER_PCT*100:.1f}% from avg ${avg_entry:.2f}) — trailing SL now active")
+            trigger_used = BE_TRIGGER_AFTER_L2 if filled >= 2 else BE_TRIGGER_PCT
+            log.warning(f"  BE armed (L{filled} filled, trigger {trigger_used*100:.2f}%) at live=${live_px:.2f}, avg=${avg_entry:.2f} — trailing SL now active")
 
-        # Composite SL: raw / BE / trailing (whichever is tightest). avg_entry
-        # passed as the BE-anchor arg so the BE floor is avg ± buffer.
-        sl_px = sl_price_divflip(side, worst_entry, avg_entry, pos["be_activated"], peak_price)
+        # Composite SL: raw / BE / trailing (asymmetric trail based on filled count)
+        sl_px = sl_price_divflip(side, worst_entry, avg_entry, pos["be_activated"], peak_price, filled=filled)
 
         exit_reason = None
         exit_px = None
 
-        # v1b SAFETY: max-loss cap — fires BEFORE any other exit logic. Catches
-        # gap-through events where price blows past the raw SL between cron ticks
-        # (e.g., 2026-05-15 LONG: SL was at -1.7% from L1, exit fired at -5%).
-        # Cap is on LEVERAGED uPnL from avg entry, so it scales with qty fraction filled.
+        # v1b SAFETY: max-loss cap — fires BEFORE any other exit logic.
         if USE_MAX_LOSS_CAP:
             upnl_lev = ((live_px - avg_entry) / avg_entry if side == "LONG"
                         else (avg_entry - live_px) / avg_entry) * LEVERAGE
@@ -424,6 +428,23 @@ def main():
                 exit_reason = "MAX_LOSS"
                 exit_px = live_px
                 log.warning(f"  MAX_LOSS triggered: uPnL_lev={upnl_lev*100:.2f}% ≤ -{MAX_LOSS_PCT*100:.1f}% — force-closing at ${live_px:.2f}")
+
+        # 24h time-stop on LOSS — force-close if held ≥ TIME_STOP_HOURS AND in loss.
+        if exit_px is None and USE_TIME_STOP_LOSS:
+            entry_time_str = pos.get("entry_time")
+            if entry_time_str:
+                from datetime import datetime as _dt
+                try:
+                    entry_dt = _dt.fromisoformat(entry_time_str)
+                    hours_held = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 3600.0
+                    cur_pnl_pct = ((live_px - avg_entry) / avg_entry if side == "LONG"
+                                   else (avg_entry - live_px) / avg_entry) * 100.0
+                    if hours_held >= TIME_STOP_HOURS and cur_pnl_pct < 0:
+                        exit_reason = "TIME24"
+                        exit_px = live_px
+                        log.warning(f"  TIME24 triggered: held {hours_held:.1f}h, in loss ({cur_pnl_pct:+.2f}%) — force-closing at ${live_px:.2f}")
+                except Exception as _e:
+                    log.warning(f"  TIME24 check skipped: {_e}")
 
         # Fixed TP from avg entry — primary exit when armed. Recomputed each
         # tick because DCA updates avg_entry. Checked BEFORE the SL block so
@@ -480,12 +501,26 @@ def main():
     # NEW divergence to fire on a future bar. Only the FLIP path opens
     # immediately (that's the whole point of flip).
     if state["position"] is None:
-        # SHARP entry filters: UK hours (UTC 08-16) + Weekday (Mon-Fri) only
+        # PRO entry filters: UK hours + Weekday + same-direction loss cooldown
         now_utc = datetime.now(timezone.utc)
         utc_hour = now_utc.hour
-        weekday = now_utc.weekday()  # 0=Mon, 6=Sun
+        weekday = now_utc.weekday()
         uk_ok = (not USE_UK_HOURS_FILTER) or (UK_HOUR_START <= utc_hour < UK_HOUR_END)
         wd_ok = (not USE_WEEKDAY_FILTER) or (weekday < 5)
+
+        cooldown_ok = True; cooldown_msg = ""
+        if USE_LOSS_COOLDOWN and sig.side:
+            last_loss = state.get("last_loss_exit", {}).get(sig.side)
+            if last_loss:
+                try:
+                    last_loss_dt = datetime.fromisoformat(last_loss)
+                    hours_since = (now_utc - last_loss_dt).total_seconds() / 3600.0
+                    if hours_since < LOSS_COOLDOWN_HOURS:
+                        cooldown_ok = False
+                        cooldown_msg = f"only {hours_since:.1f}h since last {sig.side} loss, need {LOSS_COOLDOWN_HOURS}h"
+                except Exception:
+                    pass
+
         if new_pos_after_flip:
             open_position(state, new_pos_after_flip, live_px, state["balance"])
         elif exit_reason_this_tick in ("SL", "BE", "TRAIL"):
@@ -495,6 +530,8 @@ def main():
         elif sig.side and not wd_ok:
             wd_name = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][weekday]
             log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name}, need Mon-Fri)")
+        elif sig.side and not cooldown_ok:
+            log.info(f"  Signal {sig.side} BLOCKED by loss cooldown: {cooldown_msg}")
         elif sig.side:
             open_position(state, sig.side, live_px, state["balance"])
 
@@ -514,7 +551,7 @@ def main():
         worst_e = pos["worst_entry"]
         first_e = pos["first_entry"]
         peak_e = pos.get("peak_price", first_e)
-        sl_p = sl_price_divflip(pos["side"], worst_e, avg_e, pos["be_activated"], peak_e)
+        sl_p = sl_price_divflip(pos["side"], worst_e, avg_e, pos["be_activated"], peak_e, filled=pos.get("filled", 1))
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
         peak_p = ((peak_e - first_e) / first_e * 100) * (1 if pos["side"] == "LONG" else -1)
         # tp_px = avg_entry × (1 ± TP_PCT). Recomputed each tick — DCA fills
@@ -553,9 +590,12 @@ def main():
         "indicators": sig.raw,
         "conditions": sig.conditions,
         "stats": state["stats"],
-        "strategy": f"DivFlip Pro [PAPER]: DCA=2 (no L3) / SL {SL_FROM_AVG*100:.2f}% from avg / TP {TP_PCT*100:.1f}% / BE {BE_TRIGGER_PCT*100:.2f}% / Trail {TRAIL_DIST_PCT*100:.1f}% / UK hours UTC {UK_HOUR_START}-{UK_HOUR_END} / {EMA_TREND_TIMEFRAME} EMA{EMA_TREND_PERIOD} (±{EMA_TREND_BUFFER_PCT*100:.1f}% buf) regime / ATR{ATR_PERIOD} ≥ {ATR_MIN_PCT*100:.2f}% / no MAX_LOSS",
+        "strategy": f"DivFlip Pro [PAPER]: RSI({RSI_PERIOD}) div {RSI_LONG_MAX:.0f}/{RSI_SHORT_MIN:.0f}, pivot {DIV_PIVOT_L}L/{DIV_PIVOT_R}R, DCA=2 @{DCA_SPACING*100:.1f}% / SL {SL_FROM_AVG*100:.2f}% from avg / TP {TP_PCT*100:.1f}% / BE L1:+{BE_TRIGGER_PCT*100:.2f}% Trail{TRAIL_DIST_PCT*100:.1f}% L2:+{BE_TRIGGER_AFTER_L2*100:.2f}% Trail{TRAIL_DIST_AFTER_L2*100:.1f}% / UK UTC {UK_HOUR_START}-{UK_HOUR_END} / {EMA_TREND_TIMEFRAME} EMA{EMA_TREND_PERIOD} (±{EMA_TREND_BUFFER_PCT*100:.1f}% buf) / ATR{ATR_PERIOD} ≥ {ATR_MIN_PCT*100:.2f}% / 24h time-stop on loss / {LOSS_COOLDOWN_HOURS}h same-side cooldown after loss",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
+        "last_loss_exit": state.get("last_loss_exit", {}),
+        "loss_cooldown_hours": LOSS_COOLDOWN_HOURS if USE_LOSS_COOLDOWN else 0,
+        "time_stop_hours": TIME_STOP_HOURS if USE_TIME_STOP_LOSS else 0,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     write_status(status)
