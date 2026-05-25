@@ -75,10 +75,10 @@ SL_FROM_AVG    = 0.005      # 0.5% from AVG entry (tuned 2026-05-24 from live da
 USE_MAX_LOSS_CAP = False
 MAX_LOSS_PCT     = 0.03
 
-# 24h time-stop on LOSS — if position held ≥ TIME_STOP_HOURS AND currently in loss → force close.
-# Saves slow-bleed scenarios where price hovers underwater for hours (like the $701 v1 trade).
-# Profits are NEVER force-closed — winners run.
-USE_TIME_STOP_LOSS = True
+# Time-stop on LOSS — DISABLED 2026-05-25. SL handles fast losses; slow bleeds are rare
+# and small (only 1 of 23 v1 trades hit TIME24 in sweep). UK + Friday block already
+# protect against the catastrophic weekend-hold scenario.
+USE_TIME_STOP_LOSS = False
 TIME_STOP_HOURS    = 24
 
 # 6h same-direction cooldown after LOSS — catches falling-knife re-entries.
@@ -97,9 +97,13 @@ USE_UK_HOURS_FILTER = True
 UK_HOUR_START       = 8     # UTC, inclusive
 UK_HOUR_END         = 16    # UTC, exclusive
 
-USE_EOD_FLATTEN     = False  # disabled — never fired in live sample (trades exit via TP/TRAIL/SL during day)
-USE_WEEKDAY_FILTER  = False  # Disabled 2026-05-24 per user — weekday filter blocks nothing the UK filter doesn't already catch (audit agent found this; pure overfit on the 1-trade Saturday sample)
-EOD_HOUR_UTC        = 20    # force-close any open position at this UTC hour
+USE_EOD_FLATTEN     = False  # disabled
+# 2026-05-25: weekday filter re-enabled to BLOCK FRIDAY ONLY (allow Mon-Thu + Sat-Sun).
+# Data: Friday Sharp WR = 17% (5/6 SL, -1.68%) vs Mon-Thu 40-80% WR. Friday's the position-closing day.
+# The catastrophic May 15 -$701 v1 loss started with Fri 02:00 LONG → 70h weekend hold → sharp -2.13% 1h drop.
+USE_WEEKDAY_FILTER  = True
+BLOCKED_WEEKDAYS    = [4]   # 0=Mon ... 4=Fri ... 5=Sat 6=Sun. Block Friday only.
+EOD_HOUR_UTC        = 20
 
 # ─ Fixed TP from avg entry (TV-tuned: ON @ 1%) ─
 # Primary exit. Recomputed when DCA fires (avg moves closer to live), so a deep

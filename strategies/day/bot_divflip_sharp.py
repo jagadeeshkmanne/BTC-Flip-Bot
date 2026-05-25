@@ -28,6 +28,7 @@ from core_divflip_sharp import (
     TRAIL_DIST_PCT, TRAIL_DIST_AFTER_L2, DIV_FRESH_BARS,
     USE_TIME_STOP_LOSS, TIME_STOP_HOURS,
     USE_LOSS_COOLDOWN, LOSS_COOLDOWN_HOURS,
+    BLOCKED_WEEKDAYS,
     USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
     USE_TAKE_PROFIT, TP_PCT,
     USE_MAX_LOSS_CAP, MAX_LOSS_PCT,
@@ -447,7 +448,7 @@ def main():
         utc_hour = now_utc.hour
         weekday = now_utc.weekday()  # 0=Mon, 6=Sun
         uk_ok = (not USE_UK_HOURS_FILTER) or (UK_HOUR_START <= utc_hour < UK_HOUR_END)
-        wd_ok = (not USE_WEEKDAY_FILTER) or (weekday < 5)
+        wd_ok = (not USE_WEEKDAY_FILTER) or (weekday not in BLOCKED_WEEKDAYS)
 
         # 6h same-direction cooldown after loss
         cooldown_ok = True
@@ -473,7 +474,8 @@ def main():
             log.info(f"  Signal {sig.side} BLOCKED by UK hours filter (UTC {utc_hour}h, need {UK_HOUR_START}-{UK_HOUR_END})")
         elif sig.side and not wd_ok:
             wd_name = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][weekday]
-            log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name}, need Mon-Fri)")
+            blocked_names = [["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][d] for d in BLOCKED_WEEKDAYS]
+            log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name}, blocked: {','.join(blocked_names)})")
         elif sig.side and not cooldown_ok:
             log.info(f"  Signal {sig.side} BLOCKED by loss cooldown: {cooldown_msg}")
         elif sig.side:
@@ -534,7 +536,7 @@ def main():
         "indicators": sig.raw,
         "conditions": sig.conditions,
         "stats": state["stats"],
-        "strategy": f"DivFlip Sharp [PAPER]: RSI({RSI_PERIOD}) div {RSI_LONG_MAX:.0f}/{RSI_SHORT_MIN:.0f}, pivot {DIV_PIVOT_L}L/{DIV_PIVOT_R}R, DCA=2 @{DCA_SPACING*100:.1f}% / SL {SL_FROM_AVG*100:.2f}% from avg / TP {TP_PCT*100:.1f}% / BE L1:+{BE_TRIGGER_PCT*100:.2f}% Trail{TRAIL_DIST_PCT*100:.1f}% L2:+{BE_TRIGGER_AFTER_L2*100:.2f}% Trail{TRAIL_DIST_AFTER_L2*100:.1f}% / UK UTC {UK_HOUR_START}-{UK_HOUR_END} / 24h time-stop on loss / {LOSS_COOLDOWN_HOURS}h same-side cooldown after loss",
+        "strategy": f"DivFlip Sharp [PAPER]: RSI({RSI_PERIOD}) div {RSI_LONG_MAX:.0f}/{RSI_SHORT_MIN:.0f}, pivot {DIV_PIVOT_L}L/{DIV_PIVOT_R}R, DCA=2 @{DCA_SPACING*100:.1f}% / SL {SL_FROM_AVG*100:.2f}% from avg / TP {TP_PCT*100:.1f}% / BE L1:+{BE_TRIGGER_PCT*100:.2f}% Trail{TRAIL_DIST_PCT*100:.1f}% L2:+{BE_TRIGGER_AFTER_L2*100:.2f}% Trail{TRAIL_DIST_AFTER_L2*100:.1f}% / UK UTC {UK_HOUR_START}-{UK_HOUR_END} / block Friday / {LOSS_COOLDOWN_HOURS}h same-side cooldown after SL",
         "paper_mode": True,
         "state": "IN_POSITION" if pos else "FLAT",
         "last_loss_exit": state.get("last_loss_exit", {}),
