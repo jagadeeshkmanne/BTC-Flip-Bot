@@ -64,7 +64,8 @@ DCA_SPACING    = 0.005        # 0.5% — tuned 2026-05-25 (was 0.35%, too tight,
 # TV backtest (Apr 6 – May 14 2026, BTCUSDT 5m).
 # Total notional still capped by LEVERAGE — ratios just redistribute within cap.
 MARTINGALE_RATIOS = [3.0, 4.0, 1.5]   # qty multiplier per leg (L1, L2, L3) — mixed shape
-SL_FROM_AVG    = 0.005      # 0.5% from AVG entry (tuned 2026-05-24 from live data)
+SL_FROM_AVG    = 0.008      # 0.8% from AVG entry (widened 2026-05-26 — fix SL/L2 collision)
+                            # See core_divflip_sharp.py for details. L2 must fire before SL.
                               # explicit, repeated request — AGAINST the backtest: year-wise OOS
                               # shows 1% worst-anchored loses MORE than the wide 5% stop every year.
                               # Kept only because the user asked for it on the paper bot.

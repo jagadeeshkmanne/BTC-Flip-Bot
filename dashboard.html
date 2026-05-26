@@ -418,18 +418,17 @@ const fmtRsiAtPivot = (d, side) => {
   return `${v.toFixed(1)}${ageTag} / need ${cmp}${th}`;
 };
 const checkRsiAtPivot = (d, side) => {
-  // BOTH must be true: RSI threshold AND divergence still fresh.
-  // (A 36h-old pivot with great RSI is useless — bot won't fire.)
+  // Row "RSI at bear/bull pivot" checks ONLY the RSI threshold.
+  // Freshness is shown in the separate "Bear/Bull div fresh" row.
+  // The STALE tag in fmtRsiAtPivot makes it visually obvious when the value
+  // is "good" but the divergence has expired — so the user knows the trade
+  // still won't fire even though this row shows ✓.
   const k  = side === 'LONG' ? 'rsi_at_bull_pivot' : 'rsi_at_bear_pivot';
   const tk = side === 'LONG' ? 'rsi_long_max'      : 'rsi_short_min';
-  const ak = side === 'LONG' ? 'bars_since_bull_div' : 'bars_since_bear_div';
   const v  = d?.[k];
   const th = d?.[tk] ?? (side === 'LONG' ? 50 : 66);
-  const age = d?.[ak];
   if (v == null) return false;
-  const rsiOk = side === 'LONG' ? v <= th : v >= th;
-  const fresh = age != null && age < 9999 && age <= DIV_FRESH_MAX_BARS;
-  return rsiOk && fresh;
+  return side === 'LONG' ? v <= th : v >= th;
 };
 // "Current value / required threshold" pattern so users see why a row is ✗.
 const fmtVolRatio = d => d.vol && d.vol_avg ? (d.vol / d.vol_avg).toFixed(2) + '× / 1.1× min' : '-- / 1.1× min';
@@ -685,7 +684,8 @@ function renderPosition(price){
   // v3 has non-progressive DCA spacing: L2 at L1±0.2%, L3 at L1±0.4% (not 0.2%+0.2%)
   // v1 has progressive: L2 at L1±0.35%, L3 at L2±0.35% (=L1±0.7%)
   // SR DCA: 0.85%
-  const dcaSpacing = DIVFLIP_V3 ? 0.002 : (DIVFLIP_ANY ? 0.0035 : 0.0085);
+  // Sharp + Pro use 0.5% DCA spacing (widened 2026-05-25). v1 still 0.35%. v3 uses 0.2%.
+  const dcaSpacing = DIVFLIP_V3 ? 0.002 : ((DIVFLIP_SHARP || DIVFLIP_PRO) ? 0.005 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085));
   const v3_l3_spacing = 0.004;
   const legAt = n => (p.legEntries && p.legEntries[n-1] && p.legEntries[n-1].px > 0) ? p.legEntries[n-1].px : null;
   const l1Price = legAt(1);
@@ -1389,9 +1389,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const sub = document.getElementById('setupSub');
   if (sub) {
     if (DIVFLIP_PRO) {
-      sub.textContent = 'DivFlip Pro (2026-05-25). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66 (EMA is quality gate). UK hours UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.5%. SL 0.5%/avg, TP 1%/avg. BE: L1 arms +0.50% (trail 1%), L2 arms +0.30% (trail 0.5%). 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. 6h same-side cooldown after real SL.';
+      sub.textContent = 'DivFlip Pro (2026-05-26). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66 (EMA is quality gate). UK hours UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.5%. SL 0.8%/avg (widened so L2 fires first), TP 1%/avg. BE: L1 arms +0.50% (trail 1%), L2 arms +0.30% (trail 0.5%). 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. 6h same-side cooldown after real SL.';
     } else if (DIVFLIP_SHARP) {
-      sub.textContent = 'DivFlip Sharp (updated 2026-05-25). RSI(14) div, pivot 5L/3R, fresh ≤21b, RSI@pivot ≤38/≥68. UK hours UTC 08-16, FRIDAY BLOCKED (data: Fri WR 17% vs Mon-Thu 40-80%). 2-leg DCA @ 0.5%. SL 0.5%/avg, TP 1%/avg. BE: L1 arms +0.50% (trail 1%), L2 arms +0.30% (trail 0.5%). 3× lev. 6h same-side cooldown after real SL.';
+      sub.textContent = 'DivFlip Sharp (updated 2026-05-26). RSI(14) div, pivot 5L/3R, fresh ≤21b, RSI@pivot ≤38/≥68. UK hours UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.5%. SL 0.8%/avg (widened so L2 fires first), TP 1%/avg. BE: L1 arms +0.50% (trail 1%), L2 arms +0.30% (trail 0.5%). 3× lev. 6h same-side cooldown after real SL.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
         ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'
