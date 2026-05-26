@@ -1391,7 +1391,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (DIVFLIP_PRO) {
       sub.textContent = 'DivFlip Pro (2026-05-26). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66 (EMA is quality gate). UK hours UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.5%. SL 0.8%/avg (widened so L2 fires first), TP 1%/avg. BE: L1 arms +0.50% (trail 1%), L2 arms +0.30% (trail 0.5%). 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. 6h same-side cooldown after real SL.';
     } else if (DIVFLIP_SHARP) {
-      sub.textContent = 'DivFlip Sharp (updated 2026-05-26). RSI(14) div, pivot 5L/3R, fresh ≤21b, RSI@pivot ≤38/≥68. UK hours UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.5%. SL 0.8%/avg (widened so L2 fires first), TP 1%/avg. BE: L1 arms +0.50% (trail 1%), L2 arms +0.30% (trail 0.5%). 3× lev. 6h same-side cooldown after real SL.';
+      sub.textContent = 'DivFlip Sharp (updated 2026-05-26). RSI(14) div, pivot 5L/1R (loosened from 3R — 45d data: +6.61% vs -1.72%), fresh ≤21b, RSI@pivot ≤38/≥68 (TIGHT — quality filter). UK hours UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.5%. SL 0.8%/avg, TP 1%/avg. BE: L1 arms +0.50% (trail 1%), L2 arms +0.30% (trail 0.5%). 3× lev. 6h same-side cooldown after real SL.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
         ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'

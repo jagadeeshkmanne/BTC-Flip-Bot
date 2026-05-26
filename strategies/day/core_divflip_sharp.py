@@ -34,7 +34,10 @@ from core import build_features, detect_divergence, DIV_PIVOT_R as _CORE_DIV_PIV
 # qualify, more entries. Bot runner re-runs detect_divergence with these
 # values after build_features so divergence columns reflect the override.
 DIV_PIVOT_L = 5
-DIV_PIVOT_R = 3   # 2026-05-24: 1 → 3 (stronger pivot confirmation, filters micro-noise)
+DIV_PIVOT_R = 1   # 2026-05-26: 3 → 1. Data review showed R=3 was over-filtering pivots.
+                  # 45-day backtest: R=1 + RSI 38/68 = +6.61% vs R=3 + 38/68 = -1.72%.
+                  # The RSI threshold (≤38/≥68) is the QUALITY filter — pivot R is the
+                  # OPPORTUNITY catcher. Loose pivot + tight RSI = best of both.
 
 # ═════ RSI period override (TV-tuned: 10) ═════
 # V2.2 core uses RSI 14 (Wilder default). divflip uses RSI 10 — faster
