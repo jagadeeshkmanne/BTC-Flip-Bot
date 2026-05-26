@@ -28,6 +28,7 @@ from core_divflip_pro import (
     TRAIL_DIST_PCT, TRAIL_DIST_AFTER_L2, DIV_FRESH_BARS,
     USE_TIME_STOP_LOSS, TIME_STOP_HOURS,
     USE_LOSS_COOLDOWN, LOSS_COOLDOWN_HOURS,
+    USE_TP_COOLDOWN, TP_COOLDOWN_MINUTES,
     BLOCKED_WEEKDAYS,
     USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
     USE_TAKE_PROFIT, TP_PCT,
@@ -175,8 +176,9 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
     state["stats"]["pnl"] += pnl_pct
     if net > 0:
         state["stats"]["wins"] += 1
+        if reason == "TP":
+            state.setdefault("last_tp_exit", {})[side] = trade_record["exit_time"]
     elif reason == "SL":
-        # Only REAL SL hits trigger cooldown. TIME24 / BE / TRAIL don't.
         state.setdefault("last_loss_exit", {})[side] = trade_record["exit_time"]
     log.warning(f"  EXIT {side} via {reason} @${exit_px:.2f} | avg_entry ${avg_entry:.2f} | "
                 f"gross ${gross:+.2f} − fees ${fees:.2f} = net ${net:+.2f} "
@@ -518,7 +520,21 @@ def main():
                     hours_since = (now_utc - last_loss_dt).total_seconds() / 3600.0
                     if hours_since < LOSS_COOLDOWN_HOURS:
                         cooldown_ok = False
-                        cooldown_msg = f"only {hours_since:.1f}h since last {sig.side} loss, need {LOSS_COOLDOWN_HOURS}h"
+                        cooldown_msg = f"only {hours_since:.1f}h since last {sig.side} SL, need {LOSS_COOLDOWN_HOURS}h"
+                except Exception:
+                    pass
+
+        tp_cooldown_ok = True; tp_cooldown_msg = ""
+        if USE_TP_COOLDOWN and sig.side and cooldown_ok:
+            last_tp = state.get("last_tp_exit", {}).get(sig.side)
+            if last_tp:
+                try:
+                    last_tp_dt = datetime.fromisoformat(last_tp)
+                    minutes_since = (now_utc - last_tp_dt).total_seconds() / 60.0
+                    if minutes_since < TP_COOLDOWN_MINUTES:
+                        tp_cooldown_ok = False
+                        remaining = TP_COOLDOWN_MINUTES - minutes_since
+                        tp_cooldown_msg = f"only {minutes_since:.1f}min since last {sig.side} TP, need {TP_COOLDOWN_MINUTES}min ({remaining:.1f}min remaining)"
                 except Exception:
                     pass
 
@@ -534,6 +550,8 @@ def main():
             log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name}, blocked: {','.join(blocked_names)})")
         elif sig.side and not cooldown_ok:
             log.info(f"  Signal {sig.side} BLOCKED by loss cooldown: {cooldown_msg}")
+        elif sig.side and not tp_cooldown_ok:
+            log.info(f"  Signal {sig.side} BLOCKED by TP cooldown: {tp_cooldown_msg}")
         elif sig.side:
             open_position(state, sig.side, live_px, state["balance"])
 

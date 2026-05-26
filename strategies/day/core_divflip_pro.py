@@ -51,9 +51,8 @@ RSI_PERIOD = 14   # 2026-05-24: 10 → 14 (Wilder standard, smoother)
 LEVERAGE       = 3.0
 RISK_PCT       = 0.06
 
-DCA_LEVELS     = 2   # v1b: L3 disabled (live data shows L3 fills lose -0.58% avg)
-DCA_SPACING    = 0.005        # 0.5% — tuned 2026-05-25 (was 0.35%, too tight, fired on noise).
-                              # Median 2h MAE is -0.31%; 0.5% catches 25%-ile pullback only.
+DCA_LEVELS     = 2
+DCA_SPACING    = 0.003        # 0.3% — tightened 2026-05-26 (paired with SL 0.5%).
                               # TV-tuned: wider than 0.3% — DCA fires on deeper dips, better fills.
 
 # Mixed-shape sizing — biggest qty in the MIDDLE leg (L2). With 3:4:1.5 ratio:
@@ -64,8 +63,7 @@ DCA_SPACING    = 0.005        # 0.5% — tuned 2026-05-25 (was 0.35%, too tight,
 # TV backtest (Apr 6 – May 14 2026, BTCUSDT 5m).
 # Total notional still capped by LEVERAGE — ratios just redistribute within cap.
 MARTINGALE_RATIOS = [3.0, 4.0, 1.5]   # qty multiplier per leg (L1, L2, L3) — mixed shape
-SL_FROM_AVG    = 0.008      # 0.8% from AVG entry (widened 2026-05-26 — fix SL/L2 collision)
-                            # See core_divflip_sharp.py for details. L2 must fire before SL.
+SL_FROM_AVG    = 0.005      # 0.5% from AVG entry (tightened back 2026-05-26, paired with DCA 0.3%).
                               # explicit, repeated request — AGAINST the backtest: year-wise OOS
                               # shows 1% worst-anchored loses MORE than the wide 5% stop every year.
                               # Kept only because the user asked for it on the paper bot.
@@ -81,9 +79,12 @@ USE_TIME_STOP_LOSS = False
 TIME_STOP_HOURS    = 24
 
 # 6h same-direction cooldown after LOSS — catches falling-knife re-entries.
-# Opposite-direction allowed immediately. SL'd direction blocked for N hours.
 USE_LOSS_COOLDOWN     = True
 LOSS_COOLDOWN_HOURS   = 6
+
+# 15-min same-direction cooldown after TP — avoids pump-and-dump.
+USE_TP_COOLDOWN       = True
+TP_COOLDOWN_MINUTES   = 15
 
 # v1b ENTRY FILTERS (added 2026-05-24 based on live data + multi-agent analysis):
 # - UK hours: only enter UTC 08-16 (blocks ASIA thin-liquidity + late US/overnight)
