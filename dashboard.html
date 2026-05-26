@@ -507,11 +507,11 @@ const DIVFLIP_LONG_CONDS = [
   {key: 'RSI at bull pivot', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
   // Pro: EMA200 trend + ATR guard. Sharp: UK hours only. v3 legacy: BB/ADX/ATR/HTF
   ...(DIVFLIP_PRO ? [
-    {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+    {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Price ≥ 15m EMA50 − buffer', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price, b=d?.ema_trend_buffer_pct??0; return e!=null && p!=null && p >= e*(1-b); }, val: d => fmtEmaTrend(d, 'LONG')},
     {key: 'ATR ≥ min (not dead zone)', check: d => { const a=d?.atr, m=d?.atr_min; return a!=null && m!=null && a >= m; }, val: d => fmtAtrGuard(d)},
   ] : DIVFLIP_SHARP ? [
-    {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+    {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
   ] : [
     // legacy v3 filters (only shown for divflip_v3 — currently retired but kept for any future v3 bot)
     {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
@@ -528,11 +528,11 @@ const DIVFLIP_SHORT_CONDS = [
   }, val: d => divFreshAge(d, 'SHORT')},
   {key: 'RSI at bear pivot', check: d => checkRsiAtPivot(d, 'SHORT'), val: d => fmtRsiAtPivot(d, 'SHORT')},
   ...(DIVFLIP_PRO ? [
-    {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+    {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Price ≤ 15m EMA50 + buffer', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price, b=d?.ema_trend_buffer_pct??0; return e!=null && p!=null && p <= e*(1+b); }, val: d => fmtEmaTrend(d, 'SHORT')},
     {key: 'ATR ≥ min (not dead zone)', check: d => { const a=d?.atr, m=d?.atr_min; return a!=null && m!=null && a >= m; }, val: d => fmtAtrGuard(d)},
   ] : DIVFLIP_SHARP ? [
-    {key: 'UK hours (UTC 08-16 / IST 13:30-21:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 16; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+    {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
   ] : [
     {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
     {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
@@ -1389,9 +1389,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const sub = document.getElementById('setupSub');
   if (sub) {
     if (DIVFLIP_PRO) {
-      sub.textContent = 'DivFlip Pro (2026-05-26 v2). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66. UK hours UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.3% (tightened). SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. Cooldowns: 6h after SL, 15min after TP (anti pump-and-dump).';
+      sub.textContent = 'DivFlip Pro (2026-05-26 v2). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66. UK+NY hours UTC 08-20, FRIDAY BLOCKED. 2-leg DCA @ 0.3% (tightened). SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. Cooldowns: 6h after SL, 15min after TP (anti pump-and-dump).';
     } else if (DIVFLIP_SHARP) {
-      sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v2). RSI(14) div, pivot 5L/1R (data-driven), fresh ≤21b, RSI@pivot ≤38/≥68 (quality filter). UK UTC 08-16, FRIDAY BLOCKED. 2-leg DCA @ 0.3% (tightened). SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP (anti pump-and-dump).';
+      sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
         ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'
@@ -1936,7 +1936,7 @@ setInterval(() => {
       let why = '';
       if (DIVFLIP_SHARP) {
         if (!wdOk) why = `<div style="font-size:14px;color:var(--muted);margin-top:6px">Weekend — entries blocked. Resumes Mon UTC 08:00 (IST 13:30)</div>`;
-        else if (!ukOk) why = `<div style="font-size:14px;color:var(--muted);margin-top:6px">Outside UK hours (UTC ${utcH}h) — waits for UTC 08-16 (IST 13:30-21:30)</div>`;
+        else if (!ukOk) why = `<div style="font-size:14px;color:var(--muted);margin-top:6px">Outside active hours (UTC ${utcH}h) — waits for UTC 08-20 (IST 13:30-01:30)</div>`;
         else why = `<div style="font-size:14px;color:var(--muted);margin-top:6px">UK hours active — waiting for fresh divergence</div>`;
       }
       titleEl.innerHTML = `Waiting for Setup${why}`;

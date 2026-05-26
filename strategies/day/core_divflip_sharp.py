@@ -105,7 +105,8 @@ TP_COOLDOWN_MINUTES   = 15
 # Live data: UK + EOD20 turns -$353 baseline into +$486 over 19 trades.
 USE_UK_HOURS_FILTER = True
 UK_HOUR_START       = 8     # UTC, inclusive
-UK_HOUR_END         = 16    # UTC, exclusive
+UK_HOUR_END         = 20    # UTC, exclusive — extended 2026-05-26 (was 16). Covers UK+NY sessions.
+                            # IST 13:30 - 01:30 next day. Captures bullish UTC 17, 19 hours.
 
 USE_EOD_FLATTEN     = False  # disabled
 # 2026-05-25: weekday filter re-enabled to BLOCK FRIDAY ONLY (allow Mon-Thu + Sat-Sun).
