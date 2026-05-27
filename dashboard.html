@@ -212,8 +212,6 @@
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="sr_dca">S/R DCA</option>
     <option value="divflip">Divflip v1</option>
-    <option value="divflip_sharp">DivFlip Sharp ⭐</option>
-    <option value="divflip_pro">DivFlip Pro 🛡</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -367,7 +365,7 @@ const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
 const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
 const DIVFLIP_PRO   = STRATEGY === 'divflip_pro';
 const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_SHARP || DIVFLIP_PRO;
-const DCA_LEVELS_CFG = (DIVFLIP_SHARP || DIVFLIP_PRO) ? 2 : 3;
+const DCA_LEVELS_CFG = 2;   // 2026-05-27: v1 L3 disabled too. All divflip bots are 2-leg now.
 
 // IST display helper (UTC + 5:30)
 function fmtIST(dateOrTs) {
@@ -499,26 +497,25 @@ function fmtAtrGuard(d) {
   return `$${a.toFixed(2)} (need ≥$${m.toFixed(2)})`;
 }
 
+// 2026-05-27: removed v3 legacy filters (BB/ADX/ATR/Day/HTF) from v1 — they auto-passed and were misleading.
+// v1 actual gates: divergence freshness + RSI at pivot + Friday block (Mon-Thu+Sat-Sun only).
 const DIVFLIP_LONG_CONDS = [
   {key: 'Bull div fresh', check: d => {
     const v = d?.bars_since_bull_div;
     return v != null && v < 9999 && v <= DIV_FRESH_MAX_BARS;
   }, val: d => divFreshAge(d, 'LONG')},
   {key: 'RSI at bull pivot', check: d => checkRsiAtPivot(d, 'LONG'),  val: d => fmtRsiAtPivot(d, 'LONG')},
-  // Pro: EMA200 trend + ATR guard. Sharp: UK hours only. v3 legacy: BB/ADX/ATR/HTF
   ...(DIVFLIP_PRO ? [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Price ≥ 15m EMA50 − buffer', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price, b=d?.ema_trend_buffer_pct??0; return e!=null && p!=null && p >= e*(1-b); }, val: d => fmtEmaTrend(d, 'LONG')},
     {key: 'ATR ≥ min (not dead zone)', check: d => { const a=d?.atr, m=d?.atr_min; return a!=null && m!=null && a >= m; }, val: d => fmtAtrGuard(d)},
+    {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : DIVFLIP_SHARP ? [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+    {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : [
-    // legacy v3 filters (only shown for divflip_v3 — currently retired but kept for any future v3 bot)
-    {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
-    {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
-    {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
-    {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
-    {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
+    // v1 only — Friday block (added 2026-05-27)
+    {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ]),
 ];
 const DIVFLIP_SHORT_CONDS = [
@@ -531,14 +528,12 @@ const DIVFLIP_SHORT_CONDS = [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Price ≤ 15m EMA50 + buffer', check: d => { const e=d?.ema_trend, p=d?.close_px??d?.price, b=d?.ema_trend_buffer_pct??0; return e!=null && p!=null && p <= e*(1+b); }, val: d => fmtEmaTrend(d, 'SHORT')},
     {key: 'ATR ≥ min (not dead zone)', check: d => { const a=d?.atr, m=d?.atr_min; return a!=null && m!=null && a >= m; }, val: d => fmtAtrGuard(d)},
+    {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : DIVFLIP_SHARP ? [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
+    {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : [
-    {key: 'BB width',  check: d => d?.filters?.bb_squeeze?.pass ?? true,   val: d => fmtBB(d)},
-    {key: 'Day change (since UTC open)', check: d => d?.filters?.today_change?.pass ?? true, val: d => fmtToday(d)},
-    {key: 'ADX',       check: d => d?.filters?.adx_cap?.pass ?? true,      val: d => fmtADX(d)},
-    {key: 'ATR',       check: d => d?.filters?.min_atr?.pass ?? true,      val: d => fmtATR(d)},
-    {key: 'Daily trend', check: d => d?.filters?.htf_bias?.pass ?? true,   val: d => fmtHTF(d)},
+    {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ]),
 ];
 
@@ -1394,7 +1389,7 @@ document.addEventListener('DOMContentLoaded', () => {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
-        ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 3 DCA @ 0.35% spacing, mixed-shape 3:4:1.5 sizing (L1=35%, L2=47%, L3=18%). TP 1% from avg entry (primary exit). SL 5% from L1 (wide backstop). Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. No EOD.'
+        ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 2 DCA @ 0.35% spacing, mixed-shape 3:4 sizing (L1=43%, L2=57%). TP 1% from avg entry (primary exit). SL 0.5% from worst entry. Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. 30min same-side cooldown after SL, 15min after TP.'
         : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
     }
   }

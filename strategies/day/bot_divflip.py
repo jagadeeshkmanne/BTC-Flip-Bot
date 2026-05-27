@@ -27,6 +27,11 @@ from core_divflip import (
     USE_FLIP, RSI_LONG_MAX, RSI_SHORT_MIN,
     USE_TAKE_PROFIT, TP_PCT,
     DIV_PIVOT_L, DIV_PIVOT_R, RSI_PERIOD,
+    USE_LOSS_COOLDOWN, LOSS_COOLDOWN_HOURS,
+    USE_TP_COOLDOWN, TP_COOLDOWN_MINUTES,
+    USE_WEEKDAY_FILTER, BLOCKED_WEEKDAYS,
+    USE_TIME_STOP_LOSS_ONLY, TIME_STOP_HOURS,
+    USE_SAME_LEVEL_BLOCK, SAME_LEVEL_PROX_PCT, SAME_LEVEL_WINDOW_HOURS,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -160,6 +165,10 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
         "leverage": pos.get("leverage"),
         "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(),
+        # RSI snapshot at entry — added 2026-05-27 for post-trade RSI analysis.
+        "pivot_rsi_at_entry": pos.get("pivot_rsi_at_entry"),
+        "live_rsi_at_entry": pos.get("live_rsi_at_entry"),
+        "div_bars_at_entry": pos.get("div_bars_at_entry"),
     }
     state.setdefault("trade_log", []).append(trade_record)
     state["trade_log"] = state["trade_log"][-200:]
@@ -167,6 +176,22 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
     state["stats"]["pnl"] += pnl_pct
     if net > 0:
         state["stats"]["wins"] += 1
+        if reason == "TP":
+            # Track TP exits per side for 15-min same-side cooldown (anti pump-and-dump).
+            # BE/TRAIL wins don't trigger TP cooldown — those are partial captures.
+            state.setdefault("last_tp_exit", {})[side] = trade_record["exit_time"]
+    elif reason == "SL":
+        # Only REAL SL hits trigger 30-min same-side cooldown.
+        state.setdefault("last_loss_exit", {})[side] = trade_record["exit_time"]
+    # Track all WIN-type exits (TP/TRAIL/BE) for same-level opposite-flip gate.
+    # SL exits don't count — those don't fit the "took profit at level → divergence
+    # flips at same level → trap" mechanism.
+    if reason in ("TP", "TRAIL", "BE"):
+        state.setdefault("last_win_exit", {})[side] = {
+            "exit_time": trade_record["exit_time"],
+            "exit_price": exit_px,
+            "reason": reason,
+        }
     log.warning(f"  EXIT {side} via {reason} @${exit_px:.2f} | avg_entry ${avg_entry:.2f} | "
                 f"gross ${gross:+.2f} − fees ${fees:.2f} = net ${net:+.2f} "
                 f"(price {price_move_pct:+.2f}% / balance {pnl_pct:+.2f}%) | "
@@ -174,7 +199,7 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
     return trade_record
 
 
-def open_position(state, side: str, entry_px: float, balance: float) -> dict:
+def open_position(state, side: str, entry_px: float, balance: float, signal=None) -> dict:
     # Snapshot leverage at L1 entry so DCA legs use the leverage in effect
     # when this position opened, regardless of later changes to the constant.
     pos_lev = LEVERAGE
@@ -185,6 +210,10 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
         return None
     fees = entry_px * qty * COMMISSION_PCT
     state["balance"] -= fees
+    # Capture RSI snapshot at entry for post-trade analysis (added 2026-05-27).
+    sig_raw = signal.raw if signal is not None else {}
+    pivot_rsi_key = "rsi_at_bull_pivot" if side == "LONG" else "rsi_at_bear_pivot"
+    bars_since_key = "bars_since_bull_div" if side == "LONG" else "bars_since_bear_div"
     pos = {
         "side": side,
         "first_entry": entry_px,
@@ -197,6 +226,9 @@ def open_position(state, side: str, entry_px: float, balance: float) -> dict:
         "leverage": pos_lev,
         "entry_time": datetime.now(timezone.utc).isoformat(),
         "cycle_day": str(datetime.now(timezone.utc).date()),
+        "pivot_rsi_at_entry": sig_raw.get(pivot_rsi_key),
+        "live_rsi_at_entry": sig_raw.get("rsi"),
+        "div_bars_at_entry": sig_raw.get(bars_since_key),
     }
     state["position"] = pos
     log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} | fees ${fees:.2f} | balance ${state['balance']:.2f}")
@@ -378,6 +410,20 @@ def main():
                 exit_reason = "SL"
             exit_px = sl_px
 
+        # 8h loss-only time-stop — closes underwater positions that the SL
+        # didn't catch but are bleeding too long. Skipped if pos is in profit
+        # (let winners ride to TP / TRAIL).
+        if USE_TIME_STOP_LOSS_ONLY and exit_px is None and pos.get("entry_time"):
+            try:
+                age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(pos["entry_time"])).total_seconds() / 3600
+                fav_pct_now = ((live_px - avg_entry) / avg_entry) * (1 if side == "LONG" else -1)
+                if age_h >= TIME_STOP_HOURS and fav_pct_now < 0:
+                    exit_reason = "TIME8"
+                    exit_px = live_px
+                    log.warning(f"  TIME-STOP: position held {age_h:.1f}h with fav {fav_pct_now*100:+.2f}% — force-close.")
+            except Exception:
+                pass
+
         # Flip on opposite divergence — gated by USE_FLIP. Currently OFF
         # (TV-tuned config) — trades ride to SL / trailing exit.
         if USE_FLIP and exit_px is None and sig.flip_opposite:
@@ -402,13 +448,84 @@ def main():
     # Don't re-enter on the same tick as a natural TP/SL/BE exit — wait for a
     # NEW divergence to fire on a future bar. Only the FLIP path opens
     # immediately (that's the whole point of flip).
+
+    # 6h same-side cooldown after real SL — blocks falling-knife re-entry.
+    cooldown_ok = True
+    cooldown_msg = ""
+    if USE_LOSS_COOLDOWN and sig.side:
+        last_loss = state.get("last_loss_exit", {}).get(sig.side)
+        if last_loss:
+            try:
+                last_loss_dt = datetime.fromisoformat(last_loss)
+                hours_since = (datetime.now(timezone.utc) - last_loss_dt).total_seconds() / 3600
+                if hours_since < LOSS_COOLDOWN_HOURS:
+                    cooldown_ok = False
+                    remaining = LOSS_COOLDOWN_HOURS - hours_since
+                    cooldown_msg = f"only {hours_since:.1f}h since last {sig.side} SL, need {LOSS_COOLDOWN_HOURS}h ({remaining:.1f}h remaining)"
+            except Exception:
+                pass
+
+    # Friday block — v1 27-trade data shows Fri 0/2 WR / −$903.
+    weekday = datetime.now(timezone.utc).weekday()  # 0=Mon ... 6=Sun
+    wd_ok = (not USE_WEEKDAY_FILTER) or (weekday not in BLOCKED_WEEKDAYS)
+
+    # Same-level opposite-flip block — after a winning exit (TP/TRAIL/BE) near
+    # some price level, don't open the OPPOSITE side within 0.15% of that exit.
+    # The pattern: TP/TRAIL near level X → divergence flips at X → bot opens
+    # opposite into a level that may be about to break. 11 historical setups
+    # netted -$614 (incl. -$701 catastrophe). SL exits don't trigger this
+    # (already covered by 30-min same-side cooldown).
+    same_level_ok = True
+    same_level_msg = ""
+    if USE_SAME_LEVEL_BLOCK and sig.side:
+        opp_side = "SHORT" if sig.side == "LONG" else "LONG"
+        last_win = state.get("last_win_exit", {}).get(opp_side)
+        if last_win:
+            try:
+                last_win_dt = datetime.fromisoformat(last_win["exit_time"])
+                gap_h = (datetime.now(timezone.utc) - last_win_dt).total_seconds() / 3600
+                if gap_h < SAME_LEVEL_WINDOW_HOURS:
+                    prox = abs(live_px - last_win["exit_price"]) / last_win["exit_price"]
+                    if prox < SAME_LEVEL_PROX_PCT:
+                        same_level_ok = False
+                        same_level_msg = (f"opposite-flip within {prox*100:.2f}% of last {opp_side} {last_win['reason']} "
+                                          f"exit ${last_win['exit_price']:.0f} ({gap_h:.1f}h ago) — same-level trap")
+            except Exception:
+                pass
+
+    # 15-min same-side cooldown after TP — anti pump-and-dump.
+    tp_cooldown_ok = True
+    tp_cooldown_msg = ""
+    if USE_TP_COOLDOWN and sig.side and cooldown_ok:
+        last_tp = state.get("last_tp_exit", {}).get(sig.side)
+        if last_tp:
+            try:
+                last_tp_dt = datetime.fromisoformat(last_tp)
+                minutes_since = (datetime.now(timezone.utc) - last_tp_dt).total_seconds() / 60
+                if minutes_since < TP_COOLDOWN_MINUTES:
+                    tp_cooldown_ok = False
+                    remaining = TP_COOLDOWN_MINUTES - minutes_since
+                    tp_cooldown_msg = f"only {minutes_since:.1f}min since last {sig.side} TP, need {TP_COOLDOWN_MINUTES}min ({remaining:.1f}min remaining) — anti pump-and-dump"
+            except Exception:
+                pass
+
     if state["position"] is None:
         if new_pos_after_flip:
-            open_position(state, new_pos_after_flip, live_px, state["balance"])
+            open_position(state, new_pos_after_flip, live_px, state["balance"], signal=sig)
         elif exit_reason_this_tick in ("SL", "BE", "TRAIL"):
             log.info(f"  Just exited via {exit_reason_this_tick} this tick — waiting for new signal")
+        elif sig.side and not wd_ok:
+            wd_name = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][weekday]
+            blocked_names = [["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][d] for d in BLOCKED_WEEKDAYS]
+            log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name}, blocked: {','.join(blocked_names)})")
+        elif sig.side and not same_level_ok:
+            log.info(f"  Signal {sig.side} BLOCKED — {same_level_msg}")
+        elif sig.side and not cooldown_ok:
+            log.info(f"  Signal {sig.side} BLOCKED — {cooldown_msg}")
+        elif sig.side and not tp_cooldown_ok:
+            log.info(f"  Signal {sig.side} BLOCKED — {tp_cooldown_msg}")
         elif sig.side:
-            open_position(state, sig.side, live_px, state["balance"])
+            open_position(state, sig.side, live_px, state["balance"], signal=sig)
 
     # ─ Stats line ─
     stats = state["stats"]

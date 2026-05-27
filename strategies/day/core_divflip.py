@@ -51,7 +51,7 @@ RSI_PERIOD = 10
 LEVERAGE       = 3.0
 RISK_PCT       = 0.06
 
-DCA_LEVELS     = 3
+DCA_LEVELS     = 2     # 2026-05-26: 3 → 2. L3 disabled to cap worst-case loss.
 DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35%, L3 at -0.7%).
                               # TV-tuned: wider than 0.3% — DCA fires on deeper dips, better fills.
 
@@ -63,10 +63,8 @@ DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35
 # TV backtest (Apr 6 – May 14 2026, BTCUSDT 5m).
 # Total notional still capped by LEVERAGE — ratios just redistribute within cap.
 MARTINGALE_RATIOS = [3.0, 4.0, 1.5]   # qty multiplier per leg (L1, L2, L3) — mixed shape
-SL_FROM_WORST  = 0.01         # 1% from WORST entry (L3-anchored). Set 2026-05-20 at the user's
-                              # explicit, repeated request — AGAINST the backtest: year-wise OOS
-                              # shows 1% worst-anchored loses MORE than the wide 5% stop every year.
-                              # Kept only because the user asked for it on the paper bot.
+SL_FROM_WORST  = 0.005        # 2026-05-26: 1% → 0.5%. Tighten worst-anchored stop to cap
+                              # loss size — v1 was losing 4.7× more per loss than per win.
 
 # ─ Fixed TP from avg entry (TV-tuned: ON @ 1%) ─
 # Primary exit. Recomputed when DCA fires (avg moves closer to live), so a deep
@@ -87,6 +85,43 @@ TRAIL_DIST_PCT = 0.002        # 0.2% trail below peak (LONG) / above trough (SHO
 # to SL / trailing exit instead of bouncing between sides on every opposite
 # signal. With useFlip=ON, mid-position whipsaws ate into wins.
 USE_FLIP = False
+
+# 2026-05-26: cooldowns added to v1 to pair with tighter 0.5% SL.
+# Same-direction cooldown after LOSS — blocks immediate re-entry into a fresh SL.
+# 2026-05-27: 6h → 0.5h (30 min). User feedback: 6h was sitting out too many setups.
+USE_LOSS_COOLDOWN     = True
+LOSS_COOLDOWN_HOURS   = 0.5
+
+# 15-min same-direction cooldown after TP — avoids pump-and-dump trap.
+USE_TP_COOLDOWN       = True
+TP_COOLDOWN_MINUTES   = 15
+
+# 2026-05-27: Block Friday entries. Pattern in v1 27-trade data:
+# Fri = 0/2 WR, −$903 (catastrophic), incl. −$701 5/15 Fri 02h LONG that ran 70h
+# vs Wed/Mon = 100% WR each. Friday is BTC's position-closing day — divergence
+# signals fire but reversals fail on flight-to-cash flows.
+USE_WEEKDAY_FILTER  = True
+BLOCKED_WEEKDAYS    = [4]   # 0=Mon ... 4=Fri ... 6=Sun
+
+# 2026-05-27: 8h loss-only time-stop. v1 27-trade data:
+# Winners avg 6.7h to exit (median 6.1h). Losers avg 22h (median 12.2h).
+# A position still underwater at 8h has high probability of being a loser.
+# Loss-only — winners still ride to TP / TRAIL. The −$701 catastrophic
+# Friday hold (70h) would have closed at 8h with much smaller loss.
+USE_TIME_STOP_LOSS_ONLY = True
+TIME_STOP_HOURS         = 8
+
+# 2026-05-27: SAME-LEVEL OPPOSITE-FLIP BLOCK
+# Pattern in v1 27-trade data: after winning exits (TP/TRAIL/BE) near a price level,
+# divergence often flips opposite at the SAME level → bot opens reverse → catches
+# breakout in wrong direction. 11 historical setups: 8W/3L, NET -$614 (incl. -$701
+# catastrophe, -$209, -$195). Simulation: 0.15% threshold + TP/TRAIL/BE-only filter
+# would have flipped v1's $+145 actual result to $+803 (5.5× better). SL exits don't
+# trigger this trap (already covered by 30-min same-side cooldown + the SL itself
+# is evidence the level broke).
+USE_SAME_LEVEL_BLOCK     = True
+SAME_LEVEL_PROX_PCT      = 0.0015     # 0.15% — sweet spot from sim
+SAME_LEVEL_WINDOW_HOURS  = 12
 
 # RSI filter — asymmetric (TV-tuned). Loose bull (≤50) lets through most
 # bull divergences in this BTC uptrend regime. Strict bear (≥70) only

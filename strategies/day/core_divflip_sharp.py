@@ -88,9 +88,10 @@ MAX_LOSS_PCT     = 0.03
 USE_TIME_STOP_LOSS = False
 TIME_STOP_HOURS    = 24
 
-# 6h same-direction cooldown after LOSS — catches falling-knife re-entries.
+# Same-direction cooldown after LOSS — catches falling-knife re-entries.
+# 2026-05-27: 6h → 0.5h (30 min) per user request — 6h was missing setups.
 USE_LOSS_COOLDOWN     = True
-LOSS_COOLDOWN_HOURS   = 6
+LOSS_COOLDOWN_HOURS   = 0.5
 
 # 15-min same-direction cooldown after TP — avoids pump-and-dump trap.
 # When TP fires, the move JUST topped/bottomed. Immediate same-side re-entry
