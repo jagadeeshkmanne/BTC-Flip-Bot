@@ -365,7 +365,7 @@ const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
 const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
 const DIVFLIP_PRO   = STRATEGY === 'divflip_pro';
 const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_SHARP || DIVFLIP_PRO;
-const DCA_LEVELS_CFG = 2;   // 2026-05-27: v1 L3 disabled too. All divflip bots are 2-leg now.
+const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
 
 // IST display helper (UTC + 5:30)
 function fmtIST(dateOrTs) {
@@ -514,7 +514,9 @@ const DIVFLIP_LONG_CONDS = [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : [
-    // v1 only — Friday block (added 2026-05-27)
+    // v1 (2026-05-28): 15m trend gate + IST night block + Friday block
+    {key: '15m trend = UP', check: d => d?.trend_15m == null || d.trend_15m === 'UP', val: d => fmtTrend15m(d)},
+    {key: 'Not IST night (00-06)', check: () => { const h=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return !(h>=0 && h<360); }, val: () => { const m=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')} IST`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ]),
 ];
@@ -533,9 +535,22 @@ const DIVFLIP_SHORT_CONDS = [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : [
+    // v1 (2026-05-28): 15m trend gate + IST night block + Friday block
+    {key: '15m trend = DOWN', check: d => d?.trend_15m == null || d.trend_15m === 'DOWN', val: d => fmtTrend15m(d)},
+    {key: 'Not IST night (00-06)', check: () => { const h=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return !(h>=0 && h<360); }, val: () => { const m=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')} IST`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ]),
 ];
+
+// 15m trend formatter — shows UP/DOWN + the actual EMA50/EMA200 values.
+function fmtTrend15m(d) {
+  if (d?.trend_15m == null) return '—';
+  const f = d?.trend_ema_fast, s = d?.trend_ema_slow;
+  if (f == null || s == null) return d.trend_15m;
+  const fmt = v => v >= 1000 ? '$' + (v/1000).toFixed(2) + 'k' : '$' + v.toFixed(0);
+  const cmp = d.trend_15m === 'UP' ? '>' : '<';
+  return `${d.trend_15m}  (EMA20 ${fmt(f)} ${cmp} EMA50 ${fmt(s)})`;
+}
 
 // v3: compact filter formatters — "actual / threshold" in 1-line form.
 function fmtBB(d) {
@@ -811,6 +826,9 @@ function renderSetup(status){
     rp_3d_low: status.rp_3d_low,
     range_pos_filter: status.range_pos_filter,
     price: status.live_price ?? status.price,
+    trend_15m: status.trend_15m,   // 2026-05-28: 15m trend gate (top-level in status)
+    trend_ema_fast: status.trend_ema_fast,
+    trend_ema_slow: status.trend_ema_slow,
     // v3 filters object (with actual / required / pass for each)
     filters: status.filters || {},
   };
@@ -840,6 +858,18 @@ function renderSetup(status){
   };
   renderCondList(LONG_CONDS, $('longConds'));
   renderCondList(SHORT_CONDS, $('shortConds'));
+
+  // v1: the 15m trend gate makes only ONE side tradeable. Hide the blocked side
+  // so the panel shows only what's relevant (DOWN → SHORT only; UP → LONG only).
+  if (isDivflipStrategy && !DIVFLIP_SHARP && !DIVFLIP_PRO) {
+    const t = condData.trend_15m;
+    const longEls  = [document.querySelector('.setup-row.long'),  $('longConds')];
+    const shortEls = [document.querySelector('.setup-row.short'), $('shortConds')];
+    const setVis = (els, show) => els.forEach(e => { if (e) e.style.display = show ? '' : 'none'; });
+    if (t === 'DOWN')      { setVis(longEls, false); setVis(shortEls, true);  }
+    else if (t === 'UP')   { setVis(longEls, true);  setVis(shortEls, false); }
+    else                   { setVis(longEls, true);  setVis(shortEls, true);  }
+  }
 
   // Bar width = how close to firing entry. RSI + volume are binary (1.0 each
   // when met, 0 when not). Touch is a SMOOTH function of price proximity:
@@ -899,17 +929,34 @@ function renderSetup(status){
       const rsiLongMax  = ind.rsi_long_max  ?? 50;
       const rsiShortMin = ind.rsi_short_min ?? 70;
       if (!(bullFresh && bullRsiOk) && !(bearFresh && bearRsiOk)) {
-        const ageStr = (a) => (a != null && a < 9999) ? `${a}b` : 'never';
+        const ageMin = (a) => (a != null && a < 9999) ? `${(a*5)} min ago` : 'none';
         if (!bullFresh && !bearFresh) {
-          reasons.push(`no fresh divergence (bull: ${ageStr(bullAge)} ago, bear: ${ageStr(bearAge)} ago — need ≤${freshLimit}b)`);
+          reasons.push(`No fresh divergence signal yet. (Bullish: ${ageMin(bullAge)}, Bearish: ${ageMin(bearAge)} — a signal must be within ~105 min.)`);
         } else if (bullFresh && !bullRsiOk) {
           const v = ind.rsi_at_bull_pivot;
-          reasons.push(`bull div fresh but RSI@pivot ${v != null ? v.toFixed(1) : '—'} > ${rsiLongMax} (need ≤${rsiLongMax})`);
+          reasons.push(`Bullish divergence is fresh, but RSI at the pivot was <b>${v != null ? v.toFixed(1) : '—'}</b> — too high to confirm a LONG. (Need RSI ≤ ${rsiLongMax}, i.e. oversold.)`);
         } else if (bearFresh && !bearRsiOk) {
           const v = ind.rsi_at_bear_pivot;
-          reasons.push(`bear div fresh but RSI@pivot ${v != null ? v.toFixed(1) : '—'} < ${rsiShortMin} (need ≥${rsiShortMin})`);
+          reasons.push(`Bearish divergence is fresh, but RSI at the pivot was <b>${v != null ? v.toFixed(1) : '—'}</b> — too low to confirm a SHORT. (Need RSI ≥ ${rsiShortMin}, i.e. overbought.)`);
         } else {
-          reasons.push(`divergence stale or RSI-at-pivot doesn't qualify (need RSI ≤${rsiLongMax} for bull / ≥${rsiShortMin} for bear)`);
+          reasons.push(`Divergence is stale or RSI at the pivot doesn't qualify. (Need RSI ≤ ${rsiLongMax} for a LONG, or ≥ ${rsiShortMin} for a SHORT.)`);
+        }
+      }
+      // v1 filters: 15m trend gate, IST night block, Friday block
+      if (!DIVFLIP_SHARP && !DIVFLIP_PRO) {
+        const t = condData.trend_15m;
+        if (t === 'DOWN') {
+          reasons.push(`15m trend is <b>DOWN</b> → only SHORT trades allowed (LONGs blocked until trend flips up).`);
+        } else if (t === 'UP') {
+          reasons.push(`15m trend is <b>UP</b> → only LONG trades allowed (SHORTs blocked until trend flips down).`);
+        }
+        const istMin = (new Date().getUTCHours()*60 + new Date().getUTCMinutes() + 330) % 1440;
+        if (istMin >= 0 && istMin < 360) {
+          const hh = String(Math.floor(istMin/60)).padStart(2,'0'), mm = String(istMin%60).padStart(2,'0');
+          reasons.push(`Indian night-time block (${hh}:${mm} IST) — no entries between 00:00 and 06:00 IST.`);
+        }
+        if (new Date().getUTCDay() === 5) {
+          reasons.push(`It's Friday — entries blocked (historically the worst day for this strategy).`);
         }
       }
       // Sharp + Pro: add UK hours check
@@ -963,8 +1010,13 @@ function renderSetup(status){
     // array can also mean we genuinely have no insight to report; require at
     // least ONE condition flag to be present before declaring "all met".
     const hasAnyConditionData = condData.conditions && Object.keys(condData.conditions).length > 0;
+    // The bot writes the EXACT reason it didn't open this tick (covers cooldowns,
+    // same-level, one-shot, trend, IST, Friday). Prefer it — it's authoritative.
+    const botBlock = status.block_reason;
     if (!hasAnyConditionData) {
       waitingEl.innerHTML = '<span style="color:var(--muted)">Waiting for bot data — no recent status file</span>';
+    } else if (botBlock) {
+      waitingEl.innerHTML = `<b>Waiting because:</b> ${botBlock}`;
     } else {
       waitingEl.innerHTML = reasons.length === 0
         ? '<span class="pos">All conditions met — entry should fire on next valid bar</span>'
@@ -1389,7 +1441,7 @@ document.addEventListener('DOMContentLoaded', () => {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
     } else {
       sub.textContent = STRATEGY === 'divflip'
-        ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R) with RSI at pivot ≤50 (bull) or ≥66 (bear). 2 DCA @ 0.35% spacing, mixed-shape 3:4 sizing (L1=43%, L2=57%). TP 1% from avg entry (primary exit). SL 0.5% from worst entry. Trail peak-0.2% after +0.55% favorable. 3x leverage. Flip OFF. 30min same-side cooldown after SL, 15min after TP.'
+        ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R), RSI@pivot ≤40 bull / ≥70 bear. 3x lev, 2-leg DCA @ 0.35%. Exit: profit trail — locks min +0.5% once reached, then trails 0.3% off peak (rides trends). SL 0.7% from worst entry. BE arms at +0.3%. Filters: 15m EMA20/50 trend gate, one-shot per pivot, IST 00-06 block, Friday block, 0.15% same-level block, 8h loss time-stop, 30min/15min cooldowns.'
         : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
     }
   }

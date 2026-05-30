@@ -11,7 +11,7 @@ State / log / status: data/paper_divflip/
 """
 from __future__ import annotations
 import os, sys, json, time, logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import requests
 import pandas as pd
 import numpy as np
@@ -32,6 +32,11 @@ from core_divflip import (
     USE_WEEKDAY_FILTER, BLOCKED_WEEKDAYS,
     USE_TIME_STOP_LOSS_ONLY, TIME_STOP_HOURS,
     USE_SAME_LEVEL_BLOCK, SAME_LEVEL_PROX_PCT, SAME_LEVEL_WINDOW_HOURS,
+    USE_ONE_SHOT_PER_PIVOT,
+    USE_IST_NIGHT_BLOCK, IST_BLOCK_START_HOUR, IST_BLOCK_END_HOUR,
+    USE_PARTIAL_TP, PARTIAL_TP_PCT, PARTIAL_TP_FRACTION,
+    USE_PROFIT_TRAIL, PROFIT_TRAIL_DIST,
+    USE_15M_TREND_FILTER, TREND_EMA_FAST, TREND_EMA_SLOW,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
@@ -199,6 +204,53 @@ def close_position(state, pos, exit_px: float, reason: str, live_px: float) -> d
     return trade_record
 
 
+def partial_close(state, pos, exit_px: float, fraction: float, live_px: float) -> None:
+    """Realize PnL on `fraction` of the position, shrink the remaining position
+    proportionally (avg_entry unchanged). Records a partial trade_log entry.
+    Used for the 0.25% scale-out — locks profit on part, lets the rest ride."""
+    side = pos["side"]
+    avg_entry = avg_entry_of(pos)
+    sell_qty = pos["qty_total"] * fraction
+    if sell_qty <= 0:
+        return
+    if side == "LONG":
+        gross = (exit_px - avg_entry) * sell_qty
+    else:
+        gross = (avg_entry - exit_px) * sell_qty
+    fees = exit_px * sell_qty * COMMISSION_PCT
+    net = gross - fees
+    balance_before = state["balance"]
+    state["balance"] += net
+    pnl_pct = (net / balance_before * 100) if balance_before > 0 else 0.0
+    price_move_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
+
+    # Shrink remaining position proportionally — avg unchanged, qty reduced.
+    pos["qty_total"] -= sell_qty
+    for e in pos.get("entries", []):
+        e["qty"] *= (1 - fraction)
+    pos["partial_taken"] = True
+
+    trade_record = {
+        "side": side, "first_entry": pos["first_entry"], "avg_entry": avg_entry,
+        "exit": exit_px, "entries": len(pos.get("entries", [])),
+        "qty_total": sell_qty, "reason": "PARTIAL_TP",
+        "pnl_usd": net, "pnl_pct": pnl_pct, "price_move_pct": price_move_pct,
+        "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
+        "exit_time": datetime.now(timezone.utc).isoformat(),
+        "pivot_rsi_at_entry": pos.get("pivot_rsi_at_entry"),
+        "live_rsi_at_entry": pos.get("live_rsi_at_entry"),
+        "div_bars_at_entry": pos.get("div_bars_at_entry"),
+    }
+    state.setdefault("trade_log", []).append(trade_record)
+    state["trade_log"] = state["trade_log"][-200:]
+    state["stats"]["total"] += 1
+    state["stats"]["pnl"] += pnl_pct
+    if net > 0:
+        state["stats"]["wins"] += 1
+    log.warning(f"  PARTIAL TP: sold {fraction*100:.0f}% ({sell_qty:.4f}) @${exit_px:.2f} "
+                f"net ${net:+.2f} | remaining {pos['qty_total']:.4f} rides to full TP")
+
+
 def open_position(state, side: str, entry_px: float, balance: float, signal=None) -> dict:
     # Snapshot leverage at L1 entry so DCA legs use the leverage in effect
     # when this position opened, regardless of later changes to the constant.
@@ -229,6 +281,7 @@ def open_position(state, side: str, entry_px: float, balance: float, signal=None
         "pivot_rsi_at_entry": sig_raw.get(pivot_rsi_key),
         "live_rsi_at_entry": sig_raw.get("rsi"),
         "div_bars_at_entry": sig_raw.get(bars_since_key),
+        "partial_taken": False,
     }
     state["position"] = pos
     log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} | fees ${fees:.2f} | balance ${state['balance']:.2f}")
@@ -307,6 +360,22 @@ def main():
         log.error("live price unavailable")
         return
 
+    # ─ 15m trend filter — direction gate (LONG only in 15m uptrend, etc.) ─
+    trend_15m = None  # "UP" / "DOWN" / None (unknown)
+    trend_ema_fast = None
+    trend_ema_slow = None
+    if USE_15M_TREND_FILTER:
+        df_15m = fetch_klines("15m", 300)
+        if df_15m is not None and len(df_15m) >= TREND_EMA_SLOW:
+            ema_fast = df_15m["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
+            ema_slow = df_15m["close"].ewm(span=TREND_EMA_SLOW, adjust=False).mean()
+            # use last CLOSED 15m bar (-2) to avoid the still-forming bar
+            trend_ema_fast = float(ema_fast.iloc[-2])
+            trend_ema_slow = float(ema_slow.iloc[-2])
+            trend_15m = "UP" if trend_ema_fast > trend_ema_slow else "DOWN"
+        else:
+            log.warning("  15m trend: insufficient data — filter inactive this tick")
+
     df = build_features(df_5m, df_1d)
     # RSI period override — build_features uses core.RSI_PERIOD (14) by
     # default; divflip wants 10 (TV-tuned, faster pivot RSI reaction).
@@ -380,14 +449,41 @@ def main():
         exit_reason = None
         exit_px = None
 
-        # Fixed TP from avg entry — primary exit when armed. Recomputed each
-        # tick because DCA updates avg_entry. Checked BEFORE the SL block so
-        # in-profit exits always win.
+        # Partial TP — sell PARTIAL_TP_FRACTION at +PARTIAL_TP_PCT from L1 entry.
+        # Locks profit on the frequent small moves; remaining qty rides to full TP.
+        # Fires once per position (partial_taken flag).
+        if USE_PARTIAL_TP and not pos.get("partial_taken"):
+            ptp_px = first_entry * (1 + PARTIAL_TP_PCT) if side == "LONG" else first_entry * (1 - PARTIAL_TP_PCT)
+            if (side == "LONG" and live_px >= ptp_px) or (side == "SHORT" and live_px <= ptp_px):
+                partial_close(state, pos, ptp_px, PARTIAL_TP_FRACTION, live_px)
+
+        # Take-profit exit. Two modes:
+        #  - Profit trail (USE_PROFIT_TRAIL): once peak reaches +TP_PCT (0.5%),
+        #    lock a 0.5% MINIMUM and trail PROFIT_TRAIL_DIST off the peak above
+        #    that → exit = max(avg+0.5%, peak−0.3%). Rides trend-aligned winners
+        #    beyond 0.5% while guaranteeing ≥0.5%.
+        #  - Else: plain fixed TP at TP_PCT from avg.
         if USE_TAKE_PROFIT:
-            tp_px = avg_entry * (1 + TP_PCT) if side == "LONG" else avg_entry * (1 - TP_PCT)
-            if (side == "LONG" and live_px >= tp_px) or (side == "SHORT" and live_px <= tp_px):
-                exit_reason = "TP"
-                exit_px = tp_px
+            tp_floor = avg_entry * (1 + TP_PCT) if side == "LONG" else avg_entry * (1 - TP_PCT)
+            if USE_PROFIT_TRAIL:
+                if side == "LONG":
+                    peak_fav = (peak_price - avg_entry) / avg_entry
+                    if peak_fav >= TP_PCT:  # reached the 0.5% floor at some point
+                        trail_exit = max(tp_floor, peak_price * (1 - PROFIT_TRAIL_DIST))
+                        if live_px <= trail_exit:
+                            exit_reason = "TP"
+                            exit_px = trail_exit
+                else:
+                    peak_fav = (avg_entry - peak_price) / avg_entry
+                    if peak_fav >= TP_PCT:
+                        trail_exit = min(tp_floor, peak_price * (1 + PROFIT_TRAIL_DIST))
+                        if live_px >= trail_exit:
+                            exit_reason = "TP"
+                            exit_px = trail_exit
+            else:
+                if (side == "LONG" and live_px >= tp_floor) or (side == "SHORT" and live_px <= tp_floor):
+                    exit_reason = "TP"
+                    exit_px = tp_floor
 
         # Hard SL / trailing SL check
         if exit_px is None and side == "LONG" and live_px <= sl_px:
@@ -509,23 +605,69 @@ def main():
             except Exception:
                 pass
 
+    # IST night block — no entries 00:00-06:00 IST (UTC+5:30). Thin liquidity + user asleep.
+    ist_ok = True
+    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    if USE_IST_NIGHT_BLOCK and IST_BLOCK_START_HOUR <= ist_now.hour < IST_BLOCK_END_HOUR:
+        ist_ok = False
+
+    # 15m trend gate — LONG only in 15m uptrend, SHORT only in downtrend.
+    trend_ok = True
+    if USE_15M_TREND_FILTER and sig.side and trend_15m is not None:
+        if sig.side == "LONG" and trend_15m != "UP":
+            trend_ok = False
+        elif sig.side == "SHORT" and trend_15m != "DOWN":
+            trend_ok = False
+
+    # One-shot per divergence pivot — block re-entry on a pivot that already
+    # triggered a trade. Pivot bar = last_idx - bars_since - DIV_PIVOT_R.
+    one_shot_ok = True
+    pivot_ts = None
+    if USE_ONE_SHOT_PER_PIVOT and sig.side:
+        bars_since = sig.raw.get("bars_since_bull_div" if sig.side == "LONG" else "bars_since_bear_div", 9999)
+        if bars_since < 9999:
+            pivot_idx = last_idx - bars_since - DIV_PIVOT_R
+            if 0 <= pivot_idx < len(df):
+                pivot_ts = str(df.iloc[pivot_idx]["timestamp"])
+                if pivot_ts in state.get("consumed_pivots", []):
+                    one_shot_ok = False
+
+    block_reason = None   # exact reason no trade opened this tick (written to status for dashboard)
     if state["position"] is None:
         if new_pos_after_flip:
             open_position(state, new_pos_after_flip, live_px, state["balance"], signal=sig)
         elif exit_reason_this_tick in ("SL", "BE", "TRAIL"):
+            block_reason = f"Just exited via {exit_reason_this_tick} this tick — waiting for a new signal."
             log.info(f"  Just exited via {exit_reason_this_tick} this tick — waiting for new signal")
         elif sig.side and not wd_ok:
             wd_name = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][weekday]
-            blocked_names = [["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][d] for d in BLOCKED_WEEKDAYS]
-            log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name}, blocked: {','.join(blocked_names)})")
+            block_reason = f"It's Friday ({wd_name}) — entries blocked (historically the worst day)."
+            log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name})")
+        elif sig.side and not trend_ok:
+            block_reason = f"{sig.side} signal blocked — 15m trend is {trend_15m} (need {'UP' if sig.side=='LONG' else 'DOWN'} for {sig.side})."
+            log.info(f"  Signal {sig.side} BLOCKED by 15m trend filter (trend {trend_15m})")
+        elif sig.side and not ist_ok:
+            block_reason = f"{sig.side} signal blocked — Indian night-time ({ist_now.strftime('%H:%M')} IST). No entries 00:00-06:00 IST."
+            log.info(f"  Signal {sig.side} BLOCKED by IST night filter ({ist_now.strftime('%H:%M')} IST)")
+        elif sig.side and not one_shot_ok:
+            block_reason = f"{sig.side} signal blocked — this divergence pivot already triggered a trade (one trade per pivot)."
+            log.info(f"  Signal {sig.side} BLOCKED — pivot {pivot_ts} already traded")
         elif sig.side and not same_level_ok:
+            block_reason = f"{sig.side} signal blocked — {same_level_msg}"
             log.info(f"  Signal {sig.side} BLOCKED — {same_level_msg}")
         elif sig.side and not cooldown_ok:
+            block_reason = f"{sig.side} signal blocked — cooldown after last {sig.side} stop-loss: {cooldown_msg}"
             log.info(f"  Signal {sig.side} BLOCKED — {cooldown_msg}")
         elif sig.side and not tp_cooldown_ok:
+            block_reason = f"{sig.side} signal blocked — cooldown after last {sig.side} take-profit: {tp_cooldown_msg}"
             log.info(f"  Signal {sig.side} BLOCKED — {tp_cooldown_msg}")
         elif sig.side:
             open_position(state, sig.side, live_px, state["balance"], signal=sig)
+            # Record consumed pivot for one-shot rule
+            if USE_ONE_SHOT_PER_PIVOT and pivot_ts:
+                cp = state.setdefault("consumed_pivots", [])
+                cp.append(pivot_ts)
+                state["consumed_pivots"] = cp[-100:]  # keep last 100
 
     # ─ Stats line ─
     stats = state["stats"]
@@ -581,6 +723,10 @@ def main():
         "signal": sig.side,
         "indicators": sig.raw,
         "conditions": sig.conditions,
+        "trend_15m": trend_15m,
+        "trend_ema_fast": trend_ema_fast,
+        "trend_ema_slow": trend_ema_slow,
+        "block_reason": block_reason,
         "stats": state["stats"],
         "strategy": f"Divergence-Flip ({'TP ' + format(TP_PCT*100, '.1f') + '% / ' if USE_TAKE_PROFIT else ''}trail {TRAIL_DIST_PCT*100:.1f}% after BE / SL {SL_FROM_WORST*100:.1f}% from L3 / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.1f}% mart / {'flip' if USE_FLIP else 'NO flip'} / no EOD) [PAPER]",
         "paper_mode": True,

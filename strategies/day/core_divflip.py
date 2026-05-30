@@ -51,7 +51,10 @@ RSI_PERIOD = 10
 LEVERAGE       = 3.0
 RISK_PCT       = 0.06
 
-DCA_LEVELS     = 2     # 2026-05-26: 3 → 2. L3 disabled to cap worst-case loss.
+DCA_LEVELS     = 2     # 2026-05-28: 1 → 2. DCA re-enabled (L1+L2 @ 0.35%). Backtest May 7-25:
+                       #  DCA cut chop loss -2.36% → -0.98%, lifted WR to 74% (avg-down → TP on recovery).
+                       #  Validated across regimes with SL 0.7% + 15m trend filter: bear -17% (vs -80% old).
+                       #  Simpler: each trade independent, fixed max loss ~$77, no averaging into losers.
 DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35%, L3 at -0.7%).
                               # TV-tuned: wider than 0.3% — DCA fires on deeper dips, better fills.
 
@@ -63,7 +66,9 @@ DCA_SPACING    = 0.0035       # 0.35% adverse triggers each DCA leg (L2 at -0.35
 # TV backtest (Apr 6 – May 14 2026, BTCUSDT 5m).
 # Total notional still capped by LEVERAGE — ratios just redistribute within cap.
 MARTINGALE_RATIOS = [3.0, 4.0, 1.5]   # qty multiplier per leg (L1, L2, L3) — mixed shape
-SL_FROM_WORST  = 0.005        # 2026-05-26: 1% → 0.5%. Tighten worst-anchored stop to cap
+SL_FROM_WORST  = 0.007        # 2026-05-28: 0.5% → 0.7%. Backtest showed 0.5% noise-stopped trades;
+                              # 0.7% lifted WR 52%→67% (May 7-25) by giving room to recover.
+                              # (was 0.5%) — original note: tighten worst-anchored stop to cap
                               # loss size — v1 was losing 4.7× more per loss than per win.
 
 # ─ Fixed TP from avg entry (TV-tuned: ON @ 1%) ─
@@ -71,13 +76,14 @@ SL_FROM_WORST  = 0.005        # 2026-05-26: 1% → 0.5%. Tighten worst-anchored 
 # DCA-filled position needs less recovery to hit TP. Trailing SL is the backstop
 # when price never reaches +1% (rare in TV backtest).
 USE_TAKE_PROFIT = True
-TP_PCT          = 0.01        # 1% from avg entry
+TP_PCT          = 0.005       # 2026-05-28: 1% → 0.5% from avg. On 5m, 1% rarely hits (15% of trades) vs 0.5% (74%).
 
 # 3Commas-style trailing — only arms at a meaningful profit threshold.
 # Below BE trigger: raw SL only (loss-bound). At BE trigger: trailing arms,
 # locks in min profit via BE_BUFFER floor, then trails peak − TRAIL_DIST_PCT.
 USE_BREAKEVEN  = True
-BE_TRIGGER_PCT = 0.0055       # arm BE / trailing at +0.55% favorable from first entry (TV-tuned)
+BE_TRIGGER_PCT = 0.003        # 2026-05-28: 0.55% → 0.3%. Must be BELOW the 0.5% TP so BE arms and
+                              # protects the remaining 50% (after partial TP at 0.25%) before full TP.
 BE_BUFFER_PCT  = 0.002        # initial floor at firstEntry ± 0.2% (after-fee lock-in)
 TRAIL_DIST_PCT = 0.002        # 0.2% trail below peak (LONG) / above trough (SHORT)
 
@@ -123,13 +129,47 @@ USE_SAME_LEVEL_BLOCK     = True
 SAME_LEVEL_PROX_PCT      = 0.0015     # 0.15% — sweet spot from sim
 SAME_LEVEL_WINDOW_HOURS  = 12
 
+# 2026-05-28: ONE-SHOT PER DIVERGENCE PIVOT
+# Block re-entry on the SAME divergence pivot — once a pivot triggers a trade,
+# don't re-fire on it even if still fresh. Forces a NEW pivot for each trade.
+USE_ONE_SHOT_PER_PIVOT  = True
+
+# 2026-05-28: IST NIGHT BLOCK — no entries 00:00-06:00 IST (= UTC 18:30-00:30)
+# User asleep during this window; also the thin-liquidity overnight period.
+USE_IST_NIGHT_BLOCK     = True
+IST_BLOCK_START_HOUR    = 0           # 00:00 IST
+IST_BLOCK_END_HOUR      = 6           # 06:00 IST
+
+# 2026-05-28: PARTIAL TP — sell PARTIAL_TP_FRACTION of position at +PARTIAL_TP_PCT
+# from L1 entry, let the rest ride to the full TP / trail. Locks profit early on
+# the frequent small moves (96% of trades reached +0.25%), keeps upside on runners.
+USE_PARTIAL_TP          = False       # 2026-05-28: disabled — user wants min 0.5% on whole position,
+PARTIAL_TP_PCT          = 0.0025      #  not a 0.25% partial. Full position rides to 0.5%+ via profit trail.
+PARTIAL_TP_FRACTION     = 0.5
+
+# 2026-05-28: PROFIT TRAIL WITH FLOOR (for the remaining 50% after partial).
+# Once price reaches +TP_PCT (0.5%) favorable, lock a 0.5% MINIMUM and trail
+# PROFIT_TRAIL_DIST off the peak above that — lets trend-aligned winners ride
+# beyond 0.5% while guaranteeing at least 0.5% on the exit.
+#   Exit (LONG) = max(avg+0.5%, peak−0.3%).  Only arms after peak ≥ +0.5%.
+USE_PROFIT_TRAIL        = True
+PROFIT_TRAIL_DIST       = 0.003       # 0.3% off peak above the 0.5% floor
+
+# 2026-05-28: 15m TREND FILTER — only trade WITH the 15m trend.
+# LONG only if 15m EMA50 > EMA200; SHORT only if EMA50 < EMA200.
+# Blocks counter-trend entries (the bullish-bias-in-downtrend problem that
+# produced the catastrophic losses). Direction gate only — no entry delay.
+USE_15M_TREND_FILTER    = True
+TREND_EMA_FAST          = 20          # 2026-05-28: 50/200 → 20/50. Backtest: 20/50 catches trends ~4× faster
+TREND_EMA_SLOW          = 50          #  (bull +3.46% vs +0.84%, bear -14% vs -17%). 50/200 lagged ~2 days at turns.
+
 # RSI filter — asymmetric (TV-tuned). Loose bull (≤50) lets through most
 # bull divergences in this BTC uptrend regime. Strict bear (≥70) only
 # accepts genuinely overbought tops. Long-biased by design — caught the
 # Apr–May 2026 uptrend with 74.83% WR over 145 trades.
 USE_RSI_LEVEL_FILTER = True
-RSI_LONG_MAX  = 50            # bull div: RSI at pivot ≤ 50 (loose — catches most lows)
-RSI_SHORT_MIN = 66            # bear div: RSI at pivot ≥ 66 (TV-tuned: was 70 — looser bear catches +14 trades)
+RSI_LONG_MAX  = 40            # 2026-05-28: 50 → 40. Freqtrade multi-regime sweep: tighter LONG filters weak mid-range bull divs. Bull +3.5%→+7.8%, all regimes improved.
+RSI_SHORT_MIN = 70            # 2026-05-28: 66 → 70 (user choice). Quality bear-div filter; keeps slightly more short frequency than 75.
 
 # Divergence freshness window — 21 bars on 5m = 105 min.
 DIV_FRESH_BARS = 21
