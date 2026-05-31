@@ -212,6 +212,7 @@
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="sr_dca">S/R DCA</option>
     <option value="divflip">Divflip v1</option>
+    <option value="divflip_v2">Divflip v2</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -355,17 +356,25 @@ const START_BALANCE = 5000;
 // URL_ENV defaults to mainnet (paper bot's data source); ?env=testnet for legacy view.
 const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
 // STRATEGY: ?strategy= picks the bot data source — 'sr_dca' (V2.2), 'divflip' (v1),
-// or 'divflip_sharp' (live-data-tuned: UK+Weekday hours, SL 0.5%/avg, Trail 1%, no L3, no MAX_LOSS).
+// 'divflip_v2' (1h trend filter A/B test), or 'divflip_sharp' / 'divflip_pro' (legacy variants).
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_sharp' || s === 'divflip_pro') ? s : 'sr_dca';
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_sharp' || s === 'divflip_pro') ? s : 'sr_dca';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
+const DIVFLIP_V2 = STRATEGY === 'divflip_v2';
 const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
 const DIVFLIP_PRO   = STRATEGY === 'divflip_pro';
-const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_SHARP || DIVFLIP_PRO;
+const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIVFLIP_PRO;
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
+
+// Trend-filter labels — vary by strategy. v1 uses 15m EMA20/50, v2 uses 1h EMA50/200.
+// Used in condition checks, block reasons, and trend formatter so the dashboard
+// reflects the actual timeframe the bot is filtering on.
+const TREND_TF_LABEL    = DIVFLIP_V2 ? '1h'  : '15m';
+const TREND_FAST_LABEL  = DIVFLIP_V2 ? 'EMA50'  : 'EMA20';
+const TREND_SLOW_LABEL  = DIVFLIP_V2 ? 'EMA200' : 'EMA50';
 
 // IST display helper (UTC + 5:30)
 function fmtIST(dateOrTs) {
@@ -514,8 +523,8 @@ const DIVFLIP_LONG_CONDS = [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : [
-    // v1 (2026-05-28): 15m trend gate + IST night block + Friday block
-    {key: '15m trend = UP', check: d => d?.trend_15m == null || d.trend_15m === 'UP', val: d => fmtTrend15m(d)},
+    // v1/v2 (2026-05-28+): higher-TF trend gate + IST night block + Friday block
+    {key: `${TREND_TF_LABEL} trend = UP`, check: d => d?.trend_15m == null || d.trend_15m === 'UP', val: d => fmtTrend15m(d)},
     {key: 'Not IST night (00-06)', check: () => { const h=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return !(h>=0 && h<360); }, val: () => { const m=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')} IST`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ]),
@@ -535,21 +544,22 @@ const DIVFLIP_SHORT_CONDS = [
     {key: 'Active hours (UTC 08-20 / IST 13:30-01:30)', check: () => { const h = new Date().getUTCHours(); return h >= 8 && h < 20; }, val: () => { const h = new Date().getUTCHours(); return `UTC ${h}h`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ] : [
-    // v1 (2026-05-28): 15m trend gate + IST night block + Friday block
-    {key: '15m trend = DOWN', check: d => d?.trend_15m == null || d.trend_15m === 'DOWN', val: d => fmtTrend15m(d)},
+    // v1/v2 (2026-05-28+): higher-TF trend gate + IST night block + Friday block
+    {key: `${TREND_TF_LABEL} trend = DOWN`, check: d => d?.trend_15m == null || d.trend_15m === 'DOWN', val: d => fmtTrend15m(d)},
     {key: 'Not IST night (00-06)', check: () => { const h=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return !(h>=0 && h<360); }, val: () => { const m=(new Date().getUTCHours()*60+new Date().getUTCMinutes()+330)%1440; return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')} IST`; }},
     {key: 'Not Friday', check: () => new Date().getUTCDay() !== 5, val: () => { const d=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']; return d[new Date().getUTCDay()]; }},
   ]),
 ];
 
-// 15m trend formatter — shows UP/DOWN + the actual EMA50/EMA200 values.
+// Higher-TF trend formatter — shows UP/DOWN + the actual EMA values.
+// Labels (timeframe + EMA periods) are strategy-aware via TREND_*_LABEL.
 function fmtTrend15m(d) {
   if (d?.trend_15m == null) return '—';
   const f = d?.trend_ema_fast, s = d?.trend_ema_slow;
   if (f == null || s == null) return d.trend_15m;
   const fmt = v => v >= 1000 ? '$' + (v/1000).toFixed(2) + 'k' : '$' + v.toFixed(0);
   const cmp = d.trend_15m === 'UP' ? '>' : '<';
-  return `${d.trend_15m}  (EMA20 ${fmt(f)} ${cmp} EMA50 ${fmt(s)})`;
+  return `${d.trend_15m}  (${TREND_FAST_LABEL} ${fmt(f)} ${cmp} ${TREND_SLOW_LABEL} ${fmt(s)})`;
 }
 
 // v3: compact filter formatters — "actual / threshold" in 1-line form.
@@ -946,9 +956,9 @@ function renderSetup(status){
       if (!DIVFLIP_SHARP && !DIVFLIP_PRO) {
         const t = condData.trend_15m;
         if (t === 'DOWN') {
-          reasons.push(`15m trend is <b>DOWN</b> → only SHORT trades allowed (LONGs blocked until trend flips up).`);
+          reasons.push(`${TREND_TF_LABEL} trend is <b>DOWN</b> → only SHORT trades allowed (LONGs blocked until trend flips up).`);
         } else if (t === 'UP') {
-          reasons.push(`15m trend is <b>UP</b> → only LONG trades allowed (SHORTs blocked until trend flips down).`);
+          reasons.push(`${TREND_TF_LABEL} trend is <b>UP</b> → only LONG trades allowed (SHORTs blocked until trend flips down).`);
         }
         const istMin = (new Date().getUTCHours()*60 + new Date().getUTCMinutes() + 330) % 1440;
         if (istMin >= 0 && istMin < 360) {
@@ -1428,6 +1438,7 @@ const WS_HOST = URL_ENV === 'testnet' ? 'wss://stream.binancefuture.com' : 'wss:
 document.addEventListener('DOMContentLoaded', () => {
   const stratLabel = DIVFLIP_PRO ? 'DivFlip Pro 🛡'
                     : DIVFLIP_SHARP ? 'DivFlip Sharp ⭐'
+                    : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
                     : 'S/R DCA';
   const tag = document.getElementById('brandTag');
@@ -1440,7 +1451,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (DIVFLIP_SHARP) {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
     } else {
-      sub.textContent = STRATEGY === 'divflip'
+      sub.textContent = DIVFLIP_V2
+        ? 'Divflip v2 (Option B test, 2026-05-31). Same as v1 BUT trend filter moved 15m EMA20/50 → 1h EMA50/200 to reduce filter lag during transitions. RSI@pivot ≤40 bull / ≥70 bear, 2-leg DCA @ 0.35%, profit trail floor +0.5% / trail 0.3%, SL 0.7% from worst. All v1 filters retained.'
+        : STRATEGY === 'divflip'
         ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R), RSI@pivot ≤40 bull / ≥70 bear. 3x lev, 2-leg DCA @ 0.35%. Exit: profit trail — locks min +0.5% once reached, then trails 0.3% off peak (rides trends). SL 0.7% from worst entry. BE arms at +0.3%. Filters: 15m EMA20/50 trend gate, one-shot per pivot, IST 00-06 block, Friday block, 0.15% same-level block, 8h loss time-stop, 30min/15min cooldowns.'
         : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
     }

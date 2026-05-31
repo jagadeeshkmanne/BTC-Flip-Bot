@@ -160,6 +160,7 @@ PROFIT_TRAIL_DIST       = 0.003       # 0.3% off peak above the 0.5% floor
 # Blocks counter-trend entries (the bullish-bias-in-downtrend problem that
 # produced the catastrophic losses). Direction gate only — no entry delay.
 USE_15M_TREND_FILTER    = True
+TREND_TIMEFRAME         = "15m"       # 2026-05-31: extracted for v2 override (Option B: slower trend filter)
 TREND_EMA_FAST          = 20          # 2026-05-28: 50/200 → 20/50. Backtest: 20/50 catches trends ~4× faster
 TREND_EMA_SLOW          = 50          #  (bull +3.46% vs +0.84%, bear -14% vs -17%). 50/200 lagged ~2 days at turns.
 

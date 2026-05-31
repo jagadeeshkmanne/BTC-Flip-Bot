@@ -36,13 +36,13 @@ from core_divflip import (
     USE_IST_NIGHT_BLOCK, IST_BLOCK_START_HOUR, IST_BLOCK_END_HOUR,
     USE_PARTIAL_TP, PARTIAL_TP_PCT, PARTIAL_TP_FRACTION,
     USE_PROFIT_TRAIL, PROFIT_TRAIL_DIST,
-    USE_15M_TREND_FILTER, TREND_EMA_FAST, TREND_EMA_SLOW,
+    USE_15M_TREND_FILTER, TREND_TIMEFRAME, TREND_EMA_FAST, TREND_EMA_SLOW,
     evaluate_signal_divflip, dca_price,
     sl_price_divflip, be_should_activate, per_level_qty,
 )
 
 # ─── Paths ───
-DATA_DIR = os.path.join(BOT_DIR, "data", "paper_divflip")
+DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("DIVFLIP_DATA_DIR", "paper_divflip"))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, "state.json")
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
@@ -360,21 +360,22 @@ def main():
         log.error("live price unavailable")
         return
 
-    # ─ 15m trend filter — direction gate (LONG only in 15m uptrend, etc.) ─
-    trend_15m = None  # "UP" / "DOWN" / None (unknown)
+    # ─ Higher-TF trend filter — direction gate (LONG only in uptrend, etc.) ─
+    # Timeframe + EMAs configurable via core_divflip constants (v1: 15m 20/50; v2: 1h 50/200).
+    trend_15m = None  # "UP" / "DOWN" / None (unknown). Var name kept for status/dashboard compat.
     trend_ema_fast = None
     trend_ema_slow = None
     if USE_15M_TREND_FILTER:
-        df_15m = fetch_klines("15m", 300)
-        if df_15m is not None and len(df_15m) >= TREND_EMA_SLOW:
-            ema_fast = df_15m["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
-            ema_slow = df_15m["close"].ewm(span=TREND_EMA_SLOW, adjust=False).mean()
-            # use last CLOSED 15m bar (-2) to avoid the still-forming bar
+        df_tf = fetch_klines(TREND_TIMEFRAME, 300)
+        if df_tf is not None and len(df_tf) >= TREND_EMA_SLOW:
+            ema_fast = df_tf["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
+            ema_slow = df_tf["close"].ewm(span=TREND_EMA_SLOW, adjust=False).mean()
+            # use last CLOSED bar (-2) to avoid the still-forming bar
             trend_ema_fast = float(ema_fast.iloc[-2])
             trend_ema_slow = float(ema_slow.iloc[-2])
             trend_15m = "UP" if trend_ema_fast > trend_ema_slow else "DOWN"
         else:
-            log.warning("  15m trend: insufficient data — filter inactive this tick")
+            log.warning(f"  {TREND_TIMEFRAME} trend: insufficient data — filter inactive this tick")
 
     df = build_features(df_5m, df_1d)
     # RSI period override — build_features uses core.RSI_PERIOD (14) by
@@ -611,7 +612,7 @@ def main():
     if USE_IST_NIGHT_BLOCK and IST_BLOCK_START_HOUR <= ist_now.hour < IST_BLOCK_END_HOUR:
         ist_ok = False
 
-    # 15m trend gate — LONG only in 15m uptrend, SHORT only in downtrend.
+    # Higher-TF trend gate — LONG only in uptrend, SHORT only in downtrend.
     trend_ok = True
     if USE_15M_TREND_FILTER and sig.side and trend_15m is not None:
         if sig.side == "LONG" and trend_15m != "UP":
@@ -644,8 +645,8 @@ def main():
             block_reason = f"It's Friday ({wd_name}) — entries blocked (historically the worst day)."
             log.info(f"  Signal {sig.side} BLOCKED by weekday filter ({wd_name})")
         elif sig.side and not trend_ok:
-            block_reason = f"{sig.side} signal blocked — 15m trend is {trend_15m} (need {'UP' if sig.side=='LONG' else 'DOWN'} for {sig.side})."
-            log.info(f"  Signal {sig.side} BLOCKED by 15m trend filter (trend {trend_15m})")
+            block_reason = f"{sig.side} signal blocked — {TREND_TIMEFRAME} trend is {trend_15m} (need {'UP' if sig.side=='LONG' else 'DOWN'} for {sig.side})."
+            log.info(f"  Signal {sig.side} BLOCKED by {TREND_TIMEFRAME} trend filter (trend {trend_15m})")
         elif sig.side and not ist_ok:
             block_reason = f"{sig.side} signal blocked — Indian night-time ({ist_now.strftime('%H:%M')} IST). No entries 00:00-06:00 IST."
             log.info(f"  Signal {sig.side} BLOCKED by IST night filter ({ist_now.strftime('%H:%M')} IST)")
@@ -712,7 +713,7 @@ def main():
         }
 
     status = {
-        "env": "paper_divflip",
+        "env": os.environ.get("DIVFLIP_DATA_DIR", "paper_divflip"),
         "pair": PAIR,
         "price": close_px,
         "live_price": live_px,
