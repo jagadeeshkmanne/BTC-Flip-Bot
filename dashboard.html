@@ -1482,7 +1482,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (DIVFLIP_SHARP) {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
     } else if (RSISCALP) {
-      sub.textContent = 'Pure RSI mean-reversion — 24/7, NO time/trend/weekday filters. Enters LONG at RSI(9) ≤ 30, SHORT at RSI(9) ≥ 70 on 5m. 2-leg DCA @ 0.50%. Exit: full TP at +0.25% from avg. SL 1% from worst entry. 3× lev. NOTE: edge depends on maker (limit) execution.';
+      sub.textContent = 'Pure RSI mean-reversion — 24/7, NO time/trend/weekday filters. Enters LONG at RSI(9) ≤ 30, SHORT at RSI(9) ≥ 70 on 5m. 2-leg DCA @ 0.50%. Exit: adaptive TP from avg — 0.50% (no DCA) / 0.25% (after DCA). SL 1% from worst entry. 3× lev. NOTE: edge depends on maker (limit) execution.';
     } else {
       sub.textContent = DIVFLIP_V2
         ? 'Divflip v2 (Option B test, 2026-05-31). Same as v1 BUT trend filter moved 15m EMA20/50 → 1h EMA50/200 to reduce filter lag during transitions. RSI@pivot ≤40 bull / ≥70 bear, 2-leg DCA @ 0.35%, profit trail floor +0.5% / trail 0.3%, SL 0.7% from worst. All v1 filters retained.'

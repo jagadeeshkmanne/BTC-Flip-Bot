@@ -21,8 +21,7 @@ from core import rsi_series
 from core_rsiscalp import (
     LEVERAGE, DCA_LEVELS, DCA_SPACING,
     RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT,
-    USE_TAKE_PROFIT, TP_PCT,
-    USE_PARTIAL_TP, PARTIAL_TP_PCT, PARTIAL_TP_FRACTION,
+    USE_TAKE_PROFIT, TP_PCT_SINGLE, TP_PCT_DCA, tp_pct_for,
     USE_STOP_LOSS, SL_FROM_WORST,
     rsi_signal, dca_price, sl_price, per_level_qty,
 )
@@ -210,9 +209,8 @@ def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
 def main():
     log.info("=" * 60)
     sl_desc = f"SL {SL_FROM_WORST*100:.1f}% from worst" if USE_STOP_LOSS else "NO SL"
-    ptp_desc = f"partial {PARTIAL_TP_FRACTION*100:.0f}%@{PARTIAL_TP_PCT*100:.2f}% + " if USE_PARTIAL_TP else ""
     log.info(f"RSI-Scalp Paper Bot — RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} | {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% | "
-             f"TP {ptp_desc}full@{TP_PCT*100:.2f}% from avg | {sl_desc} | {LEVERAGE:.0f}x")
+             f"TP {TP_PCT_SINGLE*100:.2f}%(1leg)/{TP_PCT_DCA*100:.2f}%(DCA) from avg | {sl_desc} | {LEVERAGE:.0f}x")
 
     state = load_state()
 
@@ -255,16 +253,10 @@ def main():
         exit_reason = None
         exit_px = None
 
-        # Partial TP at +PARTIAL_TP_PCT from avg — sell half, rest rides to full TP.
-        if USE_PARTIAL_TP and not pos.get("partial_taken"):
-            ptp = avg_entry * (1 + PARTIAL_TP_PCT) if side == "LONG" else avg_entry * (1 - PARTIAL_TP_PCT)
-            if (side == "LONG" and live_px >= ptp) or (side == "SHORT" and live_px <= ptp):
-                partial_close(state, pos, ptp, PARTIAL_TP_FRACTION)
-                avg_entry = avg_entry_of(pos)
-
-        # Full TP at +TP_PCT from avg.
+        # Adaptive TP from avg — 0.50% while only L1 filled, 0.25% once DCA'd.
         if USE_TAKE_PROFIT:
-            tp = avg_entry * (1 + TP_PCT) if side == "LONG" else avg_entry * (1 - TP_PCT)
+            tp_pct = tp_pct_for(pos["filled"])
+            tp = avg_entry * (1 + tp_pct) if side == "LONG" else avg_entry * (1 - tp_pct)
             if (side == "LONG" and live_px >= tp) or (side == "SHORT" and live_px <= tp):
                 exit_reason, exit_px = "TP", tp
 
@@ -299,7 +291,8 @@ def main():
     if pos:
         avg_e = avg_entry_of(pos)
         slp = sl_price(pos["side"], pos["worst_entry"])
-        tp_p = (avg_e * (1 + TP_PCT) if pos["side"] == "LONG" else avg_e * (1 - TP_PCT)) if USE_TAKE_PROFIT else None
+        tp_pct = tp_pct_for(pos["filled"])
+        tp_p = (avg_e * (1 + tp_pct) if pos["side"] == "LONG" else avg_e * (1 - tp_pct)) if USE_TAKE_PROFIT else None
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
         pos_status = {
             "side": pos["side"], "first_entry": pos["first_entry"], "avg_entry": avg_e,
@@ -314,7 +307,7 @@ def main():
         "position": pos_status, "signal": sig,
         "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT, "price": close_px},
         "stats": state["stats"],
-        "strategy": f"RSI-Scalp (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / TP {TP_PCT*100:.2f}% / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
+        "strategy": f"RSI-Scalp (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% adaptive / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })

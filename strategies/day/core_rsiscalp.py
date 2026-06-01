@@ -8,8 +8,8 @@ Spec (user request 2026-06-01):
   - Entry: RSI ≤ OVERSOLD  -> LONG
            RSI ≥ OVERBOUGHT -> SHORT
   - DCA: 2 legs total (L1 + L2) at fixed adverse spacing, equal sizing
-  - Take profit: small, in the 0.25%–0.50% band from AVG entry
-      * partial scale-out 50% at +0.25%, remainder rides to +0.50%
+  - Take profit: ADAPTIVE from AVG entry — 0.50% while only L1 is filled,
+      tightening to 0.25% once L2 (DCA) fills (doubled position exits quicker).
   - NO entry filters of any kind — purely RSI.
   - Stop loss: OFF by spec, but a LOOSE catastrophic backstop is provided
     (USE_STOP_LOSS, default ON @ 2% from worst entry). Set USE_STOP_LOSS=False
@@ -44,11 +44,20 @@ DCA_SPACING = 0.005   # 2026-06-01: 0.35% → 0.50%. Sweep: 0.5% spacing the cle
                       # peak (deeper L2 fill → better avg → 0.25% TP hits more).
 
 # ═════ Take profit — small band 0.25%–0.50% from AVG entry ═════
-USE_TAKE_PROFIT     = True
-TP_PCT              = 0.0025  # 2026-06-01 (user): single TP, full exit at +0.25% from avg.
-USE_PARTIAL_TP      = False   # disabled — exit the WHOLE position at 0.25% (no 0.5% runner).
-PARTIAL_TP_PCT      = 0.0025
-PARTIAL_TP_FRACTION = 0.5
+USE_TAKE_PROFIT = True
+# Adaptive TP from AVG entry, by fill count (2026-06-01, validated on 2.9y 5m):
+#   1 leg filled (no DCA) -> +0.50% — give the un-averaged trade room to run.
+#   2 legs filled (DCA'd) -> +0.25% — the doubled position exits on a small
+#     bounce off the improved avg (0.25% x 2 legs ~= 0.50% x 1 leg in dollars).
+# Backtest beat fixed-0.25% on BOTH return and drawdown (lower DD = the robust
+# signal; absolute % is idealized maker-fill, not a live promise).
+TP_PCT_SINGLE = 0.005   # +0.50% from avg when only L1 filled
+TP_PCT_DCA    = 0.0025  # +0.25% from avg once L2 filled
+
+
+def tp_pct_for(filled: int) -> float:
+    """Adaptive take-profit %: wider before DCA, tight after the average-down."""
+    return TP_PCT_SINGLE if filled <= 1 else TP_PCT_DCA
 
 # ═════ Stop loss — loose backstop, NOT a tight filter ═════
 # Per spec the bot is "purely RSI / no filters". An SL isn't an entry filter,
