@@ -213,6 +213,7 @@
     <option value="sr_dca">S/R DCA</option>
     <option value="divflip">Divflip v1</option>
     <option value="divflip_v2">Divflip v2</option>
+    <option value="rsiscalp">RSI Scalp</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -360,13 +361,15 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_sharp' || s === 'divflip_pro') ? s : 'sr_dca';
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_sharp' || s === 'divflip_pro' || s === 'rsiscalp') ? s : 'sr_dca';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
 const DIVFLIP_V2 = STRATEGY === 'divflip_v2';
 const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
 const DIVFLIP_PRO   = STRATEGY === 'divflip_pro';
 const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIVFLIP_PRO;
+// Pure-RSI scalper — no divergence/trend/weekday gates, just RSI extremes.
+const RSISCALP = STRATEGY === 'rsiscalp';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
 
 // Trend-filter labels — vary by strategy. v1 uses 15m EMA20/50, v2 uses 1h EMA50/200.
@@ -603,8 +606,19 @@ function fmtRangePos(d) {
 // FIX 2026-05-23: was `STRATEGY === 'divflip'` which left divflip_v1f / divflip_v2 /
 // divflip_15m falling through to V2.2 S/R conditions (Touch prev_L etc.) by mistake.
 const isDivflipStrategy = STRATEGY.startsWith('divflip');
-const LONG_CONDS  = isDivflipStrategy ? DIVFLIP_LONG_CONDS  : SR_LONG_CONDS;
-const SHORT_CONDS = isDivflipStrategy ? DIVFLIP_SHORT_CONDS : SR_SHORT_CONDS;
+// Pure-RSI scalper: single condition per side — RSI at/over the threshold.
+// Reads the bot's status.indicators (rsi / rsi_oversold / rsi_overbought),
+// spread onto condData at top level like the other strategies.
+const RSISCALP_LONG_CONDS = [
+  {key: 'RSI ≤ oversold', check: d => d?.rsi != null && d.rsi <= (d?.rsi_oversold ?? 30),
+   val: d => d?.rsi != null ? `RSI ${d.rsi.toFixed(1)} (need ≤ ${d?.rsi_oversold ?? 30})` : '—'},
+];
+const RSISCALP_SHORT_CONDS = [
+  {key: 'RSI ≥ overbought', check: d => d?.rsi != null && d.rsi >= (d?.rsi_overbought ?? 70),
+   val: d => d?.rsi != null ? `RSI ${d.rsi.toFixed(1)} (need ≥ ${d?.rsi_overbought ?? 70})` : '—'},
+];
+const LONG_CONDS  = RSISCALP ? RSISCALP_LONG_CONDS  : (isDivflipStrategy ? DIVFLIP_LONG_CONDS  : SR_LONG_CONDS);
+const SHORT_CONDS = RSISCALP ? RSISCALP_SHORT_CONDS : (isDivflipStrategy ? DIVFLIP_SHORT_CONDS : SR_SHORT_CONDS);
 
 // ── State caches (used by both refresh() and live WS updates) ───
 let positionSnapshot = null;
@@ -705,7 +719,7 @@ function renderPosition(price){
   // v1 has progressive: L2 at L1±0.35%, L3 at L2±0.35% (=L1±0.7%)
   // SR DCA: 0.85%
   // Sharp + Pro use 0.3% DCA spacing (tightened 2026-05-26, paired with SL 0.5%). v1 0.35%. v3 0.2%.
-  const dcaSpacing = DIVFLIP_V3 ? 0.002 : ((DIVFLIP_SHARP || DIVFLIP_PRO) ? 0.003 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085));
+  const dcaSpacing = RSISCALP ? 0.005 : (DIVFLIP_V3 ? 0.002 : ((DIVFLIP_SHARP || DIVFLIP_PRO) ? 0.003 : (STRATEGY === 'divflip' ? 0.0035 : 0.0085)));
   const v3_l3_spacing = 0.004;
   const legAt = n => (p.legEntries && p.legEntries[n-1] && p.legEntries[n-1].px > 0) ? p.legEntries[n-1].px : null;
   const l1Price = legAt(1);
@@ -827,6 +841,14 @@ function renderPnl(price){
 
 // ── Setup tracker (when no position) ─────────────────────────
 function renderSetup(status){
+  // Flat bots repaint this card on every 15s poll. For RSI-Scalp the only
+  // inputs are status.indicators (rsi/thresholds), so skip the full rebuild
+  // when they're unchanged between cron ticks — kills the visible flicker.
+  if (RSISCALP) {
+    const _sig = JSON.stringify(status.indicators || {});
+    if (renderSetup._lastSig === _sig) return;
+    renderSetup._lastSig = _sig;
+  }
   const ind = status.indicators || {};
   const condData = {
     ...ind,
@@ -929,7 +951,13 @@ function renderSetup(status){
     const bullAge = ind.bars_since_bull_div;
     const bearAge = ind.bars_since_bear_div;
 
-    if (DIVFLIP_ANY) {
+    if (RSISCALP) {
+      // Pure RSI scalper: only reason it's idle is RSI sitting mid-range.
+      const rsi = ind.rsi, os_ = ind.rsi_oversold ?? 30, ob = ind.rsi_overbought ?? 70;
+      if (rsi != null && rsi > os_ && rsi < ob) {
+        reasons.push(`RSI is <b>${rsi.toFixed(1)}</b> — mid-range. Enters LONG at RSI ≤ ${os_} (oversold) or SHORT at RSI ≥ ${ob} (overbought).`);
+      }
+    } else if (DIVFLIP_ANY) {
       // Div-flip family: divergence freshness + RSI level at pivot (+ Pro: EMA200 + ATR).
       const freshLimit = DIV_FRESH_MAX_BARS;
       const bullFresh = bullAge != null && bullAge !== 9999 && bullAge <= freshLimit;
@@ -1019,7 +1047,7 @@ function renderSetup(status){
     // claim "all met" — that would be vacuous truth on no data. Empty reasons
     // array can also mean we genuinely have no insight to report; require at
     // least ONE condition flag to be present before declaring "all met".
-    const hasAnyConditionData = condData.conditions && Object.keys(condData.conditions).length > 0;
+    const hasAnyConditionData = (condData.conditions && Object.keys(condData.conditions).length > 0) || (RSISCALP && condData.rsi != null);
     // The bot writes the EXACT reason it didn't open this tick (covers cooldowns,
     // same-level, one-shot, trend, IST, Friday). Prefer it — it's authoritative.
     const botBlock = status.block_reason;
@@ -1090,7 +1118,9 @@ async function refresh(){
     // If the prev-day levels just changed (or just arrived), re-render the
     // price chart so the markLines update / appear. Cheap when nothing changed.
     const newIndKey = JSON.stringify(lastHeroState.indicators);
-    if (prevIndKey !== newIndKey && priceChartKlines.length) renderPriceChart();
+    // RSI-Scalp has no S/R markLines to redraw, so skip the indicator-triggered
+    // chart re-render (the candles still update via WS + the 5-min kline timer).
+    if (!RSISCALP && prevIndKey !== newIndKey && priceChartKlines.length) renderPriceChart();
 
     // Position — trust the live Binance proxy. If proxy returns position=null,
     // the position is flat on Binance regardless of what bot's state.json says
@@ -1440,6 +1470,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     : DIVFLIP_SHARP ? 'DivFlip Sharp ⭐'
                     : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
+                    : RSISCALP ? 'RSI Scalp'
                     : 'S/R DCA';
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
@@ -1450,6 +1481,8 @@ document.addEventListener('DOMContentLoaded', () => {
       sub.textContent = 'DivFlip Pro (2026-05-26 v2). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66. UK+NY hours UTC 08-20, FRIDAY BLOCKED. 2-leg DCA @ 0.3% (tightened). SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. Cooldowns: 6h after SL, 15min after TP (anti pump-and-dump).';
     } else if (DIVFLIP_SHARP) {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
+    } else if (RSISCALP) {
+      sub.textContent = 'Pure RSI mean-reversion — 24/7, NO time/trend/weekday filters. Enters LONG at RSI(9) ≤ 30, SHORT at RSI(9) ≥ 70 on 5m. 2-leg DCA @ 0.50%. Exit: full TP at +0.25% from avg. SL 1% from worst entry. 3× lev. NOTE: edge depends on maker (limit) execution.';
     } else {
       sub.textContent = DIVFLIP_V2
         ? 'Divflip v2 (Option B test, 2026-05-31). Same as v1 BUT trend filter moved 15m EMA20/50 → 1h EMA50/200 to reduce filter lag during transitions. RSI@pivot ≤40 bull / ≥70 bear, 2-leg DCA @ 0.35%, profit trail floor +0.5% / trail 0.3%, SL 0.7% from worst. All v1 filters retained.'
@@ -1964,7 +1997,9 @@ setInterval(() => {
   // can fire 24/7 on fresh divergence. So no countdown is meaningful; just
   // show the static "Waiting for Setup" title and let the conds card below
   // explain what's needed (bull/bear div freshness + RSI@pivot).
-  if (DIVFLIP_ANY) {
+  if (DIVFLIP_ANY || RSISCALP) {
+    // No EOD/window cap — RSI-Scalp & divflip trade 24/7. Static title; the
+    // conds card below explains what's needed. No "window closes" countdown.
     titleEl.textContent = 'Waiting for Setup';
     return;
   }
