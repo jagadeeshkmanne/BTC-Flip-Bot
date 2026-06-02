@@ -841,14 +841,6 @@ function renderPnl(price){
 
 // ── Setup tracker (when no position) ─────────────────────────
 function renderSetup(status){
-  // Flat bots repaint this card on every 15s poll. For RSI-Scalp the only
-  // inputs are status.indicators (rsi/thresholds), so skip the full rebuild
-  // when they're unchanged between cron ticks — kills the visible flicker.
-  if (RSISCALP) {
-    const _sig = JSON.stringify(status.indicators || {});
-    if (renderSetup._lastSig === _sig) return;
-    renderSetup._lastSig = _sig;
-  }
   const ind = status.indicators || {};
   const condData = {
     ...ind,
@@ -1997,9 +1989,17 @@ setInterval(() => {
   // can fire 24/7 on fresh divergence. So no countdown is meaningful; just
   // show the static "Waiting for Setup" title and let the conds card below
   // explain what's needed (bull/bear div freshness + RSI@pivot).
-  if (DIVFLIP_ANY || RSISCALP) {
-    // No EOD/window cap — RSI-Scalp & divflip trade 24/7. Static title; the
-    // conds card below explains what's needed. No "window closes" countdown.
+  if (RSISCALP) {
+    // No window cap — 24/7. Show the LIVE RSI + the levels needed to enter.
+    const ri = lastHeroState.indicators || {};
+    const r = ri.rsi, os_ = ri.rsi_oversold ?? 30, ob = ri.rsi_overbought ?? 70;
+    titleEl.innerHTML = (r != null)
+      ? `Waiting for Setup<div style="font-size:14px;font-weight:500;color:var(--muted);margin-top:8px">RSI now <span class="num" style="color:var(--text-bright);font-weight:700">${r.toFixed(1)}</span> &nbsp;—&nbsp; enter LONG ≤ ${os_} · SHORT ≥ ${ob}</div>`
+      : 'Waiting for Setup';
+    return;
+  }
+  if (DIVFLIP_ANY) {
+    // No EOD/window cap — divflip trades 24/7. Static title; conds card explains.
     titleEl.textContent = 'Waiting for Setup';
     return;
   }
