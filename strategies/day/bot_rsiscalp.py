@@ -9,7 +9,7 @@ State / log / status: data/paper_rsiscalp/  (override via RSISCALP_DATA_DIR)
 """
 from __future__ import annotations
 import os, sys, json, logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import requests
 import pandas as pd
 
@@ -24,6 +24,7 @@ from core_rsiscalp import (
     USE_TAKE_PROFIT, TP_PCT_SINGLE, TP_PCT_DCA, tp_pct_for,
     USE_STOP_LOSS, SL_FROM_WORST,
     USE_TREND_FILTER, TREND_TF, TREND_EMA_FAST, TREND_EMA_SLOW,
+    USE_CIRCUIT_BREAKER, BREAKER_LOSSES, BREAKER_PAUSE_HOURS,
     rsi_signal, dca_price, sl_price, per_level_qty,
 )
 
@@ -139,6 +140,17 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
     }, is_win=net > 0)
     log.warning(f"  EXIT {side} via {reason} @${exit_px:.2f} | avg ${avg_entry:.2f} | "
                 f"net ${net:+.2f} (price {price_move_pct:+.2f}%) | balance ${state['balance']:.2f}")
+    # ── Circuit breaker: count consecutive losses; pause after BREAKER_LOSSES ──
+    if USE_CIRCUIT_BREAKER:
+        if net <= 0:
+            state["consec_losses"] = state.get("consec_losses", 0) + 1
+            if state["consec_losses"] >= BREAKER_LOSSES:
+                until = datetime.now(timezone.utc) + timedelta(hours=BREAKER_PAUSE_HOURS)
+                state["pause_until"] = until.isoformat()
+                state["consec_losses"] = 0
+                log.warning(f"  CIRCUIT BREAKER: {BREAKER_LOSSES} losses in a row — pausing entries until {until.isoformat()[:16]}")
+        else:
+            state["consec_losses"] = 0
 
 
 def partial_close(state, pos, exit_px: float, fraction: float) -> None:
@@ -288,8 +300,17 @@ def main():
             fav = ((live_px - avg_entry) / avg_entry * 100) * (1 if side == "LONG" else -1)
             log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} fav={fav:+.2f}%")
 
-    # Entry — RSI (+ optional 15m trend gate). Don't re-enter on the same tick we just exited.
+    # Entry — RSI (+ optional 15m trend gate + circuit breaker). Don't re-enter on the tick we just exited.
     block_reason = None
+    # Circuit breaker: skip entries while paused after a loss streak.
+    if USE_CIRCUIT_BREAKER and sig and state.get("pause_until"):
+        try:
+            if datetime.now(timezone.utc) < datetime.fromisoformat(state["pause_until"]):
+                block_reason = f"circuit breaker — paused after {BREAKER_LOSSES} losses (until {state['pause_until'][:16]} UTC)"
+                log.info(f"  {block_reason}")
+                sig = None
+        except Exception:
+            pass
     if USE_TREND_FILTER and sig and trend is not None:
         if (sig == "LONG" and trend != "UP") or (sig == "SHORT" and trend != "DOWN"):
             block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"

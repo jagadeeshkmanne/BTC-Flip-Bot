@@ -82,6 +82,18 @@ SL_FROM_WORST = 0.01   # 2026-06-01: 2% → 1% for 3x. Backtest: 1% stop at 3x =
                        # +1958% (vs +780% at 2%), ~49% DD, and sits further from
                        # the 33% liquidation line. Tighter = safer AND better here.
 
+# ═════ Circuit breaker — pause after consecutive losses ═════
+# Backtest 2.9y: on plain RSI, halves max drawdown (-25% -> -12%) with ~same
+# return. Reactive — it breaks loss-CHAINS (steps out of the high-variance
+# window so a 2-loss streak can't become a 5-loss streak); it does NOT predict
+# bad trades (win rate after 2 losses is ~85%, only slightly below 87%). Pause
+# is wall-clock (bot runs per-minute, bars are 5m), tracked in state.json.
+# Re-arms: another BREAKER_LOSSES in a row -> pause again. Redundant on the
+# +Trend variant (gate already lowers DD) but kept for consistency.
+USE_CIRCUIT_BREAKER  = True
+BREAKER_LOSSES       = 2     # consecutive losses that trigger the pause
+BREAKER_PAUSE_HOURS  = 2     # how long to sit out after triggering
+
 Side = Literal["LONG", "SHORT"]
 
 
