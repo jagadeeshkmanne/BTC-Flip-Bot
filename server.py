@@ -484,6 +484,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
+        elif strategy_q == 'rsiscalp_nodca':
+            env_dir = 'paper_rsiscalp_nodca'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
         elif env_q == 'testnet':
             env_dir = 'testnet'
             state_filename = 'state_day.json'
@@ -557,6 +562,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             if env_dir == 'paper_rsiscalp_trend':
                 return self._json_response(_query_paper_position(
                     state_subdir='paper_rsiscalp_trend',
+                    state_filename='state.json',
+                    balance_key='balance',
+                ))
+            if env_dir == 'paper_rsiscalp_nodca':
+                return self._json_response(_query_paper_position(
+                    state_subdir='paper_rsiscalp_nodca',
                     state_filename='state.json',
                     balance_key='balance',
                 ))
