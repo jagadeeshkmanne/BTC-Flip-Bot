@@ -23,6 +23,7 @@ from core_rsiscalp import (
     RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT,
     USE_TAKE_PROFIT, TP_PCT_SINGLE, TP_PCT_DCA, tp_pct_for,
     USE_STOP_LOSS, SL_FROM_WORST,
+    USE_TREND_FILTER, TREND_TF, TREND_EMA_FAST, TREND_EMA_SLOW,
     rsi_signal, dca_price, sl_price, per_level_qty,
 )
 
@@ -230,8 +231,20 @@ def main():
     rsi_val = float(last["rsi"]) if pd.notna(last["rsi"]) else None
 
     sig = rsi_signal(rsi_val)
+
+    # ── Optional 15m trend gate (entry only) ──
+    trend = None  # "UP" / "DOWN" / None
+    if USE_TREND_FILTER:
+        df_tf = fetch_klines(TREND_TF, 300)
+        if df_tf is not None and len(df_tf) >= TREND_EMA_SLOW:
+            ema_f = df_tf["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
+            ema_s = df_tf["close"].ewm(span=TREND_EMA_SLOW, adjust=False).mean()
+            trend = "UP" if float(ema_f.iloc[-2]) > float(ema_s.iloc[-2]) else "DOWN"
+        else:
+            log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
+
     log.info(f"  Balance: ${state['balance']:,.2f} | {PAIR}: ${close_px:,.2f} | live: ${live_px:,.2f} | "
-             f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}" if rsi_val is not None else
+             f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}{' | 15m '+trend if trend else ''}" if rsi_val is not None else
              f"  Balance: ${state['balance']:,.2f} | RSI n/a")
 
     if state["balance"] > state.get("peak_equity", 0):
@@ -275,7 +288,13 @@ def main():
             fav = ((live_px - avg_entry) / avg_entry * 100) * (1 if side == "LONG" else -1)
             log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} fav={fav:+.2f}%")
 
-    # Entry — purely RSI. Don't re-enter on the same tick we just exited.
+    # Entry — RSI (+ optional 15m trend gate). Don't re-enter on the same tick we just exited.
+    block_reason = None
+    if USE_TREND_FILTER and sig and trend is not None:
+        if (sig == "LONG" and trend != "UP") or (sig == "SHORT" and trend != "DOWN"):
+            block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
+            log.info(f"  {block_reason}")
+            sig = None
     if state["position"] is None and not exit_this_tick and sig:
         open_position(state, sig, live_px, rsi_val)
 
@@ -306,8 +325,9 @@ def main():
         "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos_status, "signal": sig,
         "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT, "price": close_px},
+        "trend_15m": trend, "block_reason": block_reason,
         "stats": state["stats"],
-        "strategy": f"RSI-Scalp (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% adaptive / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
+        "strategy": f"RSI-Scalp{' +Trend' if USE_TREND_FILTER else ''} (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT}{' / 15m EMA'+str(TREND_EMA_FAST)+'/'+str(TREND_EMA_SLOW)+' gate' if USE_TREND_FILTER else ''} / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% adaptive / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })

@@ -214,6 +214,7 @@
     <option value="divflip">Divflip v1</option>
     <option value="divflip_v2">Divflip v2</option>
     <option value="rsiscalp">RSI Scalp</option>
+    <option value="rsiscalp_trend">RSI Scalp +Trend</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -361,15 +362,16 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_sharp' || s === 'divflip_pro' || s === 'rsiscalp') ? s : 'sr_dca';
+  return (s === 'sr_dca' || s === 'divflip' || s === 'divflip_v2' || s === 'divflip_sharp' || s === 'divflip_pro' || s === 'rsiscalp' || s === 'rsiscalp_trend') ? s : 'sr_dca';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
 const DIVFLIP_V2 = STRATEGY === 'divflip_v2';
 const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
 const DIVFLIP_PRO   = STRATEGY === 'divflip_pro';
 const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIVFLIP_PRO;
-// Pure-RSI scalper — no divergence/trend/weekday gates, just RSI extremes.
-const RSISCALP = STRATEGY === 'rsiscalp';
+// Pure-RSI scalper — RSI extremes (optionally + a 15m trend gate variant).
+const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend';
+const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
 
 // Trend-filter labels — vary by strategy. v1 uses 15m EMA20/50, v2 uses 1h EMA50/200.
@@ -1462,6 +1464,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     : DIVFLIP_SHARP ? 'DivFlip Sharp ⭐'
                     : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
+                    : RSISCALP_TREND ? 'RSI Scalp +Trend'
                     : RSISCALP ? 'RSI Scalp'
                     : 'S/R DCA';
   const tag = document.getElementById('brandTag');

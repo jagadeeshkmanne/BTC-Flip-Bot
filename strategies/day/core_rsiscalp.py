@@ -18,6 +18,7 @@ Spec (user request 2026-06-01):
 Re-uses only rsi_series from core.py — nothing else.
 """
 from __future__ import annotations
+import os
 from typing import Optional, Literal
 
 # ═════ Market / sizing ═════
@@ -36,6 +37,17 @@ RSI_PERIOD    = 9    # 9 bars = last 45min on 5m. Best risk-adjusted in sweep
                      # (period 7–9 win; 14/21 trade too rarely to compound).
 RSI_OVERSOLD  = 30   # RSI ≤ 30 -> LONG.  30/70 beat 25/75 and 20/80 on net AND DD.
 RSI_OVERBOUGHT = 70  # RSI ≥ 70 -> SHORT
+
+# ═════ Optional 15m trend filter (env-toggled, for A/B paper testing) ═════
+# Set RSISCALP_TREND=1 to run the trend-gated variant in parallel.
+# ON: LONG only when 15m EMA20 > EMA50 (uptrend); SHORT only when EMA20 < EMA50.
+# Gates ENTRY only — once in a position it rides to TP/SL (flip-exit tested
+# WORSE: WR 87%->71% for no gain). Backtest 2.9y: +174%/yr, DD -10.8% (vs base
+# +496%/yr, DD -25%). Lower return, ~half the drawdown.
+USE_TREND_FILTER = os.environ.get("RSISCALP_TREND", "0") == "1"
+TREND_TF        = "15m"
+TREND_EMA_FAST  = 20
+TREND_EMA_SLOW  = 50
 
 # ═════ DCA — 2 legs, equal size, fixed spacing ═════
 DCA_LEVELS  = 2       # total fills (L1 + L2). MANDATORY — no-DCA backtests -90%
