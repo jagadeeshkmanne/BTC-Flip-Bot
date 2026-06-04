@@ -371,7 +371,11 @@ const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
 const DIVFLIP_PRO   = STRATEGY === 'divflip_pro';
 const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIVFLIP_PRO;
 // Pure-RSI scalper — RSI extremes (optionally + a 15m trend gate variant).
-const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend';
+// New 2026-06 bots (gemini/chatgpt/claude). They have no EOD window and no
+// S/R levels, so they render via the simple 24/7 RSISCALP path (balance /
+// position / stats / live indicator) with their own subtitle.
+const NEWBOT = STRATEGY === 'gemini' || STRATEGY === 'chatgpt' || STRATEGY === 'claude';
+const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend' || NEWBOT;
 const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
 
@@ -1466,6 +1470,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     : DIVFLIP_SHARP ? 'DivFlip Sharp ⭐'
                     : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
+                    : STRATEGY === 'gemini' ? 'Gemini ♊'
+                    : STRATEGY === 'chatgpt' ? 'ChatGPT 🤖'
+                    : STRATEGY === 'claude' ? 'Claude ✳️'
                     : RSISCALP_TREND ? 'RSI Scalp +Trend'
                     : RSISCALP ? 'RSI Scalp'
                     : 'S/R DCA';
@@ -1474,7 +1481,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Update the setup subtitle based on strategy
   const sub = document.getElementById('setupSub');
   if (sub) {
-    if (DIVFLIP_PRO) {
+    if (NEWBOT) {
+      sub.textContent = STRATEGY === 'gemini'
+        ? 'Gemini multi-regime — classifies BULL / BEAR / RANGE / SQUEEZE first. Trend-pullbacks WITH the trend in BULL/BEAR (pullback to EMA20, RSI7 hook, TP at the Bollinger band), Bollinger mean-reversion in RANGE, sits out the BB squeeze. 3× lev, risk 0.5%/trade, SL ≤0.6%, 15-min cooldown after a loss.'
+        : STRATEGY === 'chatgpt'
+        ? 'ChatGPT EMA-Pullback — trades only strong trends (ADX>25). LONG when EMA20>EMA50, price>EMA200, pullback to EMA20, next bar closes above the pullback high + volume>SMA20. TP1 1R (50%) / TP2 2R (25%) / runner trails EMA20. 3× lev, risk 0.5%/trade.'
+        : 'Claude — RSI(5) mean-reversion + 5m EMA200 trend gate. Enters RSI ≤20 (LONG, above EMA200) / ≥80 (SHORT, below EMA200). 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 30% equity drawdown-stop, 3× lev, 15-min cooldown after a loss. Backtest +539% / −30% DD over 5y.';
+    } else if (DIVFLIP_PRO) {
       sub.textContent = 'DivFlip Pro (2026-05-26 v2). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66. UK+NY hours UTC 08-20, FRIDAY BLOCKED. 2-leg DCA @ 0.3% (tightened). SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. Cooldowns: 6h after SL, 15min after TP (anti pump-and-dump).';
     } else if (DIVFLIP_SHARP) {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
@@ -1492,7 +1505,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Divflip has no 20:00 UTC force-flatten — hide the "Closes by 20:00 UTC"
   // footer entirely (position rides to TP/SL/trail).
-  if (DIVFLIP_ANY) {
+  if (DIVFLIP_ANY || NEWBOT) {
     document.querySelectorAll('.pos-foot').forEach(el => { el.style.display = 'none'; });
   }
   // Repurpose the setup-stats row for divflip family: instead of Volume / Range yest.
@@ -1978,9 +1991,9 @@ setInterval(() => {
   const utcH = now.getUTCHours();
 
   if (positionSnapshot) {
-    // Divflip has no 20:00 UTC EOD flatten — position rides to TP/SL/trail.
-    // Skip the EOD countdown entirely (footer is hidden by CSS below).
-    if (DIVFLIP_ANY) return;
+    // Divflip + new bots have no 20:00 UTC EOD flatten — position rides to
+    // TP/SL/trail. Skip the EOD countdown entirely (footer is hidden above).
+    if (DIVFLIP_ANY || NEWBOT) return;
     // EOD countdown for the active position
     const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
     if (now >= eod) eod.setUTCDate(eod.getUTCDate() + 1);
