@@ -1,7 +1,7 @@
-"""Fetch BTCUSDT perp 5m + 1d klines from Binance, extending cache as needed.
+"""Fetch BTCUSDT linear perp 15m + 1d klines from Bybit, extending cache as needed.
 
-Range target: covers a 5-year backtest window, ending today (UTC).
-Cache files: data/cache/BTCUSDT_5m.csv and BTCUSDT_1d.csv.
+Bybit v5 public API. Linear category. Earliest kline ~2020-03-30 for BTCUSDT.P.
+Cache files: data/cache/BYBIT_BTCUSDT_{15,1d}.csv
 """
 from __future__ import annotations
 import csv
@@ -15,13 +15,13 @@ import requests
 
 REPO = Path(__file__).resolve().parent.parent
 CACHE = REPO / "data" / "cache"
-BASE = "https://fapi.binance.com"  # USDT-M perp
+BASE = "https://api.bybit.com"
 SYMBOL = "BTCUSDT"
+CATEGORY = "linear"
 
 INTERVALS = {
-    "5m":  (CACHE / f"{SYMBOL}_5m.csv",  5 * 60_000),
-    "15m": (CACHE / f"{SYMBOL}_15m.csv", 15 * 60_000),
-    "1d":  (CACHE / f"{SYMBOL}_1d.csv",  24 * 60 * 60_000),
+    "15": (CACHE / f"BYBIT_{SYMBOL}_15m.csv", 15 * 60_000),
+    "D":  (CACHE / f"BYBIT_{SYMBOL}_1d.csv",  24 * 60 * 60_000),
 }
 
 
@@ -43,48 +43,61 @@ def read_existing(path: Path) -> tuple[list[dict], int | None, int | None]:
             rows.append(row)
     if not rows:
         return [], None, None
-    first = dt.datetime.strptime(rows[0]["timestamp"], "%Y-%m-%d %H:%M:%S" if " " in rows[0]["timestamp"] else "%Y-%m-%d")
-    last = dt.datetime.strptime(rows[-1]["timestamp"], "%Y-%m-%d %H:%M:%S" if " " in rows[-1]["timestamp"] else "%Y-%m-%d")
+    fmt = "%Y-%m-%d %H:%M:%S" if " " in rows[0]["timestamp"] else "%Y-%m-%d"
+    first = dt.datetime.strptime(rows[0]["timestamp"], fmt)
+    last = dt.datetime.strptime(rows[-1]["timestamp"], fmt)
     return rows, to_ms(first), to_ms(last)
 
 
 def fetch_klines(interval: str, start_ms: int, end_ms: int, max_retries: int = 5) -> list[list]:
-    out = []
-    cursor = start_ms
-    while cursor < end_ms:
+    """Bybit returns up to 1000 candles per request, NEWEST first."""
+    step_ms = INTERVALS[interval][1]
+    out_by_ts: dict[int, list] = {}
+    cursor_end = end_ms
+    while cursor_end > start_ms:
         params = {
+            "category": CATEGORY,
             "symbol": SYMBOL,
             "interval": interval,
-            "startTime": cursor,
-            "endTime": end_ms,
-            "limit": 1500,
+            "start": start_ms,
+            "end": cursor_end,
+            "limit": 1000,
         }
         for attempt in range(max_retries):
             try:
-                r = requests.get(f"{BASE}/fapi/v1/klines", params=params, timeout=15)
-                if r.status_code == 429:
-                    time.sleep(5)
-                    continue
+                r = requests.get(f"{BASE}/v5/market/kline", params=params, timeout=15)
                 r.raise_for_status()
                 data = r.json()
+                if data.get("retCode") != 0:
+                    raise RuntimeError(f"Bybit retCode {data.get('retCode')}: {data.get('retMsg')}")
+                rows = data.get("result", {}).get("list", [])
                 break
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise
                 time.sleep(2 ** attempt)
-        if not data:
+        if not rows:
             break
-        out.extend(data)
-        last_open = data[-1][0]
-        cursor = last_open + INTERVALS[interval][1]
-        if len(data) < 1500:
+        # Bybit returns newest-first; capture by timestamp to dedup
+        for k in rows:
+            ts = int(k[0])
+            if start_ms <= ts < end_ms and ts not in out_by_ts:
+                out_by_ts[ts] = k
+        # Advance cursor backward to the oldest kline returned - 1 step
+        oldest_ts = min(int(k[0]) for k in rows)
+        next_end = oldest_ts
+        if next_end >= cursor_end:
             break
-    return out
+        cursor_end = next_end
+        if len(rows) < 1000:
+            break
+    return [out_by_ts[ts] for ts in sorted(out_by_ts.keys())]
 
 
 def fmt_row(k: list, interval: str) -> dict:
-    ts = from_ms(k[0])
-    s = ts.strftime("%Y-%m-%d") if interval == "1d" else ts.strftime("%Y-%m-%d %H:%M:%S")
+    ts = from_ms(int(k[0]))
+    s = ts.strftime("%Y-%m-%d") if interval == "D" else ts.strftime("%Y-%m-%d %H:%M:%S")
+    # Bybit v5 list format: [start, open, high, low, close, volume, turnover]
     return {
         "timestamp": s,
         "open": k[1],
@@ -98,7 +111,8 @@ def fmt_row(k: list, interval: str) -> dict:
 def update_cache(interval: str, target_start: dt.datetime, target_end: dt.datetime) -> Path:
     path, step_ms = INTERVALS[interval]
     rows, first_ms, last_ms = read_existing(path)
-    print(f"[{interval}] existing rows={len(rows)}  range=[{from_ms(first_ms) if first_ms else '—'} .. {from_ms(last_ms) if last_ms else '—'}]")
+    print(f"[Bybit {interval}] existing rows={len(rows)}  "
+          f"range=[{from_ms(first_ms) if first_ms else '—'} .. {from_ms(last_ms) if last_ms else '—'}]")
 
     target_start_ms = to_ms(target_start)
     target_end_ms = to_ms(target_end)
@@ -108,19 +122,16 @@ def update_cache(interval: str, target_start: dt.datetime, target_end: dt.dateti
         ks = fetch_klines(interval, target_start_ms, target_end_ms)
         new_rows = [fmt_row(k, interval) for k in ks]
     else:
-        # Backfill before
         if target_start_ms < first_ms:
-            print(f"[{interval}] backfilling {from_ms(target_start_ms)} → {from_ms(first_ms)}")
+            print(f"[Bybit {interval}] backfilling {from_ms(target_start_ms)} → {from_ms(first_ms)}")
             ks = fetch_klines(interval, target_start_ms, first_ms)
             new_rows.extend(fmt_row(k, interval) for k in ks)
         new_rows.extend(rows)
-        # Forward extend
         if last_ms + step_ms < target_end_ms:
-            print(f"[{interval}] forward fetching {from_ms(last_ms + step_ms)} → {from_ms(target_end_ms)}")
+            print(f"[Bybit {interval}] forward fetching {from_ms(last_ms + step_ms)} → {from_ms(target_end_ms)}")
             ks = fetch_klines(interval, last_ms + step_ms, target_end_ms)
             new_rows.extend(fmt_row(k, interval) for k in ks)
 
-    # Dedup + sort
     seen = set()
     deduped = []
     for r in new_rows:
@@ -135,17 +146,17 @@ def update_cache(interval: str, target_start: dt.datetime, target_end: dt.dateti
         w = csv.DictWriter(f, fieldnames=["timestamp", "open", "high", "low", "close", "volume"])
         w.writeheader()
         w.writerows(deduped)
-    print(f"[{interval}] wrote {len(deduped)} rows to {path}")
+    print(f"[Bybit {interval}] wrote {len(deduped)} rows to {path}")
     return path
 
 
 def main():
     end = dt.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
-    start = end - dt.timedelta(days=365 * 5 + 5)
-    print(f"target window: {start} .. {end}  (5 years)")
-    update_cache("1d",  start - dt.timedelta(days=10), end)
-    update_cache("5m",  start, end)
-    update_cache("15m", start, end)
+    # Bybit BTCUSDT perp earliest: ~2020-03-30
+    start = dt.datetime(2020, 3, 1)
+    print(f"Target window: {start} .. {end}")
+    update_cache("D",  start - dt.timedelta(days=10), end)
+    update_cache("15", start, end)
 
 
 if __name__ == "__main__":

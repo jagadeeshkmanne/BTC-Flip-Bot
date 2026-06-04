@@ -35,8 +35,8 @@ RISK_PCT = 0.06    # informational; sizing uses LEVERAGE × 0.95 of equity.
 # slower/tighter (RSI14 ≤20) = better odds, ~1 trade/2 days.
 RSI_PERIOD    = 9    # 9 bars = last 45min on 5m. Best risk-adjusted in sweep
                      # (period 7–9 win; 14/21 trade too rarely to compound).
-RSI_OVERSOLD  = int(os.environ.get("RSISCALP_OS", "30"))   # RSI ≤ -> LONG (env override for variants)
-RSI_OVERBOUGHT = int(os.environ.get("RSISCALP_OB", "70"))  # RSI ≥ -> SHORT
+RSI_OVERSOLD  = 30   # RSI ≤ 30 -> LONG
+RSI_OVERBOUGHT = 70  # RSI ≥ 70 -> SHORT
 
 # ═════ Optional 15m trend filter (env-toggled, for A/B paper testing) ═════
 # Set RSISCALP_TREND=1 to run the trend-gated variant in parallel.
@@ -50,11 +50,7 @@ TREND_EMA_FAST  = 20
 TREND_EMA_SLOW  = 50
 
 # ═════ DCA — 2 legs, equal size, fixed spacing ═════
-# RSISCALP_NODCA=1 runs a single-entry (no-DCA) variant for A/B paper testing.
-# WARNING: no-DCA backtests NEGATIVE expectancy at every SL (the avg-down IS the
-# edge); deployed only as a labeled experiment.
-_NODCA = os.environ.get("RSISCALP_NODCA", "0") == "1"
-DCA_LEVELS  = 1 if _NODCA else 2   # total fills (L1[, L2])
+DCA_LEVELS  = 2       # total fills (L1 + L2). MANDATORY — no-DCA backtests -90%.
 DCA_SPACING = 0.005   # 2026-06-01: 0.35% → 0.50%. Sweep: 0.5% spacing the clear
                       # peak (deeper L2 fill → better avg → 0.25% TP hits more).
 
@@ -66,7 +62,7 @@ USE_TAKE_PROFIT = True
 #     bounce off the improved avg (0.25% x 2 legs ~= 0.50% x 1 leg in dollars).
 # Backtest beat fixed-0.25% on BOTH return and drawdown (lower DD = the robust
 # signal; absolute % is idealized maker-fill, not a live promise).
-TP_PCT_SINGLE = 0.0025 if _NODCA else 0.005   # no-DCA: fixed 0.25% TP; else 0.50% (1-leg)
+TP_PCT_SINGLE = 0.005   # +0.50% from avg when only L1 filled
 TP_PCT_DCA    = 0.0025  # +0.25% from avg once L2 filled
 
 
@@ -81,8 +77,7 @@ def tp_pct_for(filled: int) -> float:
 # a stop-less bot (relies entirely on RSI mean-reversion + TP).
 USE_STOP_LOSS = True   # MANDATORY at 3x — do not disable. The stop is what
                        # keeps you off the liquidation line (no-SL 3x = ruin).
-SL_FROM_WORST = float(os.environ.get("RSISCALP_SL", "0.01"))   # env override; no-DCA uses 0.015 (=1.5% from entry)
-_SL_NOTE = 0.01        # 2026-06-01: 2% → 1% for 3x. Backtest: 1% stop at 3x =
+SL_FROM_WORST = 0.01   # 2026-06-01: 2% → 1% for 3x. Backtest: 1% stop at 3x =
                        # +1958% (vs +780% at 2%), ~49% DD, and sits further from
                        # the 33% liquidation line. Tighter = safer AND better here.
 

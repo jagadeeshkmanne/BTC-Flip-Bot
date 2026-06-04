@@ -212,7 +212,6 @@
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="rsiscalp">RSI Scalp</option>
     <option value="rsiscalp_trend">RSI Scalp +Trend</option>
-    <option value="rsiscalp_nodca">RSI Scalp (no-DCA exp)</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -360,7 +359,7 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  return (s === 'rsiscalp' || s === 'rsiscalp_trend' || s === 'rsiscalp_nodca') ? s : 'rsiscalp';
+  return (s === 'rsiscalp' || s === 'rsiscalp_trend') ? s : 'rsiscalp';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
 const DIVFLIP_V2 = STRATEGY === 'divflip_v2';
@@ -368,9 +367,8 @@ const DIVFLIP_SHARP = STRATEGY === 'divflip_sharp';
 const DIVFLIP_PRO   = STRATEGY === 'divflip_pro';
 const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIVFLIP_PRO;
 // Pure-RSI scalper — RSI extremes (optionally + a 15m trend gate variant).
-const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend' || STRATEGY === 'rsiscalp_nodca';
+const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend';
 const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend';
-const RSISCALP_NODCA = STRATEGY === 'rsiscalp_nodca';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
 
 // Trend-filter labels — vary by strategy. v1 uses 15m EMA20/50, v2 uses 1h EMA50/200.
@@ -1464,7 +1462,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     : DIVFLIP_SHARP ? 'DivFlip Sharp ⭐'
                     : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
-                    : RSISCALP_NODCA ? 'RSI Scalp (no-DCA exp)'
                     : RSISCALP_TREND ? 'RSI Scalp +Trend'
                     : RSISCALP ? 'RSI Scalp'
                     : 'S/R DCA';
@@ -1477,8 +1474,6 @@ document.addEventListener('DOMContentLoaded', () => {
       sub.textContent = 'DivFlip Pro (2026-05-26 v2). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66. UK+NY hours UTC 08-20, FRIDAY BLOCKED. 2-leg DCA @ 0.3% (tightened). SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. Cooldowns: 6h after SL, 15min after TP (anti pump-and-dump).';
     } else if (DIVFLIP_SHARP) {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
-    } else if (RSISCALP_NODCA) {
-      sub.textContent = '⚠️ EXPERIMENT — RSI single entry, NO DCA. Enters at RSI(9) ≤28 / ≥72, TP +0.25% from entry, SL 1.5% from entry, 3× lev, 2-loss→2h breaker. Backtests NEGATIVE expectancy (−0.028%/trade) with a larger worst loss (−4.4%) than the DCA bots — running only to observe live. The DCA is what makes the strategy profitable; this removes it.';
     } else if (RSISCALP_TREND) {
       sub.textContent = 'RSI mean-reversion + 15m TREND GATE — LONG only when 15m EMA20>EMA50 (uptrend), SHORT only when EMA20<EMA50 (downtrend). RSI(9) ≤30/≥70 entry, 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 3× lev, 2-loss→2h circuit breaker. Trades ~half as often as plain RSI for ~half the drawdown.';
     } else if (RSISCALP) {
