@@ -388,23 +388,66 @@ def main():
             ],
         }
     else:
-        # Engine B checklist — describes the 3-bar sweep pattern
+        # Engine B checklist — actually compute pattern stage per level.
         lvl_str = "n/a"
+        # For each level, compute: has Bar 1 (bait), Bar 2 (trap), Bar 3 (trigger)
+        # condition been met? Show the closest-to-firing level's progress so the
+        # user sees "we're 2/3 of the way" rather than a hardcoded "watching" ✓.
+        best_long_stage  = 0   # 0=no bait, 1=bait, 2=bait+trap, 3=full setup
+        best_short_stage = 0
+        best_long_level  = best_short_level = ""
+        p_high_ = float(prev_bar["high"]);   p_low_ = float(prev_bar["low"])
+        p_close_ = float(prev_bar["close"])
+        pri_high_ = float(prior_bar["high"]); pri_low_ = float(prior_bar["low"])
+        pri_close_ = float(prior_bar["close"])
+        l_close_ = float(last_bar["close"])
         if prev_day:
             lvl_str = (f"L${prev_day['prev_day_low']:.0f} / "
                        f"M${prev_day['prev_day_mid']:.0f} / "
                        f"H${prev_day['prev_day_high']:.0f}")
+            for nm, lv in [("prev_day_low",  prev_day["prev_day_low"]),
+                           ("prev_day_mid",  prev_day["prev_day_mid"]),
+                           ("prev_day_high", prev_day["prev_day_high"])]:
+                # SHORT sweep stages (trap above level)
+                s_b1 = pri_high_ > lv and pri_close_ > lv
+                s_b2 = p_high_ > lv and p_high_ > pri_high_ and p_close_ < lv
+                s_b3 = l_close_ < p_low_
+                s_stage = (3 if (s_b1 and s_b2 and s_b3) else
+                           2 if (s_b1 and s_b2) else
+                           1 if s_b1 else 0)
+                if s_stage > best_short_stage:
+                    best_short_stage = s_stage; best_short_level = nm
+                # LONG sweep stages (trap below level)
+                l_b1 = pri_low_ < lv and pri_close_ < lv
+                l_b2 = p_low_  < lv and p_low_ < pri_low_ and p_close_ > lv
+                l_b3 = l_close_ > p_high_
+                l_stage = (3 if (l_b1 and l_b2 and l_b3) else
+                           2 if (l_b1 and l_b2) else
+                           1 if l_b1 else 0)
+                if l_stage > best_long_stage:
+                    best_long_stage = l_stage; best_long_level = nm
+
+        def _stage_label(stage):
+            return ("Bar 1 (bait) NOT detected" if stage == 0 else
+                    "Bar 1 ✓ (bait detected, waiting on Bar 2)" if stage == 1 else
+                    "Bar 1 ✓ Bar 2 ✓ (trap formed, waiting on trigger)" if stage == 2 else
+                    "All 3 bars aligned — fires this tick")
+
         checks = {
             "LONG": [
                 _c("Engine B active (BBW ≤ 1.5%)", f"{bw_pct_now:.2f}%", bw_pct_now <= BBW_SWITCH_PCT),
                 _c("Prev-day levels (L/Mid/H)", lvl_str, prev_day is not None),
-                _c("Watching for 3-bar LONG sweep", "Bar 1 down → Bar 2 wick deeper down → Bar 3 close > Bar 2 high", True),
+                _c(f"Bar 1 (bait): close past a level", _stage_label(best_long_stage) + (f" @ {best_long_level}" if best_long_level else ""), best_long_stage >= 1),
+                _c(f"Bar 2 (trap): deeper wick + close back inside", _stage_label(best_long_stage), best_long_stage >= 2),
+                _c(f"Bar 3 (trigger): close > Bar 2 high", "yes" if best_long_stage >= 3 else "no", best_long_stage >= 3),
                 _c("No ATR spike lockout", f"{lock_left}b left" if lock_left else "clear", lock_left == 0),
             ],
             "SHORT": [
                 _c("Engine B active (BBW ≤ 1.5%)", f"{bw_pct_now:.2f}%", bw_pct_now <= BBW_SWITCH_PCT),
                 _c("Prev-day levels (L/Mid/H)", lvl_str, prev_day is not None),
-                _c("Watching for 3-bar SHORT sweep", "Bar 1 up → Bar 2 wick deeper up → Bar 3 close < Bar 2 low", True),
+                _c(f"Bar 1 (bait): close past a level", _stage_label(best_short_stage) + (f" @ {best_short_level}" if best_short_level else ""), best_short_stage >= 1),
+                _c(f"Bar 2 (trap): deeper wick + close back inside", _stage_label(best_short_stage), best_short_stage >= 2),
+                _c(f"Bar 3 (trigger): close < Bar 2 low", "yes" if best_short_stage >= 3 else "no", best_short_stage >= 3),
                 _c("No ATR spike lockout", f"{lock_left}b left" if lock_left else "clear", lock_left == 0),
             ],
         }

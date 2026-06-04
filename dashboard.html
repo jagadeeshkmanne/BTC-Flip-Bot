@@ -84,7 +84,10 @@
   .scale-zones{display:flex;justify-content:space-between;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;color:var(--muted)}
   .scale{position:relative;height:8px;background:linear-gradient(90deg,rgba(46,160,67,.18),rgba(31,38,46,.4) 50%,rgba(248,81,73,.18));border-radius:4px}
   .position.long .scale{background:linear-gradient(90deg,rgba(248,81,73,.18),rgba(31,38,46,.4) 50%,rgba(46,160,67,.18))}
-  .scale-mark{position:absolute;top:-4px;width:3px;height:16px;border-radius:2px;background:var(--blue);box-shadow:0 0 8px rgba(88,166,255,.5);transform:translateX(-50%);transition:left .25s ease-out;z-index:5}
+  /* 2026-06-04: removed `transition: left .25s ease-out`. At 60Hz updates from
+     WS the dot was perpetually mid-animation, never settling — read as
+     "fluctuating left/right" on mobile. Snapping the dot directly is steadier. */
+  .scale-mark{position:absolute;top:-4px;width:3px;height:16px;border-radius:2px;background:var(--blue);box-shadow:0 0 8px rgba(88,166,255,.5);transform:translateX(-50%);z-index:5}
   .scale-mark::after{content:"";position:absolute;top:-5px;left:-3px;width:9px;height:5px;border-radius:50% 50% 0 0;background:var(--blue);clip-path:polygon(50% 100%,0 0,100% 0)}
   .scale-tick{position:absolute;top:-2px;width:2px;height:12px;border-radius:1px;transform:translateX(-50%)}
   .scale-tick.tp{background:var(--green-2)}
@@ -778,7 +781,10 @@ function _renderPositionStatic(p, mark){
   const prices = levels.map(l => l.price);
   const min = Math.min(...prices), max = Math.max(...prices);
   const range = max - min || 1;
-  const pad = range * 0.10;
+  // 2026-06-04: pad widened 10% → 25%. Smaller pad caused mark price to
+  // exceed the cached bounds on small price oscillations → full bar
+  // rescale → ticks + top labels jump → looked like the bar "fluctuated".
+  const pad = range * 0.25;
   const lo = min - pad, hi = max + pad;
   const span = hi - lo;
   const pct = v => ((v - lo) / span) * 100;
@@ -1313,11 +1319,12 @@ async function refresh(){
       };
       $('positionCard').style.display = '';
       $('setupCard').style.display = 'none';
-      // PnL math uses LAST TRADE — that's what Binance UI's PnL column uses.
-      // (Binance API's `unrealizedProfit` is mark-based, but the user-facing
-      // PnL display on the position table is last-trade based; matching the
-      // UI is more important for "does this match what I see on Binance".)
-      const mark = (binance && binance.last_trade) || status.live_price || status.price || positionSnapshot.entry;
+      // 2026-06-04 OSCILLATION FIX: prefer the live WS price (window.__livePrice)
+      // over the bot's cron-tick-cached status.live_price. The old order
+      // caused position card to flip between live (~60Hz from WS) and
+      // status (cached ~60s) on every refresh poll — classic mobile-visible
+      // oscillation. Fall back to status only if WS hasn't reported yet.
+      const mark = window.__livePrice || (binance && binance.last_trade) || status.live_price || status.price || positionSnapshot.entry;
       renderPosition(mark);
     } else {
       positionSnapshot = null;
@@ -1327,7 +1334,7 @@ async function refresh(){
       $('setupCard').style.display = '';
       renderSetup(status);
     }
-    renderPnl((binance && binance.last_trade) || status.live_price || status.price);
+    renderPnl(window.__livePrice || (binance && binance.last_trade) || status.live_price || status.price);
 
     // Trades
     const tl = state.trade_log || [];
@@ -1693,20 +1700,25 @@ function startWS(){
   };
 }
 
-// Heartbeat — half-open detection
+// Heartbeat — half-open detection.
+// 2026-06-04 tightened 30s→10s threshold for mobile. Mobile browsers can
+// silently drop WS connections when the tab backgrounds; the old 30s
+// threshold meant up to 35 seconds of "frozen" prices before reconnect.
 setInterval(() => {
   if (!currentWs) return;
   const since = lastWsMsgTs ? (Date.now() - lastWsMsgTs)/1000 : 999;
-  if (since > 30 && currentWs.readyState <= 1) {
+  if (since > 10 && currentWs.readyState <= 1) {
     setLive(`stale ${Math.round(since)}s`, 'stale');
-    try { currentWs.close(); } catch(e) {}
+    try { currentWs.close(); } catch(e) {}   // triggers onclose → reconnect
   }
-}, 5000);
+}, 2000);
 
-// REST poll fallback when WS stale (geo-blocked WS, etc.)
+// REST poll fallback when WS stale.
+// 2026-06-04 tightened gap 10s→4s. With a tab returning from background,
+// any WS drop now gets a REST-driven price within a few seconds.
 setInterval(async () => {
   const since = lastWsMsgTs ? (Date.now() - lastWsMsgTs)/1000 : 999;
-  if (since < 10) return;
+  if (since < 4) return;
   try {
     const r = await fetch(REST_URL);
     const d = await r.json();
@@ -1714,10 +1726,34 @@ setInterval(async () => {
       restCount++;
       const k = d[0];
       updateMark(+k[4], {t:Math.floor(k[0]/1000), o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5]});
-      if (since > 15) setLive(`REST ${restCount}`, 'rest');
+      if (since > 8) setLive(`REST ${restCount}`, 'rest');
     }
   } catch(e) {}
-}, 3000);
+}, 2500);
+
+// MOBILE FIX 2026-06-04: visibilitychange handler. When the tab returns to
+// the foreground after being backgrounded (very common on mobile), the WS
+// connection is often already dead but onclose hasn't fired yet. Force a
+// reconnect immediately on visibility change so the user doesn't stare at
+// stale "cached-looking" prices waiting for the heartbeat to notice.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  // Tab just became visible. Check WS health.
+  const since = lastWsMsgTs ? (Date.now() - lastWsMsgTs)/1000 : 999;
+  if (since > 3) {
+    // > 3 seconds since last WS message — assume the connection was dropped
+    // while we were backgrounded. Close it (triggers reconnect) and fire a
+    // one-shot REST poll right now so the user sees a fresh price instantly.
+    if (currentWs) { try { currentWs.close(); } catch(e) {} }
+    fetch(REST_URL).then(r => r.json()).then(d => {
+      if (Array.isArray(d) && d.length) {
+        const k = d[0];
+        updateMark(+k[4], {t:Math.floor(k[0]/1000), o:+k[1], h:+k[2], l:+k[3], c:+k[4], v:+k[5]});
+        setLive('reconnecting', 'stale');
+      }
+    }).catch(() => {});
+  }
+});
 
 // ─── 5m candlestick chart: 3 days, scrollable, live updates ────
 // Fetches 864 5m bars (3 days). Computes RSI(14) + pivot-based divergences
