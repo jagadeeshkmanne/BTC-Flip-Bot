@@ -148,10 +148,8 @@ def main():
                         f"${atr_now*ATR_SPIKE_MULT:.0f} → lockout {LOCKOUT_BARS} bars")
         elif state.get("lockout_remaining_bars", 0) > 0:
             state["lockout_remaining_bars"] -= 1
-        pe = state.get("pending_entry")
-        if pe and pe.get("signal_bar_ts") != last_bar_ts and pe.get("signal_bar_ts") is not None:
-            log.info(f"  pending {pe.get('side')} entry expired (cron lag)")
-            state["pending_entry"] = None
+        # 2026-06-04 fix: removed pending_entry expiration block — see v2 for
+        # the bug explanation. Signals now execute inline at detection time.
         state["last_processed_bar_ts"] = last_bar_ts
 
     # ──────────────── (2) 24h equity halt + auto-resume ────────────────
@@ -262,16 +260,31 @@ def main():
             green = float(last_bar["close"]) > float(last_bar["open"])
             red   = float(last_bar["close"]) < float(last_bar["open"])
 
+            # 2026-06-04 fix: inline execution (see v2 for bug detail).
             sig_side = None
             if above_e200 and prev_low_touched_e20 and rsi_cross_up and green:
                 sig_side = "LONG"
             elif below_e200 and prev_high_touched_e20 and rsi_cross_down and red:
                 sig_side = "SHORT"
             if sig_side:
-                state["pending_entry"] = {"side": sig_side, "engine": "A",
-                                          "signal_bar_ts": last_bar_ts}
-                signal = sig_side
-                log.warning(f"  SIGNAL {sig_side} [A trend pullback]")
+                entry = live_px
+                if sig_side == "LONG":
+                    swing = float(closed.tail(SWING_LOOKBACK)["low"].min())
+                    raw_sl = swing * (1 - INITIAL_SL_BUFFER)
+                    sl = max(raw_sl, entry * (1 - SL_MAX_DIST_PCT))
+                    sl = min(sl,    entry * (1 - SL_MIN_DIST_PCT))
+                else:
+                    swing = float(closed.tail(SWING_LOOKBACK)["high"].max())
+                    raw_sl = swing * (1 + INITIAL_SL_BUFFER)
+                    sl = min(raw_sl, entry * (1 + SL_MAX_DIST_PCT))
+                    sl = max(sl,    entry * (1 + SL_MIN_DIST_PCT))
+                qty = book.qty_for_notional(entry)
+                if qty > 0:
+                    book.open(sig_side, entry, qty, sl, [],
+                              {"engine": "A", "regime": "TREND",
+                               "reason": "pullback_strict_2candle"})
+                    signal = sig_side
+                    log.warning(f"  SIGNAL {sig_side} [A trend] executed @ ${entry:.2f}")
         else:
             # ─── Engine B: Liquidity Sweep ───
             if prev_day is None:
@@ -288,6 +301,7 @@ def main():
                 pri_close = float(prior_bar["close"])
                 l_close = float(last_bar["close"])
 
+                # 2026-06-04 fix: inline execution for sweep entries too.
                 for name, level in levels.items():
                     # SHORT sweep: trap longs above the level
                     b1_breakout      = pri_high > level and pri_close > level
@@ -295,13 +309,24 @@ def main():
                     b2_failed_close  = p_close < level
                     b3_break_low     = l_close < p_low
                     if b1_breakout and b2_deeper_wick and b2_failed_close and b3_break_low:
-                        state["pending_entry"] = {
-                            "side": "SHORT", "engine": "B", "signal_bar_ts": last_bar_ts,
-                            "level_name": name, "level": level,
-                            "trap_extreme": max(pri_high, p_high),
-                        }
-                        signal = "SHORT"
-                        log.warning(f"  SIGNAL SHORT [B sweep @ {name}=${level:.0f}]")
+                        entry = live_px
+                        trap_ext = max(pri_high, p_high)
+                        sl = trap_ext * (1 + SWEEP_SL_BUFFER)
+                        risk = sl - entry
+                        if risk <= 0:
+                            log.warning(f"  [B {name}] skip — non-positive risk")
+                        elif risk / entry > SL_MAX_DIST_PCT:
+                            log.warning(f"  [B {name}] skip — cluster too wide ({risk/entry*100:.2f}%)")
+                        else:
+                            tp = entry - risk * SWEEP_RR
+                            qty = book.qty_for_notional(entry)
+                            if qty > 0:
+                                book.open("SHORT", entry, qty, sl,
+                                          [{"px": tp, "frac": 1.0}],
+                                          {"engine": "B", "regime": "SWEEP",
+                                           "reason": name, "level": level})
+                                signal = "SHORT"
+                                log.warning(f"  SIGNAL SHORT [B sweep @ {name}=${level:.0f}] executed @ ${entry:.2f}")
                         break
 
                     # LONG sweep: trap shorts below the level
@@ -310,62 +335,25 @@ def main():
                     b2_failed_close_l = p_close > level
                     b3_break_high    = l_close > p_high
                     if b1_breakdown and b2_deeper_wick_l and b2_failed_close_l and b3_break_high:
-                        state["pending_entry"] = {
-                            "side": "LONG", "engine": "B", "signal_bar_ts": last_bar_ts,
-                            "level_name": name, "level": level,
-                            "trap_extreme": min(pri_low, p_low),
-                        }
-                        signal = "LONG"
-                        log.warning(f"  SIGNAL LONG [B sweep @ {name}=${level:.0f}]")
+                        entry = live_px
+                        trap_ext = min(pri_low, p_low)
+                        sl = trap_ext * (1 - SWEEP_SL_BUFFER)
+                        risk = entry - sl
+                        if risk <= 0:
+                            log.warning(f"  [B {name}] skip — non-positive risk")
+                        elif risk / entry > SL_MAX_DIST_PCT:
+                            log.warning(f"  [B {name}] skip — cluster too wide ({risk/entry*100:.2f}%)")
+                        else:
+                            tp = entry + risk * SWEEP_RR
+                            qty = book.qty_for_notional(entry)
+                            if qty > 0:
+                                book.open("LONG", entry, qty, sl,
+                                          [{"px": tp, "frac": 1.0}],
+                                          {"engine": "B", "regime": "SWEEP",
+                                           "reason": name, "level": level})
+                                signal = "LONG"
+                                log.warning(f"  SIGNAL LONG [B sweep @ {name}=${level:.0f}] executed @ ${entry:.2f}")
                         break
-
-    # ──────────────── (5) Execute pending entry (next tick after signal bar) ────────────────
-    pe = state.get("pending_entry")
-    if pe and book.position is None and not state.get("halted") and not book.paused():
-        if pe.get("signal_bar_ts") != last_bar_ts:
-            side = pe["side"]; engine = pe.get("engine", "A")
-            entry = live_px
-            tp_targets = []
-            sl = None
-            ok = True
-
-            if engine == "A":
-                if side == "LONG":
-                    swing = float(closed.tail(SWING_LOOKBACK)["low"].min())
-                    raw_sl = swing * (1 - INITIAL_SL_BUFFER)
-                    sl = max(raw_sl, entry * (1 - SL_MAX_DIST_PCT))
-                    sl = min(sl,    entry * (1 - SL_MIN_DIST_PCT))
-                else:
-                    swing = float(closed.tail(SWING_LOOKBACK)["high"].max())
-                    raw_sl = swing * (1 + INITIAL_SL_BUFFER)
-                    sl = min(raw_sl, entry * (1 + SL_MAX_DIST_PCT))
-                    sl = max(sl,    entry * (1 + SL_MIN_DIST_PCT))
-            else:
-                trap_ext = pe.get("trap_extreme")
-                if side == "SHORT":
-                    sl = trap_ext * (1 + SWEEP_SL_BUFFER)
-                    risk = sl - entry
-                else:
-                    sl = trap_ext * (1 - SWEEP_SL_BUFFER)
-                    risk = entry - sl
-                if risk <= 0:
-                    log.warning(f"  [B] skip — non-positive risk (live_px already past trap)")
-                    ok = False
-                elif risk / entry > SL_MAX_DIST_PCT:
-                    log.warning(f"  [B] skip — trap cluster too wide ({risk/entry*100:.2f}% > {SL_MAX_DIST_PCT*100:.2f}% cap)")
-                    ok = False
-                else:
-                    tp = entry - risk * SWEEP_RR if side == "SHORT" else entry + risk * SWEEP_RR
-                    tp_targets = [{"px": tp, "frac": 1.0}]
-
-            if ok and sl is not None:
-                qty = book.qty_for_notional(entry)
-                if qty > 0:
-                    meta = {"engine": engine,
-                            "regime": "TREND" if engine == "A" else "SWEEP",
-                            "reason": pe.get("level_name", "pullback_strict")}
-                    book.open(side, entry, qty, sl, tp_targets, meta)
-            state["pending_entry"] = None
 
     book.save()
 

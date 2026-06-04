@@ -127,12 +127,11 @@ def main():
                         f"${atr_now*ATR_SPIKE_MULT:.0f} — entry lockout {LOCKOUT_BARS} bars")
         elif state.get("lockout_remaining_bars", 0) > 0:
             state["lockout_remaining_bars"] -= 1
-        # Expire stale pending entries (must execute on the NEXT tick after signal bar)
-        pe = state.get("pending_entry")
-        if pe and pe.get("signal_bar_ts") != last_bar_ts and pe.get("signal_bar_ts") is not None:
-            # We're already past the signal bar's close — expire (would-be execution missed)
-            log.info(f"  pending {pe.get('side')} entry expired (cron lag)")
-            state["pending_entry"] = None
+        # 2026-06-04 fix: removed pending_entry expiration block. Signal now
+        # executes inline at detection time (see section 4). The old "queue +
+        # execute on next-bar tick" pattern had a sequencing bug — the
+        # new-bar maintenance below expired pending_entry before the execution
+        # block could fire it. Net result: bot detected signals but never opened.
         state["last_processed_bar_ts"] = last_bar_ts
 
     # ──────────────────── (2) 24h rolling equity halt ────────────────────
@@ -225,39 +224,30 @@ def main():
                 elif below_e200 and prev_high_touched_e20 and rsi_cross_down and red:
                     sig_side = "SHORT"
                 if sig_side:
-                    state["pending_entry"] = {
-                        "side": sig_side,
-                        "signal_bar_ts": last_bar_ts,
-                    }
-                    signal = sig_side
-                    log.warning(f"  SIGNAL {sig_side} at close of {last_bar_ts} — execute next tick")
-
-    # ──────────────────── (5) Execute pending entry (next tick after signal bar) ────────────────────
-    pe = state.get("pending_entry")
-    if pe and book.position is None and not state.get("halted") and not book.paused():
-        if pe.get("signal_bar_ts") != last_bar_ts:
-            # We're on the tick AFTER the signal bar closed → execute at live_px (≈ open of t+1)
-            side = pe["side"]
-            entry = live_px
-
-            # Initial SL: last-5-bar swing extreme ± 0.20%, capped to [0.15%, 0.60%] from entry
-            if side == "LONG":
-                swing = float(closed.tail(SWING_LOOKBACK)["low"].min())
-                raw_sl = swing * (1 - INITIAL_SL_BUFFER)
-                sl = max(raw_sl, entry * (1 - SL_MAX_DIST_PCT))   # not more than 0.6% away
-                sl = min(sl,     entry * (1 - SL_MIN_DIST_PCT))   # not less than 0.15% away
-            else:
-                swing = float(closed.tail(SWING_LOOKBACK)["high"].max())
-                raw_sl = swing * (1 + INITIAL_SL_BUFFER)
-                sl = min(raw_sl, entry * (1 + SL_MAX_DIST_PCT))
-                sl = max(sl,     entry * (1 + SL_MIN_DIST_PCT))
-
-            qty = book.qty_for_notional(entry)  # TRUE 3× notional sizing
-            if qty > 0:
-                book.open(side, entry, qty, sl, [],
-                          {"regime": "TREND", "reason": "pullback_strict_2candle",
-                           "atr_at_entry": float(last_bar["atr14"]) if last_bar["atr14"] == last_bar["atr14"] else None})
-            state["pending_entry"] = None
+                    # 2026-06-04 fix: execute INLINE at signal detection. Old code
+                    # queued pending_entry and waited for "next tick" but never
+                    # actually fired (queued entry was expired by the new-bar
+                    # maintenance block on the next-bar tick). live_px at this
+                    # point is ~1 min into the t+1 bar — close enough to the
+                    # spec's "open of t+1" intent for paper purposes.
+                    entry = live_px
+                    if sig_side == "LONG":
+                        swing = float(closed.tail(SWING_LOOKBACK)["low"].min())
+                        raw_sl = swing * (1 - INITIAL_SL_BUFFER)
+                        sl = max(raw_sl, entry * (1 - SL_MAX_DIST_PCT))   # not more than 0.6%
+                        sl = min(sl,     entry * (1 - SL_MIN_DIST_PCT))   # not less than 0.15%
+                    else:
+                        swing = float(closed.tail(SWING_LOOKBACK)["high"].max())
+                        raw_sl = swing * (1 + INITIAL_SL_BUFFER)
+                        sl = min(raw_sl, entry * (1 + SL_MAX_DIST_PCT))
+                        sl = max(sl,     entry * (1 + SL_MIN_DIST_PCT))
+                    qty = book.qty_for_notional(entry)  # TRUE 3× notional
+                    if qty > 0:
+                        book.open(sig_side, entry, qty, sl, [],
+                                  {"regime": "TREND", "reason": "pullback_strict_2candle",
+                                   "atr_at_entry": float(last_bar["atr14"]) if last_bar["atr14"] == last_bar["atr14"] else None})
+                        signal = sig_side
+                        log.warning(f"  SIGNAL {sig_side} executed @ ${entry:.2f} (closed bar {last_bar_ts})")
 
     book.save()
 
