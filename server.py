@@ -484,16 +484,6 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
-        elif strategy_q == 'gemini_v2':
-            env_dir = 'paper_gemini_v2'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'gemini_v3':
-            env_dir = 'paper_gemini_v3'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
         elif env_q == 'testnet':
             env_dir = 'testnet'
             state_filename = 'state_day.json'
@@ -565,18 +555,6 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     balance_key='balance',
                 ))
             if env_dir == 'paper_gemini':
-                return self._json_response(_query_paper_position(
-                    state_subdir=env_dir,
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_gemini_v2':
-                return self._json_response(_query_paper_position(
-                    state_subdir=env_dir,
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_gemini_v3':
                 return self._json_response(_query_paper_position(
                     state_subdir=env_dir,
                     state_filename='state.json',

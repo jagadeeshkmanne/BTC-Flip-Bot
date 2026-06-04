@@ -49,13 +49,11 @@ FLAT_SLOPE = 0.0012       # |EMA200 2h slope| < 0.12% => "flat" => RANGE
 SQUEEZE_BW = 0.008        # BB width / basis < 0.8% => squeeze => no reversion
 PULLBACK_LOOKBACK = 4     # bars to look back for an EMA20 pullback touch
 SWING_LOOKBACK = 6
-# STABILITY FILTER (added 2026-06-04): observed loss pattern was that all 4
-# losing SHORTs on 2026-06-04 fired in the first 30 min of BEAR regime
-# (entry too eager — close had just crossed below EMA200) AND in the last 30
-# min (close was already crossing back above). Require N consecutive 5m bars
-# of close on the same side of EMA200 before declaring BULL/BEAR. Anything
-# else → TRANSITION (sit out). Filter would have skipped 4/11 losses on that day.
-STABILITY_BARS = 6        # 6 × 5m = 30 minutes of consistent EMA200 side
+# 2026-06-05: stability filter REMOVED per user request. The filter (require
+# 6 consecutive 5m bars on same side of EMA200 before declaring BULL/BEAR)
+# was added 2026-06-04 to skip start/end-of-day transition losses, but user
+# reverted — accepting more transition losses in exchange for catching the
+# first leg of fresh trends. Classifier is back to its pre-filter behavior.
 
 
 def classify_regime(df):
@@ -67,25 +65,12 @@ def classify_regime(df):
     e20_up = e20 > e20_prev
     e200_slope = abs(e200 / e200_prev - 1)
     bw = (df["bb_up"].iloc[-1] - df["bb_low"].iloc[-1]) / df["bb_mid"].iloc[-1]
-
-    # STABILITY FILTER: how many of the last STABILITY_BARS closes were on each
-    # side of EMA200. We only declare BULL/BEAR when the FULL window agrees.
-    window = df.iloc[-STABILITY_BARS:]
-    all_above = bool((window["close"] > window["ema200"]).all())
-    all_below = bool((window["close"] < window["ema200"]).all())
-
     if e200_slope < FLAT_SLOPE:
         return ("SQUEEZE" if bw < SQUEEZE_BW else "RANGE")
     if c > e200 and e20 > e200 and e20_up:
-        # Only BULL if the LAST STABILITY_BARS closes were ALL above EMA200.
-        # Otherwise we're in a freshly-transitioned trend — sit out.
-        if all_above:
-            return "BULL"
-        return "TRANSITION"
+        return "BULL"
     if c < e200 and e20 < e200 and not e20_up:
-        if all_below:
-            return "BEAR"
-        return "TRANSITION"
+        return "BEAR"
     return "RANGE" if bw >= SQUEEZE_BW else "SQUEEZE"
 
 
@@ -144,11 +129,6 @@ def main():
             block_reason = "circuit breaker — paused after losses"
         elif regime == "SQUEEZE":
             block_reason = "BB squeeze — waiting for breakout (golden rule)"
-        elif regime == "TRANSITION":
-            # Stability filter (added 2026-06-04): close has been flipping
-            # vs EMA200 within the last STABILITY_BARS bars — wait for the new
-            # regime to confirm before taking entries.
-            block_reason = f"regime transition — EMA200 stability < {STABILITY_BARS}/{STABILITY_BARS} bars"
         else:
             entry = sig_side = sl = tp = None
             reason = None
@@ -218,18 +198,6 @@ def main():
                       _c("RSI7 dropping back below 70", _rs, rsi_prev >= 70 and rsi_now < 70),
                       _c("Red candle confirms drop", "yes" if _red else "no", _red)],
         }
-    elif regime == "TRANSITION":
-        # Stability filter blocked entry — show how close we are to confirming.
-        window = closed.iloc[-STABILITY_BARS:]
-        above_count = int((window["close"] > window["ema200"]).sum())
-        below_count = int((window["close"] < window["ema200"]).sum())
-        progress = max(above_count, below_count)
-        checks = {
-            "LONG":  [_c("Regime stability filter", f"{progress}/{STABILITY_BARS} consistent bars vs EMA200", False),
-                      _c("Waiting for regime to confirm", "close still flipping across EMA200", False)],
-            "SHORT": [_c("Regime stability filter", f"{progress}/{STABILITY_BARS} consistent bars vs EMA200", False),
-                      _c("Waiting for regime to confirm", "close still flipping across EMA200", False)],
-        }
     else:  # SQUEEZE
         checks = {"LONG": [_c("Bollinger squeeze — standing aside", "waiting for breakout", False)],
                   "SHORT": [_c("Bollinger squeeze — standing aside", "waiting for breakout", False)]}
@@ -243,9 +211,7 @@ def main():
          "bb_low": float(last["bb_low"]), "bb_mid": float(last["bb_mid"]), "bb_up": float(last["bb_up"])},
         regime,
         f"Gemini multi-regime (EMA200/EMA20/BB20·2/RSI7 — trend-pullback in BULL/BEAR, "
-        f"BB mean-revert in RANGE, sit out SQUEEZE/TRANSITION / 3x / risk {RISK_PCT*100:.1f}% / SL≤{SL_CAP*100:.1f}% / "
-        f"STABILITY FILTER 2026-06-04: requires {STABILITY_BARS}-bar EMA200 consistency before BULL/BEAR declared, "
-        f"blocks the start- and end-of-day transition losses) [PAPER]",
+        f"BB mean-revert in RANGE, sit out SQUEEZE / 3x / risk {RISK_PCT*100:.1f}% / SL≤{SL_CAP*100:.1f}%) [PAPER]",
         block_reason, checks=checks)
     log.info("=" * 60 + "\n")
 

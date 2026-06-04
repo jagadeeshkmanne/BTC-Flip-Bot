@@ -215,8 +215,6 @@
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="rsiscalp_trend">RSI Scalp +Trend</option>
     <option value="gemini">Gemini (multi-regime)</option>
-    <option value="gemini_v2">Gemini v2 (trend-only)</option>
-    <option value="gemini_v3">Gemini v3 (dual-engine)</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -364,7 +362,7 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  const allowed = ['rsiscalp_trend', 'gemini', 'gemini_v2', 'gemini_v3'];
+  const allowed = ['rsiscalp_trend', 'gemini'];
   return allowed.includes(s) ? s : 'rsiscalp_trend';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
@@ -376,7 +374,7 @@ const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIV
 // New 2026-06 bots (gemini/chatgpt/claude). They have no EOD window and no
 // S/R levels, so they render via the simple 24/7 RSISCALP path (balance /
 // position / stats / live indicator) with their own subtitle.
-const NEWBOT = STRATEGY === 'gemini' || STRATEGY === 'gemini_v2' || STRATEGY === 'gemini_v3' || STRATEGY === 'chatgpt' || STRATEGY === 'claude';
+const NEWBOT = STRATEGY === 'gemini' || STRATEGY === 'chatgpt' || STRATEGY === 'claude';
 const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend' || NEWBOT;
 const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
@@ -1588,8 +1586,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
                     : STRATEGY === 'gemini' ? 'Gemini ♊'
-                    : STRATEGY === 'gemini_v2' ? 'Gemini v2 ♊'
-                    : STRATEGY === 'gemini_v3' ? 'Gemini v3 ♊'
                     : STRATEGY === 'chatgpt' ? 'ChatGPT 🤖'
                     : STRATEGY === 'claude' ? 'Claude ✳️'
                     : RSISCALP_TREND ? 'RSI Scalp +Trend'
@@ -1603,10 +1599,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (NEWBOT) {
       sub.textContent = STRATEGY === 'gemini'
         ? 'Gemini multi-regime — classifies BULL / BEAR / RANGE / SQUEEZE first. Trend-pullbacks WITH the trend in BULL/BEAR (pullback to EMA20, RSI7 hook, TP at the Bollinger band), Bollinger mean-reversion in RANGE, sits out the BB squeeze. 3× lev, risk 0.5%/trade, SL ≤0.6%, 15-min cooldown after a loss.'
-        : STRATEGY === 'gemini_v2'
-        ? 'Gemini v2 trend-only — 5m EMA200 regime gate (~17h lookback) + strict 2-candle pullback (EMA20 touch at t−1, RSI(7) crosses 50 + green/red close at t, entry at OPEN of t+1). ATR(14)×3 spike lock (4-bar lockout). BBW cap REMOVED 2026-06-04 — trend pullbacks now welcome at any band width. Rolling 24h DD ≥3% halts. Risk-free pivot at +0.35% → SL → entry±0.10%. Post-pivot EMA20±0.1% structural trail. TRUE 3× notional sizing. [PAPER]'
-        : STRATEGY === 'gemini_v3'
-        ? 'Gemini v3 dual-engine — Dynamic Volatility Switch on 5m BBW. (A) BBW>1.5% → Trend Pullback (v2 logic: 5m EMA200 regime + EMA20 touch + RSI(7)/50 cross + green/red close, entry t+1 open, BE pivot +0.35% → entry±0.10%, EMA20±0.1% trail). (B) BBW≤1.5% → 3-Bar Liquidity Sweep at DYNAMIC prev_day H/Mid/L (Bait→Trap→Trigger, Bar 2 wick must strictly exceed Bar 1, SL 0.02% past trap cluster, fixed 1:2 RR; SKIP if cluster >0.6%). Guardrails: ATR(14)×3 → 4-bar lockout, rolling 24h DD ≥3% halt (auto-resumes 24h later), true 3× notional. [PAPER]'
         : STRATEGY === 'chatgpt'
         ? 'ChatGPT EMA-Pullback — trades only strong trends (ADX>25). LONG when EMA20>EMA50, price>EMA200, pullback to EMA20, next bar closes above the pullback high + volume>SMA20. TP1 1R (50%) / TP2 2R (25%) / runner trails EMA20. 3× lev, risk 0.5%/trade.'
         : 'Claude — RSI(5) mean-reversion + 5m EMA200 trend gate. Enters RSI ≤20 (LONG, above EMA200) / ≥80 (SHORT, below EMA200). 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 30% equity drawdown-stop, 3× lev, 15-min cooldown after a loss. Backtest +539% / −30% DD over 5y.';
