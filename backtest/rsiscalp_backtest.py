@@ -74,6 +74,7 @@ class Cfg:
     BREAKER_PAUSE_BARS = 24  # 2h / 5m
     INITIAL = 5000.0
     DD_STOP = 0.0
+    HOOK = False  # enter on RSI crossing BACK through the band (bounce confirm)
     FLIP_ON_SL = False  # on an SL exit, immediately open the OPPOSITE side
     WIN_COOLDOWN = 0      # bars to block entries after ANY winning close
     WINSTREAK_N = 0       # after this many consecutive wins...
@@ -144,6 +145,7 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
         e = df["ema200"].values
         long_ok = c > e; short_ok = c < e
 
+    ema200_arr = df["ema200"].values if "ema200" in df.columns else None
     balance = cfg.INITIAL
     peak = balance
     max_dd = 0.0
@@ -166,6 +168,8 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
             side = pos["side"]
             # track max adverse excursion (deepest move against us, intrabar)
             pos["extreme"] = min(pos["extreme"], l[i]) if side == "LONG" else max(pos["extreme"], h[i])
+            if not np.isnan(rsi[i]):
+                pos["rsi_ext"] = min(pos.get("rsi_ext", rsi[i]), rsi[i]) if side == "LONG" else max(pos.get("rsi_ext", rsi[i]), rsi[i])
             # DCA check
             if pos["filled"] < cfg.DCA_LEVELS:
                 trig = pos["worst"] * (1 - cfg.DCA_SPACING) if side == "LONG" else pos["worst"] * (1 + cfg.DCA_SPACING)
@@ -178,6 +182,7 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
                     pos["qty"] = sum(e[1] for e in pos["entries"])
                     pos["filled"] += 1
                     pos["rsi_l2"] = rsi[i]  # RSI at the moment L2 (DCA) filled
+                    pos["l2_i"] = i         # bar index of L2 fill (indicator decision point)
             avg = sum(p*q for p, q in pos["entries"]) / pos["qty"]
             # base catastrophic SL anchored to worst entry
             slp = pos["worst"] * (1 - cfg.SL) if side == "LONG" else pos["worst"] * (1 + cfg.SL)
@@ -212,6 +217,15 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
                     slp = max(slp, best * (1 - cfg.TRAIL))
                 elif side == "SHORT" and best < avg * (1 - cfg.TRAIL):
                     slp = min(slp, best * (1 + cfg.TRAIL))
+            # --- EMA200 break exit: after L2, bail if price closed >X% beyond EMA200
+            #     (the one weak winner/loser signal — testing if it pays) ---
+            if exit_px is None and cfg.EMA200_EXIT > 0 and pos["filled"] >= 2 and ema200_arr is not None:
+                e2 = ema200_arr[i]
+                if not np.isnan(e2):
+                    if side == "LONG" and c[i] < e2 * (1 - cfg.EMA200_EXIT):
+                        exit_px, reason = c[i], "EMA200X"
+                    elif side == "SHORT" and c[i] > e2 * (1 + cfg.EMA200_EXIT):
+                        exit_px, reason = c[i], "EMA200X"
             if exit_px is None:
                 sl_hit = (side == "LONG" and l[i] <= slp) or (side == "SHORT" and h[i] >= slp)
                 tp_hit = (not cfg.NO_TP) and ((side == "LONG" and h[i] >= tpp) or (side == "SHORT" and l[i] <= tpp))
@@ -242,7 +256,8 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
                                "filled": pos["filled"], "entry_i": pos["entry_i"], "exit_i": i,
                                "bars_held": i - pos["entry_i"], "rsi_entry": pos["rsi_entry"],
                                "mae_first": mae_first, "mae_avg": mae_avg,
-                               "rsi_l2": pos.get("rsi_l2")})
+                               "rsi_l2": pos.get("rsi_l2"), "rsi_ext": pos.get("rsi_ext"),
+                               "l2_i": pos.get("l2_i")})
                 if cfg.USE_BREAKER:
                     if net <= 0:
                         consec_losses += 1
@@ -275,7 +290,12 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
         # ---- entry on closed bar i signal -> fill at next bar open (i+1) ----
         if pos is None and i + 1 < len(df):
             sig = None
-            if rsi[i] <= cfg.RSI_OVERSOLD:
+            if cfg.HOOK:
+                if rsi[i-1] <= cfg.RSI_OVERSOLD and rsi[i] > cfg.RSI_OVERSOLD:
+                    sig = "LONG"
+                elif rsi[i-1] >= cfg.RSI_OVERBOUGHT and rsi[i] < cfg.RSI_OVERBOUGHT:
+                    sig = "SHORT"
+            elif rsi[i] <= cfg.RSI_OVERSOLD:
                 sig = "LONG"
             elif rsi[i] >= cfg.RSI_OVERBOUGHT:
                 sig = "SHORT"
@@ -353,6 +373,9 @@ def main():
     ap.add_argument("--bpause", type=int, default=24, help="breaker pause in 5m bars")
     ap.add_argument("--ddstop", type=float, default=0.0, help="halt new entries once equity DD exceeds this (e.g. 0.25)")
     ap.add_argument("--flip", action="store_true", help="stop-and-reverse: open opposite side on SL")
+    ap.add_argument("--emaexit", type=float, default=0.0)
+    ap.add_argument("--dca", type=int, default=2, help="DCA levels (1 = no DCA)")
+    ap.add_argument("--hook", action="store_true", help="enter on RSI crossing back through the band")
     ap.add_argument("--wincool", type=int, default=0, help="bars to block entries after any win")
     ap.add_argument("--winstreak", type=int, default=0)
     ap.add_argument("--winstreakcool", type=int, default=0)
@@ -363,7 +386,7 @@ def main():
     Cfg.BE_TRIG = args.be; Cfg.TRAIL = args.trail; Cfg.NO_TP = args.notp; Cfg.TRAIL_CLOSE = args.trailc
     Cfg.BREAKER_LOSSES = args.blosses; Cfg.BREAKER_PAUSE_BARS = args.bpause; Cfg.DD_STOP = args.ddstop
     Cfg.WIN_COOLDOWN = args.wincool; Cfg.WINSTREAK_N = args.winstreak; Cfg.WINSTREAK_COOL = args.winstreakcool
-    Cfg.FLIP_ON_SL = args.flip
+    Cfg.FLIP_ON_SL = args.flip; Cfg.DCA_LEVELS = args.dca; Cfg.HOOK = args.hook; Cfg.EMA200_EXIT = args.emaexit
 
     df = pd.read_csv(os.path.join(CACHE, "BTCUSDT_5m.csv"))
     df["timestamp"] = pd.to_datetime(df["timestamp"])

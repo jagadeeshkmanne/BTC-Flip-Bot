@@ -212,6 +212,8 @@
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
     <option value="rsiscalp_trend">RSI Scalp +Trend</option>
     <option value="gemini">Gemini (multi-regime)</option>
+    <option value="gemini_v2">Gemini v2 (trend-only)</option>
+    <option value="gemini_v3">Gemini v3 (dual-engine)</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -359,7 +361,7 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  const allowed = ['rsiscalp_trend', 'gemini'];
+  const allowed = ['rsiscalp_trend', 'gemini', 'gemini_v2', 'gemini_v3'];
   return allowed.includes(s) ? s : 'rsiscalp_trend';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
@@ -371,7 +373,7 @@ const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIV
 // New 2026-06 bots (gemini/chatgpt/claude). They have no EOD window and no
 // S/R levels, so they render via the simple 24/7 RSISCALP path (balance /
 // position / stats / live indicator) with their own subtitle.
-const NEWBOT = STRATEGY === 'gemini' || STRATEGY === 'chatgpt' || STRATEGY === 'claude';
+const NEWBOT = STRATEGY === 'gemini' || STRATEGY === 'gemini_v2' || STRATEGY === 'gemini_v3' || STRATEGY === 'chatgpt' || STRATEGY === 'claude';
 const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend' || NEWBOT;
 const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
@@ -636,32 +638,49 @@ function ensureEquityChart(){
 }
 
 // ── Render: position card with horizontal price scale ─────────
+// FLICKER FIX 2026-06-04: original renderPosition() rebuilt tick DOM + the
+// scaleLabels/scaleLabelsTop innerHTML on EVERY WS aggTrade message (often
+// 10+/s), which caused visible label flicker on mobile. It's now split into
+//   _renderPositionStatic — heavy DOM work; runs only when the snapshot's
+//                            structural fields change (or when mark price
+//                            drifts outside the cached bar bounds).
+//   _renderPositionDynamic — per-tick path; only touches the mark dot, mark
+//                            label, PnL numbers, SL distance %, and the
+//                            "distance from mark" text on each top label.
+// Layout (lo/hi/span) is cached so the dynamic path doesn't recompute min/max.
+let positionLayout = null;
+let positionSnapshotSig = '';
+function _posSig(p) {
+  return [p.side, p.entry, p.qty, p.sl, p.prevMid, p.avgEntry, p.filled || 1,
+          !!p.beActivated, p.beArmPx || 0, p.eodHeldOnDay || 0,
+          (p.legEntries || []).map(l => (l && l.px ? l.px : '')).join(';')].join('|');
+}
+
 function renderPosition(price){
   if (!positionSnapshot) return;
   const p = positionSnapshot;
   const mark = price || p.entry;
-  const notional = p.qty * p.entry;
-  // PnL: always derive from the WS price passed in here. Hero (renderPnl)
-  // does the same so the two never contradict. We deliberately drop the
-  // liveUpnl-from-Binance path — it's mark-based while WS is last-trade,
-  // and on testnet they diverge by hundreds of dollars, which made the hero
-  // show "−$9" while the position card showed "+$48".
-  // ROI = price_move% × leverage (matches Binance UI's PnL ROI display).
-  const pmp = p.side === 'LONG' ? (mark - p.entry) / p.entry : (p.entry - mark) / p.entry;
-  const pnlUsd = pmp * p.qty * p.entry;
-  const lev = p.leverage || 1;
-  const pnlPct = pmp * 100 * lev;
-  const cls = pnlUsd >= 0 ? 'pos' : 'neg';
+  const sig = _posSig(p);
+  const inBounds = positionLayout && mark >= positionLayout.lo && mark <= positionLayout.hi;
+  if (sig !== positionSnapshotSig || !inBounds) {
+    positionSnapshotSig = sig;
+    _renderPositionStatic(p, mark);
+  }
+  _renderPositionDynamic(p, mark);
+}
 
-  // Header
+function _renderPositionStatic(p, mark){
+  const notional = p.qty * p.entry;
+
+  // Header (static text)
   $('positionCard').className = 'position ' + (p.side === 'LONG' ? 'long' : 'short');
   $('posArrow').textContent = p.side === 'LONG' ? '▲' : '▼';
   $('posLabel').textContent = p.side;
   $('posSize').textContent = p.qty.toFixed(4) + ' BTC';
   $('posNotional').textContent = '≈ ' + fmt$(notional);
   $('posEntry').textContent = fmt$(p.entry);
-  $('posPnlUsd').innerHTML = `<span class="${cls}">${fmtUsd(pnlUsd)}</span>`;
-  $('posPnlPct').innerHTML = `<span class="${cls}">${fmtPct(pnlPct)}</span>`;
+  // PnL values are written by _renderPositionDynamic so this static pass
+  // doesn't blank them between sig changes.
 
   // BE-locked pill — shown on the entry line whenever bot has armed BE-SL.
   // Visual: gold/yellow pill matches the [BE] suffix in pine dashboard.
@@ -700,14 +719,11 @@ function renderPosition(price){
   if (p.side === 'SHORT') { $('zoneLeft').textContent = 'PROFIT (TP)'; $('zoneRight').textContent = 'ENTRY ZONE'; }
   else { $('zoneLeft').textContent = 'ENTRY ZONE'; $('zoneRight').textContent = 'PROFIT (TP)'; }
 
-  // SL card (left, off-bar) — always pinned at the corner so the bar can
-  // ignore the SL range and give the in-zone ticks real horizontal spacing.
+  // SL card (left, off-bar) — price is static; distance % handled in dynamic path
   const slEl = $('scaleSlCard');
   if (slEl && p.sl > 0) {
     slEl.style.display = '';
     $('scaleSlPrice').textContent = fmt$0(p.sl);
-    const slDistPct = ((p.sl - mark) / mark) * 100;
-    $('scaleSlPct').textContent = (slDistPct >= 0 ? '+' : '') + slDistPct.toFixed(2) + '%';
   } else if (slEl) {
     slEl.style.display = 'none';
   }
@@ -767,38 +783,24 @@ function renderPosition(price){
   const span = hi - lo;
   const pct = v => ((v - lo) / span) * 100;
 
-  // Build ticks on the bar + labels split top/bottom so Mark never clobbers
-  // Entry/TP/DCA/SL when they overlap horizontally.
-  //   TOP labels: TP, Entry, DCA, SL (the static reference levels)
-  //   BOTTOM:     Mark only (moves with price; needs to be visually distinct)
+  // Cache layout for the per-tick dynamic path
+  positionLayout = { lo, hi, span };
+
+  // Tick rendering (static positions — never change during the position's lifetime)
   const trackEl = $('scaleTrack');
   Array.from(trackEl.querySelectorAll('.scale-tick')).forEach(n => n.remove());
-  let bottomHtml = '';
-  // Top labels: TP, Entry, DCA, SL — collision-staggered to a second tier when
-  // two adjacent labels would overlap horizontally. Mark stays on the bottom.
   const topLevels = levels.filter(l => l.key !== 'mark');
-  // Tick + bottom-Mark rendering pass.
-  levels.forEach(l => {
-    if (l.key === 'mark') {
-      $('scaleMark').style.left = pct(l.price) + '%';
-      const distPct = ((l.price - mark) / mark) * 100;
-      bottomHtml += `
-        <div class="scale-lbl mark" style="left:${pct(l.price)}%">
-          <div class="scale-lbl-name">${l.name}</div>
-          <div class="scale-lbl-price num">${fmt$0(l.price)}</div>
-          <div class="scale-lbl-pct num">NOW</div>
-        </div>`;
-    } else {
-      const tick = document.createElement('div');
-      tick.className = 'scale-tick ' + l.key;
-      tick.style.left = pct(l.price) + '%';
-      trackEl.appendChild(tick);
-    }
+  topLevels.forEach(l => {
+    const tick = document.createElement('div');
+    tick.className = 'scale-tick ' + l.key;
+    tick.style.left = pct(l.price) + '%';
+    trackEl.appendChild(tick);
   });
-  // Top labels: positioned at each tick's bar percentage so label visually
-  // aligns with its tick. When two labels would collide, the second drops to
-  // tier-2 underneath the first. With the bar zoomed to entry→TP only, L1/L2
-  // typically sit ~30% apart on the bar (no longer cramped in 5% of the span).
+
+  // Top labels: positioned at each tick's bar percentage. Collision-staggered
+  // to a second tier when two adjacent labels overlap. The distance-% text is
+  // left EMPTY here and filled in by _renderPositionDynamic — that way per-WS-
+  // tick mark updates only touch textContent, never innerHTML on this block.
   const sorted = topLevels.map(l => ({...l, leftPct: pct(l.price)}))
                           .sort((a, b) => a.leftPct - b.leftPct);
   const MIN_GAP_PCT = 12;
@@ -807,17 +809,66 @@ function renderPosition(price){
   sorted.forEach(l => {
     const tier2 = (l.leftPct - lastTier1Pct) < MIN_GAP_PCT;
     if (!tier2) lastTier1Pct = l.leftPct;
-    const distPct = ((l.price - mark) / mark) * 100;
-    const distStr = (distPct >= 0 ? '+' : '') + distPct.toFixed(2) + '%';
     topHtml += `
-      <div class="scale-lbl ${l.key}${tier2 ? ' tier-2' : ''}" style="left:${l.leftPct}%">
+      <div class="scale-lbl ${l.key}${tier2 ? ' tier-2' : ''}" data-price="${l.price}" style="left:${l.leftPct}%">
         <div class="scale-lbl-name">${l.name}</div>
         <div class="scale-lbl-price num">${fmt$0(l.price)}</div>
-        <div class="scale-lbl-pct num">${distStr}</div>
+        <div class="scale-lbl-pct num"></div>
       </div>`;
   });
   $('scaleLabelsTop').innerHTML = topHtml;
-  $('scaleLabels').innerHTML = bottomHtml;
+
+  // Mark bottom label — write skeleton once; dynamic path updates left + price
+  $('scaleLabels').innerHTML =
+    '<div class="scale-lbl mark" id="scaleMarkLabel" style="left:0%">' +
+      '<div class="scale-lbl-name">Mark</div>' +
+      '<div class="scale-lbl-price num"></div>' +
+      '<div class="scale-lbl-pct num">NOW</div>' +
+    '</div>';
+}
+
+function _renderPositionDynamic(p, mark){
+  if (!positionLayout) return;
+  const { lo, span } = positionLayout;
+  const pct = v => ((v - lo) / span) * 100;
+
+  // PnL ($ + ROI%) — derived from current mark
+  const pmp = p.side === 'LONG' ? (mark - p.entry) / p.entry : (p.entry - mark) / p.entry;
+  const pnlUsd = pmp * p.qty * p.entry;
+  const lev = p.leverage || 1;
+  const pnlPct = pmp * 100 * lev;
+  const cls = pnlUsd >= 0 ? 'pos' : 'neg';
+  $('posPnlUsd').innerHTML = `<span class="${cls}">${fmtUsd(pnlUsd)}</span>`;
+  $('posPnlPct').innerHTML = `<span class="${cls}">${fmtPct(pnlPct)}</span>`;
+
+  // SL distance %
+  const slEl = $('scaleSlCard');
+  if (slEl && slEl.style.display !== 'none' && p.sl > 0) {
+    const slDist = ((p.sl - mark) / mark) * 100;
+    $('scaleSlPct').textContent = (slDist >= 0 ? '+' : '') + slDist.toFixed(2) + '%';
+  }
+
+  // Mark dot + bottom Mark label
+  const markLeft = pct(mark);
+  $('scaleMark').style.left = markLeft + '%';
+  const markLbl = $('scaleMarkLabel');
+  if (markLbl) {
+    markLbl.style.left = markLeft + '%';
+    const priceEl = markLbl.querySelector('.scale-lbl-price');
+    if (priceEl) priceEl.textContent = fmt$0(mark);
+  }
+
+  // Top labels distance% — touch only the .scale-lbl-pct textContent on each
+  // (no innerHTML wipes, no element creation). data-price was stamped during
+  // the static pass so we don't need to rerun min/max.
+  const topLabels = $('scaleLabelsTop').querySelectorAll('.scale-lbl[data-price]');
+  topLabels.forEach(el => {
+    const lpx = +el.dataset.price;
+    if (!lpx || !isFinite(lpx)) return;
+    const distPct = ((lpx - mark) / mark) * 100;
+    const pctEl = el.querySelector('.scale-lbl-pct');
+    if (pctEl) pctEl.textContent = (distPct >= 0 ? '+' : '') + distPct.toFixed(2) + '%';
+  });
 }
 
 // ── Render: hero PnL stats (called from refresh + WS ticks) ─────
@@ -867,6 +918,26 @@ function renderSetup(status){
     if ($('shortCnt')) $('shortCnt').textContent = `${sm}/${sll}`;
     if ($('longProg')) $('longProg').style.width = (lm/ll*100) + '%';
     if ($('shortProg')) $('shortProg').style.width = (sm/sll*100) + '%';
+    // Show ONE side at a time — the one closer to firing.
+    //   1. If the bot emits a hard constraint (checks.side === "LONG" / "SHORT"),
+    //      respect it — the other side cannot fire even if its conditions look
+    //      complete (e.g. v2 in TREND-DOWN can never go LONG).
+    //   2. Otherwise (both sides viable, or no hint) → show the side with MORE
+    //      conditions met. Ties show whichever was previously visible (avoids
+    //      flicker between LONG/SHORT on every tick when scores are equal).
+    const sideHint = (ch.side || '').toUpperCase();
+    const longRow  = document.querySelector('.setup-row.long');
+    const shortRow = document.querySelector('.setup-row.short');
+    const setVis = (els, show) => els.forEach(e => { if (e) e.style.display = show ? '' : 'none'; });
+    let showSide;
+    if (sideHint === 'LONG')       showSide = 'LONG';
+    else if (sideHint === 'SHORT') showSide = 'SHORT';
+    else if (lm > sm)              showSide = 'LONG';
+    else if (sm > lm)              showSide = 'SHORT';
+    else                           showSide = window.__lastShownSide || 'SHORT';
+    window.__lastShownSide = showSide;
+    setVis([longRow,  $('longConds')],  showSide === 'LONG');
+    setVis([shortRow, $('shortConds')], showSide === 'SHORT');
     return;
   }
   const ind = status.indicators || {};
@@ -1145,7 +1216,10 @@ async function refresh(){
     const newIndKey = JSON.stringify(lastHeroState.indicators);
     // RSI-Scalp has no S/R markLines to redraw, so skip the indicator-triggered
     // chart re-render (the candles still update via WS + the 5-min kline timer).
-    if (!RSISCALP && prevIndKey !== newIndKey && priceChartKlines.length) renderPriceChart();
+    // 2026-06-04: removed indicator-change → full chart re-render. The chart
+    // is bot-agnostic now; indicators change every cron tick, which was forcing
+    // a full 864-bar diff each time. Live updates flow through updateMark()
+    // instead (in-place patch of just the last candle).
 
     // Position — trust the live Binance proxy. If proxy returns position=null,
     // the position is flat on Binance regardless of what bot's state.json says
@@ -1247,6 +1321,8 @@ async function refresh(){
       renderPosition(mark);
     } else {
       positionSnapshot = null;
+      positionLayout = null;        // reset cache so next position triggers a fresh static render
+      positionSnapshotSig = '';
       $('positionCard').style.display = 'none';
       $('setupCard').style.display = '';
       renderSetup(status);
@@ -1462,20 +1538,29 @@ async function refresh(){
 }
 
 // ── Mark price (header) and live broadcasts to position ────────
+// FLICKER FIX 2026-06-04: WS aggTrade can fire 10+ times/second. Without
+// throttling we'd run renderPosition + renderPnl on every message and overwhelm
+// mobile browsers. requestAnimationFrame caps actual repaints at ~60Hz and
+// coalesces in-frame updates to the latest price only.
+let _markRAF = null;
+let _markPending = null;
 function updateMark(price, bar){
-  // Cache the live price for any UI that needs sub-cron-tick freshness
-  // (conditions panel, distance % to S/R, etc.).
-  window.__livePrice = price;
-  $('priceValue').textContent = fmt$(price);
-  if (bar) {
-    const change = ((bar.c - bar.o) / bar.o) * 100;
-    const el = $('priceChange');
-    el.textContent = fmtPct(change);
-    el.className = 'mark-change num ' + (change >= 0 ? 'pos' : 'neg');
-  }
-  // Live updates from WS — recompute position card + hero PnL
-  if (positionSnapshot) renderPosition(price);
-  renderPnl(price);
+  _markPending = { price, bar };
+  if (_markRAF != null) return;
+  _markRAF = requestAnimationFrame(() => {
+    _markRAF = null;
+    const { price: pX, bar: bX } = _markPending;
+    window.__livePrice = pX;
+    $('priceValue').textContent = fmt$(pX);
+    if (bX) {
+      const change = ((bX.c - bX.o) / bX.o) * 100;
+      const el = $('priceChange');
+      el.textContent = fmtPct(change);
+      el.className = 'mark-change num ' + (change >= 0 ? 'pos' : 'neg');
+    }
+    if (positionSnapshot) renderPosition(pX);
+    renderPnl(pX);
+  });
 }
 
 // ── WebSocket to Binance Futures (combined stream) ─────────────
@@ -1496,6 +1581,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
                     : STRATEGY === 'gemini' ? 'Gemini ♊'
+                    : STRATEGY === 'gemini_v2' ? 'Gemini v2 ♊'
+                    : STRATEGY === 'gemini_v3' ? 'Gemini v3 ♊'
                     : STRATEGY === 'chatgpt' ? 'ChatGPT 🤖'
                     : STRATEGY === 'claude' ? 'Claude ✳️'
                     : RSISCALP_TREND ? 'RSI Scalp +Trend'
@@ -1509,6 +1596,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (NEWBOT) {
       sub.textContent = STRATEGY === 'gemini'
         ? 'Gemini multi-regime — classifies BULL / BEAR / RANGE / SQUEEZE first. Trend-pullbacks WITH the trend in BULL/BEAR (pullback to EMA20, RSI7 hook, TP at the Bollinger band), Bollinger mean-reversion in RANGE, sits out the BB squeeze. 3× lev, risk 0.5%/trade, SL ≤0.6%, 15-min cooldown after a loss.'
+        : STRATEGY === 'gemini_v2'
+        ? 'Gemini v2 trend-only — 5m EMA200 regime gate (~17h lookback) + strict 2-candle pullback (EMA20 touch at t−1, RSI(7) crosses 50 + green/red close at t, entry at OPEN of t+1). ATR(14)×3 spike lock (4-bar lockout). BBW cap REMOVED 2026-06-04 — trend pullbacks now welcome at any band width. Rolling 24h DD ≥3% halts. Risk-free pivot at +0.35% → SL → entry±0.10%. Post-pivot EMA20±0.1% structural trail. TRUE 3× notional sizing. [PAPER]'
+        : STRATEGY === 'gemini_v3'
+        ? 'Gemini v3 dual-engine — Dynamic Volatility Switch on 5m BBW. (A) BBW>1.5% → Trend Pullback (v2 logic: 5m EMA200 regime + EMA20 touch + RSI(7)/50 cross + green/red close, entry t+1 open, BE pivot +0.35% → entry±0.10%, EMA20±0.1% trail). (B) BBW≤1.5% → 3-Bar Liquidity Sweep at DYNAMIC prev_day H/Mid/L (Bait→Trap→Trigger, Bar 2 wick must strictly exceed Bar 1, SL 0.02% past trap cluster, fixed 1:2 RR; SKIP if cluster >0.6%). Guardrails: ATR(14)×3 → 4-bar lockout, rolling 24h DD ≥3% halt (auto-resumes 24h later), true 3× notional. [PAPER]'
         : STRATEGY === 'chatgpt'
         ? 'ChatGPT EMA-Pullback — trades only strong trends (ADX>25). LONG when EMA20>EMA50, price>EMA200, pullback to EMA20, next bar closes above the pullback high + volume>SMA20. TP1 1R (50%) / TP2 2R (25%) / runner trails EMA20. 3× lev, risk 0.5%/trade.'
         : 'Claude — RSI(5) mean-reversion + 5m EMA200 trend gate. Enters RSI ≤20 (LONG, above EMA200) / ≥80 (SHORT, below EMA200). 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 30% equity drawdown-stop, 3× lev, 15-min cooldown after a loss. Backtest +539% / −30% DD over 5y.';
@@ -1517,7 +1608,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (DIVFLIP_SHARP) {
       sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
     } else if (RSISCALP_TREND) {
-      sub.textContent = 'RSI mean-reversion + 15m TREND GATE — LONG only when 15m EMA20>EMA50 (uptrend), SHORT only when EMA20<EMA50 (downtrend). RSI(9) ≤30/≥70 entry, 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 3× lev, 2-loss→2h circuit breaker. Trades ~half as often as plain RSI for ~half the drawdown.';
+      sub.textContent = 'RSI mean-reversion + 15m TREND GATE — LONG only when 15m EMA20>EMA50 (uptrend), SHORT only when EMA20<EMA50 (downtrend). RSI(9) ≤30/≥70 entry, 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 3× lev. Cooldown: 1-loss → 15-min pause (changed 2026-06-04 from 2-loss/2h). Trades ~half as often as plain RSI for ~half the drawdown.';
     } else if (RSISCALP) {
       sub.textContent = 'Pure RSI mean-reversion — 24/7, NO trend filter. Enters LONG at RSI(9) ≤ 30, SHORT at RSI(9) ≥ 70 on 5m. 2-leg DCA @ 0.50%. Adaptive TP from avg — 0.50% (no DCA) / 0.25% (after DCA). SL 1% from worst, 3× lev, 2-loss→2h circuit breaker. NOTE: edge depends on maker (limit) execution.';
     } else {
@@ -1761,77 +1852,12 @@ function renderPriceChart() {
     if (openEntryMs && barMs >= openEntryMs) return true;
     return false;
   };
+  // 2026-06-04: Trade entry/exit markers REMOVED per user request — the chart
+  // is now a plain price chart that's identical for every bot. Per-bot trade
+  // history still lives in the trade log table below. This also removes a
+  // per-bot data dependency that was forcing the chart to re-render whenever
+  // the trade log changed.
   const markers = [];
-  // Divergence-pivot markers intentionally removed from the chart. The
-  // entry/exit trade markers below tell the actionable story; the raw
-  // divergence pivots were just noise. The pivot-detection machinery still
-  // runs (used elsewhere to validate signals), it's just not plotted here.
-
-  // Trade markers — entry (●) at the trade's first_entry, exit (■) at the
-  // trade's exit. Colored by side: blue for LONG entries, purple for SHORT
-  // entries. Exit is colored by P&L: green if won, red if lost. PnL label.
-  const tradeLog = lastHeroState.tradeLog || [];
-  const findBarIdx = (isoStr) => {
-    if (!isoStr) return -1;
-    const t = new Date(isoStr).getTime();
-    let best = -1, bestDiff = Infinity;
-    for (let i = 0; i < klines.length; i++) {
-      const diff = Math.abs(+klines[i][0] - t);
-      if (diff < bestDiff) { bestDiff = diff; best = i; }
-    }
-    return bestDiff < 5 * 60 * 1000 ? best : -1; // within 5 min
-  };
-  // Trade markers — BIG, with readable label pills (background + padding)
-  // so the text is legible regardless of which candle is behind it.
-  // Entry: arrow at price (LONG → up arrow below bar; SHORT → down arrow above).
-  // Exit: filled circle AT the actual exit price (so user sees TP/SL fill).
-  // Labels are rendered with a dark background pill + colored text + border.
-  tradeLog.forEach(tr => {
-    const entryIdx = findBarIdx(tr.entry_time);
-    // divflip writes `exit_time`; SR_DCA writes `time`. Accept either, else
-    // the SHORT exit marker is silently dropped.
-    const exitIdx  = findBarIdx(tr.exit_time || tr.time);
-    const isLong = tr.side === 'LONG';
-    const won = (tr.pnl_usd || 0) > 0;
-    if (entryIdx >= 0 && tr.first_entry) {
-      const eHigh = +klines[entryIdx][2], eLow = +klines[entryIdx][3];
-      const sideColor = isLong ? '#4cc9ff' : '#c084fc';
-      // Arrow placed slightly outside the bar so it visibly "points" at it.
-      const yPos = isLong ? eLow * 0.998 : eHigh * 1.002;
-      markers.push({
-        coord: [times[entryIdx], yPos],
-        symbol: 'arrow', symbolSize: [22, 26],
-        symbolRotate: isLong ? 0 : 180,
-        itemStyle: { color: sideColor, borderColor: '#fff', borderWidth: 2, shadowColor: 'rgba(0,0,0,0.7)', shadowBlur: 6 },
-        label: { show: true,
-          position: isLong ? 'bottom' : 'top', distance: 12,
-          // Dark pill + bright colored text + matching colored border for
-          // high readability (white-on-bright was washing out).
-          formatter: ` ${isLong ? 'LONG' : 'SHORT'} ENTRY  $${Math.round(tr.first_entry)} `,
-          fontSize: 12, fontWeight: 'bold', color: sideColor,
-          backgroundColor: 'rgba(13, 17, 23, 0.92)',
-          borderColor: sideColor, borderWidth: 1.5,
-          padding: [5, 10], borderRadius: 5,
-          shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 6 }
-      });
-    }
-    if (exitIdx >= 0 && tr.exit) {
-      const exitColor = won ? '#2ecc6f' : '#ff5b6e';
-      markers.push({
-        coord: [times[exitIdx], +tr.exit],
-        symbol: 'circle', symbolSize: 22,
-        itemStyle: { color: exitColor, borderColor: '#fff', borderWidth: 3, shadowColor: 'rgba(0,0,0,0.7)', shadowBlur: 8 },
-        label: { show: true,
-          position: isLong ? 'top' : 'bottom', distance: 12,
-          formatter: ` EXIT  $${Math.round(+tr.exit)}  ${won ? '+' : ''}${(tr.pnl_pct || 0).toFixed(2)}% `,
-          fontSize: 12, fontWeight: 'bold', color: exitColor,
-          backgroundColor: 'rgba(13, 17, 23, 0.92)',
-          borderColor: exitColor, borderWidth: 1.5,
-          padding: [5, 10], borderRadius: 5,
-          shadowColor: 'rgba(0,0,0,0.6)', shadowBlur: 6 }
-      });
-    }
-  });
 
   // Horizontal lines for prev_H / prev_L / prev_mid only — trade levels are
   // shown by the inline pill labels at the entry/exit markers (no extra lines).
@@ -1854,16 +1880,8 @@ function renderPriceChart() {
   if (prevH)   { yMax = Math.max(yMax, prevH); yMin = Math.min(yMin, prevH); }
   if (prevL)   { yMax = Math.max(yMax, prevL); yMin = Math.min(yMin, prevL); }
   if (prevMid) { yMax = Math.max(yMax, prevMid); yMin = Math.min(yMin, prevMid); }
-  // Also include trade entry/exit prices so the labels (which extend above
-  // the SHORT entry arrow and below the LONG entry arrow) don't get clipped
-  // by the chart's top/bottom edges.
-  tradeLog.forEach(tr => {
-    if (tr.first_entry) { yMax = Math.max(yMax, +tr.first_entry); yMin = Math.min(yMin, +tr.first_entry); }
-    if (tr.exit)        { yMax = Math.max(yMax, +tr.exit);        yMin = Math.min(yMin, +tr.exit);        }
-  });
-  // 8% padding (was 5%) — extra headroom for label pills above SHORT entries
-  // and below LONG entries.
-  const yPad = (yMax - yMin) * 0.08;
+  // Trade-marker yMin/yMax padding removed alongside the markers themselves.
+  const yPad = (yMax - yMin) * 0.05;
   yMin -= yPad; yMax += yPad;
 
   const chart = ensurePriceChart();
@@ -1983,17 +2001,20 @@ updateMark = function(price, kbar) {
     const k = priceChartKlines[priceChartKlines.length - 1];
     k[1] = kbar.o; k[2] = Math.max(+k[2], kbar.h); k[3] = Math.min(+k[3], kbar.l); k[4] = kbar.c;
     const now = Date.now();
-    if (priceChart && now - _lastChartTickRenderMs >= 500) {
+    // Throttle hardened from 500ms → 1500ms. Live feel preserved (a candle
+    // shifts a few pixels), but background work drops ~3×. The old code
+    // also rebuilt the full 864-element series array via .map() on every
+    // repaint; we now read the live array reference and mutate index-in-place,
+    // then hand the SAME array back so ECharts can diff one cell instead of all.
+    if (priceChart && now - _lastChartTickRenderMs >= 1500) {
       _lastChartTickRenderMs = now;
-      // Patch ONLY the last candle, not the entire 864-element array.
-      // setOption with merge mode + replaceMerge:false only updates supplied data points.
-      const lastIdx = priceChartKlines.length - 1;
-      const patchedCandle = [+k[1], +k[4], +k[3], +k[2]];
-      priceChart.setOption({
-        series: [{
-          data: priceChart.getOption().series[0].data.map((d, i) => i === lastIdx ? patchedCandle : d)
-        }]
-      });
+      const opt = priceChart.getOption();
+      const seriesData = opt.series && opt.series[0] && opt.series[0].data;
+      if (seriesData && seriesData.length) {
+        const lastIdx = seriesData.length - 1;
+        seriesData[lastIdx] = [+k[1], +k[4], +k[3], +k[2]];
+        priceChart.setOption({ series: [{ data: seriesData }] }, { lazyUpdate: true });
+      }
     }
   } else if (incomingT > lastT) {
     // New 5m bar — append, trim window to 864, full re-render (once per 5 min).
@@ -2078,8 +2099,17 @@ setInterval(() => {
       ? `<div style="font-size:13px;font-weight:500;color:var(--muted);margin-top:8px">${bits.join(' &nbsp;·&nbsp; ')}</div>` : '');
     return;
   }
+  if (NEWBOT) {
+    // Gemini-family bots emit their OWN per-side condition checklist in
+    // status.checks (rendered by the conditions card below). The RSISCALP
+    // hint line ("RSI ≤ 30 · SHORT ≥ 70 · 15m trend …") describes a strategy
+    // those bots don't use, so suppress it. Just the plain title.
+    titleEl.textContent = 'Waiting for Setup';
+    return;
+  }
   if (RSISCALP) {
-    // No window cap — 24/7. Show the LIVE RSI + the levels needed to enter.
+    // Plain rsiscalp / rsiscalp_trend: actually IS RSI-extreme-based, so the
+    // "enter LONG ≤ X · SHORT ≥ Y" line is accurate here.
     const ri = lastHeroState.indicators || {};
     const r = ri.rsi, os_ = ri.rsi_oversold ?? 30, ob = ri.rsi_overbought ?? 70;
     let extra = '';
