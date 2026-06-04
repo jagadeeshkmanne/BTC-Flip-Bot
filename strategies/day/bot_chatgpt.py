@@ -169,6 +169,8 @@ def main():
             _c("Volume > SMA20", f"{_vol:.0f} vs {_volsma:.0f}", _vol > _volsma),
         ],
     }
+    checks["side"] = ("LONG" if (close_px > e200 and e20 > e50)
+                      else "SHORT" if (close_px < e200 and e20 < e50) else "")
     log.info(f"  {PAIR} ${close_px:,.2f} live ${live_px:,.2f} | ADX {adx_now:.0f} | "
              f"EMA20/50/200 {e20:.0f}/{e50:.0f}/{e200:.0f} | {book.stats_line().strip()}")
     book.write_status(

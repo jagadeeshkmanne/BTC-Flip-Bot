@@ -334,6 +334,7 @@ def main():
             _c("Not paused / DD-stopped", "ok" if _free else "blocked", _free),
         ],
     }
+    checks["side"] = "LONG" if trend == "UP" else "SHORT"
     with open(STATUS_FILE, "w") as f:
         json.dump({
             "env": os.environ.get("CLAUDE_DATA_DIR", "paper_claude"), "pair": PAIR,

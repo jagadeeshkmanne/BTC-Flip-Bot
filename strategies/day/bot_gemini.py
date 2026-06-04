@@ -196,6 +196,7 @@ def main():
     else:  # SQUEEZE
         checks = {"LONG": [_c("Bollinger squeeze — standing aside", "waiting for breakout", False)],
                   "SHORT": [_c("Bollinger squeeze — standing aside", "waiting for breakout", False)]}
+    checks["side"] = {"BULL": "LONG", "BEAR": "SHORT", "RANGE": "LONG or SHORT"}.get(regime, "")
     log.info(f"  {PAIR} ${close_px:,.2f} live ${live_px:,.2f} | RSI7 {rsi_now:.1f} | "
              f"regime {regime} | {book.stats_line().strip()}")
     book.write_status(

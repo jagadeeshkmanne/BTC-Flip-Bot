@@ -1137,6 +1137,8 @@ async function refresh(){
     lastHeroState.trend15 = status.trend_15m;  // for RSI+Trend title display
     lastHeroState.regime = status.regime;          // new bots: regime label
     lastHeroState.blockReason = status.block_reason; // new bots: why idle
+    lastHeroState.waitingFor = (status.checks || {}).side; // new bots: viable side(s)
+    lastHeroState.checks = status.checks || {};    // for the title's met-count
     lastHeroState.tradeLog = state.trade_log || [];
     // If the prev-day levels just changed (or just arrived), re-render the
     // price chart so the markLines update / appear. Cheap when nothing changed.
@@ -2039,14 +2041,30 @@ setInterval(() => {
   // show the static "Waiting for Setup" title and let the conds card below
   // explain what's needed (bull/bear div freshness + RSI@pivot).
   if (NEWBOT) {
-    // New bots: no RSI-threshold entry — show the regime + why it's idle, and
-    // let the LONG/SHORT condition card below show exactly current vs required.
+    // New bots: no RSI-threshold entry. Headline which side it's hunting (from
+    // the regime/trend), plus regime + why it's idle. The card below shows
+    // exactly current vs required for each side.
     const reg = lastHeroState.regime;
     const br = lastHeroState.blockReason;
+    const wf = lastHeroState.waitingFor;   // "LONG" / "SHORT" / "LONG or SHORT" / ""
+    const ch = lastHeroState.checks || {};
+    let headline;
+    if (br) {
+      headline = 'Paused';
+    } else if (wf === 'LONG' || wf === 'SHORT') {
+      const arr = ch[wf] || [];
+      const met = arr.filter(c => c.ok).length;
+      headline = `Waiting for a ${wf} setup (${met}/${arr.length} conditions met)`;
+    } else if (wf) {
+      headline = `Waiting for a ${wf} setup`;   // RANGE: either side
+    } else {
+      headline = 'Standing aside (no setup)';
+    }
     const bits = [];
     if (reg) bits.push(`Regime <b style="color:var(--text-bright)">${reg}</b>`);
-    bits.push(br ? br : 'checking entry conditions ↓');
-    titleEl.innerHTML = `Waiting for Setup<div style="font-size:13px;font-weight:500;color:var(--muted);margin-top:8px">${bits.join(' &nbsp;·&nbsp; ')}</div>`;
+    if (br) bits.push(br);
+    titleEl.innerHTML = `${headline}` + (bits.length
+      ? `<div style="font-size:13px;font-weight:500;color:var(--muted);margin-top:8px">${bits.join(' &nbsp;·&nbsp; ')}</div>` : '');
     return;
   }
   if (RSISCALP) {
