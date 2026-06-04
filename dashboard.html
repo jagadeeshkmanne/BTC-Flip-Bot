@@ -2022,9 +2022,20 @@ setInterval(() => {
   const utcH = now.getUTCHours();
 
   if (positionSnapshot) {
-    // Divflip + new bots have no 20:00 UTC EOD flatten — position rides to
-    // TP/SL/trail. Skip the EOD countdown entirely (footer is hidden above).
-    if (DIVFLIP_ANY || NEWBOT) return;
+    // New bots: while IN a position, the title must reflect the open trade —
+    // NOT a stale "Waiting for a SHORT setup". Show the live side instead.
+    if (NEWBOT) {
+      const tEl = $('setupTitle');
+      if (tEl) {
+        const side = positionSnapshot.side || (lastHeroState.waitingFor || '');
+        const reg = lastHeroState.regime;
+        tEl.innerHTML = `In a <b style="color:var(--text-bright)">${side}</b> trade — managing TP / SL`
+          + (reg ? `<div style="font-size:13px;font-weight:500;color:var(--muted);margin-top:8px">Regime <b style="color:var(--text-bright)">${reg}</b> &nbsp;·&nbsp; entry conditions below are for the NEXT trade</div>` : '');
+      }
+      return;
+    }
+    // Divflip has no 20:00 UTC EOD flatten — position rides to TP/SL/trail.
+    if (DIVFLIP_ANY) return;
     // EOD countdown for the active position
     const eod = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 20, 0, 0));
     if (now >= eod) eod.setUTCDate(eod.getUTCDate() + 1);
