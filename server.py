@@ -474,11 +474,6 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
-        elif strategy_q == 'rsiscalp':
-            env_dir = 'paper_rsiscalp'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
         elif strategy_q == 'rsiscalp_trend':
             env_dir = 'paper_rsiscalp_trend'
             state_filename = 'state.json'
@@ -486,11 +481,6 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             log_filename = 'bot.log'
         elif strategy_q == 'gemini':
             env_dir = 'paper_gemini'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'chatgpt':
-            env_dir = 'paper_chatgpt'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -558,19 +548,13 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     state_filename='state.json',
                     balance_key='balance',
                 ))
-            if env_dir == 'paper_rsiscalp':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_rsiscalp',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
             if env_dir == 'paper_rsiscalp_trend':
                 return self._json_response(_query_paper_position(
                     state_subdir='paper_rsiscalp_trend',
                     state_filename='state.json',
                     balance_key='balance',
                 ))
-            if env_dir in ('paper_gemini', 'paper_chatgpt'):
+            if env_dir == 'paper_gemini':
                 return self._json_response(_query_paper_position(
                     state_subdir=env_dir,
                     state_filename='state.json',

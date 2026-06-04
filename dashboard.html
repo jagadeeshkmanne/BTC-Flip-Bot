@@ -210,10 +210,8 @@
     <span class="brand-tag" id="brandTag">Paper · Mainnet · S/R DCA</span>
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
-    <option value="rsiscalp">RSI Scalp</option>
     <option value="rsiscalp_trend">RSI Scalp +Trend</option>
     <option value="gemini">Gemini (multi-regime)</option>
-    <option value="chatgpt">ChatGPT (EMA pullback)</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -361,8 +359,8 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  const allowed = ['rsiscalp', 'rsiscalp_trend', 'gemini', 'chatgpt'];
-  return allowed.includes(s) ? s : 'rsiscalp';
+  const allowed = ['rsiscalp_trend', 'gemini'];
+  return allowed.includes(s) ? s : 'rsiscalp_trend';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
 const DIVFLIP_V2 = STRATEGY === 'divflip_v2';
