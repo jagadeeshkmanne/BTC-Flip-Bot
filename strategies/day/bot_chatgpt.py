@@ -144,6 +144,31 @@ def main():
                 book.open(sig_side, entry, qty, sl, tps, {"regime": regime, "reason": "ema-pullback"})
 
     book.save()
+    # ── live entry checks for the dashboard (current vs required) ──
+    _pulled = bool((closed["low"].iloc[-PULLBACK_LOOKBACK:] <= closed["ema20"].iloc[-PULLBACK_LOOKBACK:]).any())
+    _rallied = bool((closed["high"].iloc[-PULLBACK_LOOKBACK:] >= closed["ema20"].iloc[-PULLBACK_LOOKBACK:]).any())
+    _vol, _volsma = float(last["volume"]), float(last["vol_sma"])
+    _ph, _pl, _lc = float(prev["high"]), float(prev["low"]), float(last["close"])
+    def _c(name, cur, ok):
+        return {"name": name, "cur": cur, "ok": bool(ok)}
+    checks = {
+        "LONG": [
+            _c(f"ADX > {ADX_MIN:.0f} (trend strong)", f"{adx_now:.1f}", adx_now >= ADX_MIN),
+            _c("EMA20 > EMA50 (up)", f"{e20:.0f} vs {e50:.0f}", e20 > e50),
+            _c("Price > EMA200", f"{close_px:.0f} vs {e200:.0f}", close_px > e200),
+            _c("Pullback to EMA20", "yes" if _pulled else "no", _pulled),
+            _c("Bar closes > prev high", f"{_lc:.0f} vs {_ph:.0f}", _lc > _ph),
+            _c("Volume > SMA20", f"{_vol:.0f} vs {_volsma:.0f}", _vol > _volsma),
+        ],
+        "SHORT": [
+            _c(f"ADX > {ADX_MIN:.0f} (trend strong)", f"{adx_now:.1f}", adx_now >= ADX_MIN),
+            _c("EMA20 < EMA50 (down)", f"{e20:.0f} vs {e50:.0f}", e20 < e50),
+            _c("Price < EMA200", f"{close_px:.0f} vs {e200:.0f}", close_px < e200),
+            _c("Rally to EMA20", "yes" if _rallied else "no", _rallied),
+            _c("Bar closes < prev low", f"{_lc:.0f} vs {_pl:.0f}", _lc < _pl),
+            _c("Volume > SMA20", f"{_vol:.0f} vs {_volsma:.0f}", _vol > _volsma),
+        ],
+    }
     log.info(f"  {PAIR} ${close_px:,.2f} live ${live_px:,.2f} | ADX {adx_now:.0f} | "
              f"EMA20/50/200 {e20:.0f}/{e50:.0f}/{e200:.0f} | {book.stats_line().strip()}")
     book.write_status(
@@ -153,7 +178,7 @@ def main():
         regime,
         f"ChatGPT EMA-Pullback (EMA20/50/200 + ADX>{ADX_MIN:.0f} + vol>SMA20 / pullback-to-EMA20 / "
         f"1R·2R partials + EMA20 trail / 3x / risk {RISK_PCT*100:.1f}%) [PAPER]",
-        block_reason)
+        block_reason, checks=checks)
     log.info("=" * 60 + "\n")
 
 

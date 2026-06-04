@@ -887,6 +887,27 @@ function renderSetup(status){
       listEl.appendChild(row);
     });
   };
+  if (NEWBOT) {
+    // New bots emit their own live entry checks in status.checks {LONG:[], SHORT:[]}.
+    const renderEmitted = (arr, el) => {
+      el.innerHTML = '';
+      (arr || []).forEach(c => {
+        const row = document.createElement('div');
+        row.className = 'setup-cond' + (c.ok ? ' met' : '');
+        row.innerHTML = `<span class="cond-mark">${c.ok?'✓':'✗'}</span><span class="cond-name">${c.name}</span><span class="cond-val num">${c.cur}</span>`;
+        el.appendChild(row);
+      });
+    };
+    const ch = status.checks || {};
+    renderEmitted(ch.LONG, $('longConds'));
+    renderEmitted(ch.SHORT, $('shortConds'));
+    const lm = (ch.LONG||[]).filter(c=>c.ok).length, ll = (ch.LONG||[]).length || 1;
+    const sm = (ch.SHORT||[]).filter(c=>c.ok).length, sll = (ch.SHORT||[]).length || 1;
+    $('longCnt').textContent = `${lm}/${ll}`; $('shortCnt').textContent = `${sm}/${sll}`;
+    $('longProg').style.width = (lm/ll*100) + '%'; $('shortProg').style.width = (sm/sll*100) + '%';
+    return;  // skip the S/R-DCA score math below (prev_H/prev_L/divergence)
+  }
+
   renderCondList(LONG_CONDS, $('longConds'));
   renderCondList(SHORT_CONDS, $('shortConds'));
 
@@ -1114,6 +1135,8 @@ async function refresh(){
     const prevIndKey = JSON.stringify(lastHeroState.indicators || {});
     lastHeroState.indicators = status.indicators || {};
     lastHeroState.trend15 = status.trend_15m;  // for RSI+Trend title display
+    lastHeroState.regime = status.regime;          // new bots: regime label
+    lastHeroState.blockReason = status.block_reason; // new bots: why idle
     lastHeroState.tradeLog = state.trade_log || [];
     // If the prev-day levels just changed (or just arrived), re-render the
     // price chart so the markLines update / appear. Cheap when nothing changed.
@@ -1507,6 +1530,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // footer entirely (position rides to TP/SL/trail).
   if (DIVFLIP_ANY || NEWBOT) {
     document.querySelectorAll('.pos-foot').forEach(el => { el.style.display = 'none'; });
+  }
+  // New bots have no Volume/Range-yest (S/R-DCA) metrics — hide that stat row;
+  // their LONG/SHORT condition cards carry the real current-vs-required info.
+  if (NEWBOT) {
+    const st = document.querySelector('.setup-stats');
+    if (st) st.style.display = 'none';
   }
   // Repurpose the setup-stats row for divflip family: instead of Volume / Range yest.
   // (S/R-DCA-only metrics), show the RSI@pivot thresholds the bot is filtering on.
@@ -2009,6 +2038,17 @@ setInterval(() => {
   // can fire 24/7 on fresh divergence. So no countdown is meaningful; just
   // show the static "Waiting for Setup" title and let the conds card below
   // explain what's needed (bull/bear div freshness + RSI@pivot).
+  if (NEWBOT) {
+    // New bots: no RSI-threshold entry — show the regime + why it's idle, and
+    // let the LONG/SHORT condition card below show exactly current vs required.
+    const reg = lastHeroState.regime;
+    const br = lastHeroState.blockReason;
+    const bits = [];
+    if (reg) bits.push(`Regime <b style="color:var(--text-bright)">${reg}</b>`);
+    bits.push(br ? br : 'checking entry conditions ↓');
+    titleEl.innerHTML = `Waiting for Setup<div style="font-size:13px;font-weight:500;color:var(--muted);margin-top:8px">${bits.join(' &nbsp;·&nbsp; ')}</div>`;
+    return;
+  }
   if (RSISCALP) {
     // No window cap — 24/7. Show the LIVE RSI + the levels needed to enter.
     const ri = lastHeroState.indicators || {};

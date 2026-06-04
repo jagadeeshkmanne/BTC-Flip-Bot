@@ -317,6 +317,23 @@ def main():
             "fav_pct": ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1),
             "entry_time": pos.get("entry_time"),
         }
+    # ── live entry checks for the dashboard (current vs required) ──
+    def _c(name, cur, ok):
+        return {"name": name, "cur": cur, "ok": bool(ok)}
+    _rsis = f"{rsi_val:.0f}" if rsi_val is not None else "n/a"
+    _free = not block_reason  # not paused / not DD-stopped
+    checks = {
+        "LONG": [
+            _c(f"RSI5 ≤ {RSI_OVERSOLD} (oversold)", _rsis, rsi_val is not None and rsi_val <= RSI_OVERSOLD),
+            _c("Price > EMA200 (uptrend)", f"{close_px:.0f} vs {ema_val:.0f}", trend == "UP"),
+            _c("Not paused / DD-stopped", "ok" if _free else "blocked", _free),
+        ],
+        "SHORT": [
+            _c(f"RSI5 ≥ {RSI_OVERBOUGHT} (overbought)", _rsis, rsi_val is not None and rsi_val >= RSI_OVERBOUGHT),
+            _c("Price < EMA200 (downtrend)", f"{close_px:.0f} vs {ema_val:.0f}", trend == "DOWN"),
+            _c("Not paused / DD-stopped", "ok" if _free else "blocked", _free),
+        ],
+    }
     with open(STATUS_FILE, "w") as f:
         json.dump({
             "env": os.environ.get("CLAUDE_DATA_DIR", "paper_claude"), "pair": PAIR,
@@ -324,6 +341,7 @@ def main():
             "peak_equity": peak, "drawdown_pct": dd_pct, "position": pos_status, "signal": sig,
             "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT,
                            "price": close_px, "ema200": ema_val},
+            "regime": f"5m {trend}", "checks": checks,
             "trend_5m": trend, "block_reason": block_reason, "stats": state["stats"],
             "strategy": f"Claude RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} + 5m EMA{TREND_EMA} gate / "
                         f"{DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / TP {TP_PCT_SINGLE*100:.2f}·{TP_PCT_DCA*100:.2f}% / "

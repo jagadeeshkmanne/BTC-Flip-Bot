@@ -294,7 +294,7 @@ class PaperBook:
         return (self.balance / peak - 1) if peak > 0 else 0.0
 
     def write_status(self, pair, close_px, live_px, signal, indicators, regime,
-                     strategy_desc, block_reason=None):
+                     strategy_desc, block_reason=None, checks=None):
         pos = self.position
         peak = self.state.get("peak_equity", self.balance)
         pos_status = None
@@ -317,6 +317,7 @@ class PaperBook:
                 "position": pos_status, "signal": signal, "regime": regime,
                 "indicators": indicators, "block_reason": block_reason,
                 "stats": self.state["stats"], "strategy": strategy_desc,
+                "checks": checks or {},
                 "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }, f, default=str, indent=2)
