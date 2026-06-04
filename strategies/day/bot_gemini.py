@@ -169,32 +169,33 @@ def main():
     _green = last["close"] > last["open"]; _red = last["close"] < last["open"]
     _pulled = bool((closed["low"].iloc[-PULLBACK_LOOKBACK:] <= closed["ema20"].iloc[-PULLBACK_LOOKBACK:]).any())
     _rallied = bool((closed["high"].iloc[-PULLBACK_LOOKBACK:] >= closed["ema20"].iloc[-PULLBACK_LOOKBACK:]).any())
-    _rs = f"{rsi_prev:.0f}→{rsi_now:.0f}"
+    _dir = "rising" if rsi_now > rsi_prev else ("falling" if rsi_now < rsi_prev else "flat")
+    _rs = f"{rsi_prev:.0f}→{rsi_now:.0f} ({_dir})"
     if regime in ("BULL", "BEAR"):
         checks = {
-            "LONG": [_c("Regime = BULL", regime, regime == "BULL"),
-                     _c("Pullback to EMA20", "yes" if _pulled else "no", _pulled),
-                     _c("RSI7 hook up from ≤50", _rs, rsi_prev <= 50 and rsi_now > rsi_prev),
-                     _c("Green candle", "yes" if _green else "no", _green)],
-            "SHORT": [_c("Regime = BEAR", regime, regime == "BEAR"),
-                      _c("Rally to EMA20", "yes" if _rallied else "no", _rallied),
-                      _c("RSI7 hook down from ≥50", _rs, rsi_prev >= 50 and rsi_now < rsi_prev),
-                      _c("Red candle", "yes" if _red else "no", _red)],
+            "LONG": [_c("Trend is UP (BULL regime)", regime, regime == "BULL"),
+                     _c("Price dipped to EMA20 (the pullback)", "yes" if _pulled else "no", _pulled),
+                     _c("RSI7 turning back UP (off the 50 line)", _rs, rsi_prev <= 50 and rsi_now > rsi_prev),
+                     _c("Green candle confirms bounce", "yes" if _green else "no", _green)],
+            "SHORT": [_c("Trend is DOWN (BEAR regime)", regime, regime == "BEAR"),
+                      _c("Price bounced up to EMA20 (the pullback)", "yes" if _rallied else "no", _rallied),
+                      _c("RSI7 rolling back DOWN (off the 50 line)", _rs, rsi_prev >= 50 and rsi_now < rsi_prev),
+                      _c("Red candle confirms drop", "yes" if _red else "no", _red)],
         }
     elif regime == "RANGE":
         checks = {
-            "LONG": [_c("Regime = RANGE", regime, True),
-                     _c("Prev close < lower BB", f"{prev['close']:.0f} vs {prev['bb_low']:.0f}", prev["close"] < prev["bb_low"]),
-                     _c("RSI7 cross up >30", _rs, rsi_prev <= 30 and rsi_now > 30),
-                     _c("Green candle", "yes" if _green else "no", _green)],
-            "SHORT": [_c("Regime = RANGE", regime, True),
-                      _c("Prev close > upper BB", f"{prev['close']:.0f} vs {prev['bb_up']:.0f}", prev["close"] > prev["bb_up"]),
-                      _c("RSI7 cross down <70", _rs, rsi_prev >= 70 and rsi_now < 70),
-                      _c("Red candle", "yes" if _red else "no", _red)],
+            "LONG": [_c("Range market (flat trend)", regime, True),
+                     _c("Price below lower Bollinger band", f"{prev['close']:.0f} vs {prev['bb_low']:.0f}", prev["close"] < prev["bb_low"]),
+                     _c("RSI7 climbing back above 30", _rs, rsi_prev <= 30 and rsi_now > 30),
+                     _c("Green candle confirms bounce", "yes" if _green else "no", _green)],
+            "SHORT": [_c("Range market (flat trend)", regime, True),
+                      _c("Price above upper Bollinger band", f"{prev['close']:.0f} vs {prev['bb_up']:.0f}", prev["close"] > prev["bb_up"]),
+                      _c("RSI7 dropping back below 70", _rs, rsi_prev >= 70 and rsi_now < 70),
+                      _c("Red candle confirms drop", "yes" if _red else "no", _red)],
         }
     else:  # SQUEEZE
-        checks = {"LONG": [_c("BB squeeze — stand aside", "wait for breakout", False)],
-                  "SHORT": [_c("BB squeeze — stand aside", "wait for breakout", False)]}
+        checks = {"LONG": [_c("Bollinger squeeze — standing aside", "waiting for breakout", False)],
+                  "SHORT": [_c("Bollinger squeeze — standing aside", "waiting for breakout", False)]}
     log.info(f"  {PAIR} ${close_px:,.2f} live ${live_px:,.2f} | RSI7 {rsi_now:.1f} | "
              f"regime {regime} | {book.stats_line().strip()}")
     book.write_status(
