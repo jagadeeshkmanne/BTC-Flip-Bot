@@ -494,11 +494,6 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
-        elif strategy_q == 'claude':
-            env_dir = 'paper_claude'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
         elif env_q == 'testnet':
             env_dir = 'testnet'
             state_filename = 'state_day.json'
@@ -575,7 +570,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     state_filename='state.json',
                     balance_key='balance',
                 ))
-            if env_dir in ('paper_gemini', 'paper_chatgpt', 'paper_claude'):
+            if env_dir in ('paper_gemini', 'paper_chatgpt'):
                 return self._json_response(_query_paper_position(
                     state_subdir=env_dir,
                     state_filename='state.json',

@@ -214,7 +214,6 @@
     <option value="rsiscalp_trend">RSI Scalp +Trend</option>
     <option value="gemini">Gemini (multi-regime)</option>
     <option value="chatgpt">ChatGPT (EMA pullback)</option>
-    <option value="claude">Claude (RSI5+EMA200+DDstop)</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -362,7 +361,7 @@ const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  const allowed = ['rsiscalp', 'rsiscalp_trend', 'gemini', 'chatgpt', 'claude'];
+  const allowed = ['rsiscalp', 'rsiscalp_trend', 'gemini', 'chatgpt'];
   return allowed.includes(s) ? s : 'rsiscalp';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
@@ -848,6 +847,30 @@ function renderPnl(price){
 
 // ── Setup tracker (when no position) ─────────────────────────
 function renderSetup(status){
+  // New bots render their OWN emitted checks and skip all the S/R-DCA code below
+  // (which assumes RSI/volume/prev_H exist and throws on null, e.g. ChatGPT rsi=null).
+  if (NEWBOT) {
+    const renderEmitted = (arr, el) => {
+      if (!el) return;
+      el.innerHTML = '';
+      (arr || []).forEach(c => {
+        const row = document.createElement('div');
+        row.className = 'setup-cond' + (c.ok ? ' met' : '');
+        row.innerHTML = `<span class="cond-mark">${c.ok?'✓':'✗'}</span><span class="cond-name">${c.name}</span><span class="cond-val num">${c.cur}</span>`;
+        el.appendChild(row);
+      });
+    };
+    const ch = status.checks || {};
+    renderEmitted(ch.LONG, $('longConds'));
+    renderEmitted(ch.SHORT, $('shortConds'));
+    const lm = (ch.LONG||[]).filter(c=>c.ok).length, ll = (ch.LONG||[]).length || 1;
+    const sm = (ch.SHORT||[]).filter(c=>c.ok).length, sll = (ch.SHORT||[]).length || 1;
+    if ($('longCnt')) $('longCnt').textContent = `${lm}/${ll}`;
+    if ($('shortCnt')) $('shortCnt').textContent = `${sm}/${sll}`;
+    if ($('longProg')) $('longProg').style.width = (lm/ll*100) + '%';
+    if ($('shortProg')) $('shortProg').style.width = (sm/sll*100) + '%';
+    return;
+  }
   const ind = status.indicators || {};
   const condData = {
     ...ind,
@@ -887,27 +910,6 @@ function renderSetup(status){
       listEl.appendChild(row);
     });
   };
-  if (NEWBOT) {
-    // New bots emit their own live entry checks in status.checks {LONG:[], SHORT:[]}.
-    const renderEmitted = (arr, el) => {
-      el.innerHTML = '';
-      (arr || []).forEach(c => {
-        const row = document.createElement('div');
-        row.className = 'setup-cond' + (c.ok ? ' met' : '');
-        row.innerHTML = `<span class="cond-mark">${c.ok?'✓':'✗'}</span><span class="cond-name">${c.name}</span><span class="cond-val num">${c.cur}</span>`;
-        el.appendChild(row);
-      });
-    };
-    const ch = status.checks || {};
-    renderEmitted(ch.LONG, $('longConds'));
-    renderEmitted(ch.SHORT, $('shortConds'));
-    const lm = (ch.LONG||[]).filter(c=>c.ok).length, ll = (ch.LONG||[]).length || 1;
-    const sm = (ch.SHORT||[]).filter(c=>c.ok).length, sll = (ch.SHORT||[]).length || 1;
-    $('longCnt').textContent = `${lm}/${ll}`; $('shortCnt').textContent = `${sm}/${sll}`;
-    $('longProg').style.width = (lm/ll*100) + '%'; $('shortProg').style.width = (sm/sll*100) + '%';
-    return;  // skip the S/R-DCA score math below (prev_H/prev_L/divergence)
-  }
-
   renderCondList(LONG_CONDS, $('longConds'));
   renderCondList(SHORT_CONDS, $('shortConds'));
 
