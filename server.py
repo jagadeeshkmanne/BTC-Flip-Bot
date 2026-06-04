@@ -441,6 +441,61 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
+        # ─────────────────────────────────────────────────────────
+        # Bybit-proxied public price feed.
+        # Added 2026-06-05: some mobile carriers (esp. India) block direct
+        # browser calls to fapi.binance.com / fstream.binance.com, leaving
+        # the dashboard with stale prices. These two endpoints proxy through
+        # the dashboard server (GCP, unblocked) and return data in Binance
+        # format so the existing dashboard JS doesn't need parser changes.
+        # ─────────────────────────────────────────────────────────
+        if path == '/api/ticker':
+            # Live BTC price. Returns Binance-style {symbol, price, time}.
+            try:
+                with urllib.request.urlopen(
+                    "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT",
+                    timeout=6) as r:
+                    data = json.loads(r.read())
+                row = data.get("result", {}).get("list", [{}])[0]
+                px = row.get("lastPrice") or row.get("markPrice")
+                return self._json_response({
+                    "symbol": "BTCUSDT",
+                    "price":  str(px) if px is not None else None,
+                    "time":   int(data.get("time") or 0),
+                })
+            except Exception as e:
+                return self._json_response({"error": str(e)}, code=502)
+
+        if path == '/api/klines':
+            # 5m kline proxy. Bybit returns newest-first; reorder to oldest-first
+            # and reshape each row to [openTime, o, h, l, c, v, closeTime] so the
+            # dashboard JS that already speaks Binance format works untouched.
+            from urllib.parse import parse_qs as _pq
+            _qs = _pq(parsed.query)
+            limit = int((_qs.get('limit', ['1']) or ['1'])[0])
+            limit = max(1, min(limit, 1000))   # Bybit cap
+            interval = (_qs.get('interval', ['5m']) or ['5m'])[0]
+            ivl_map = {'1m':'1','3m':'3','5m':'5','15m':'15','30m':'30',
+                       '1h':'60','2h':'120','4h':'240','6h':'360','12h':'720','1d':'D'}
+            bybit_ivl = ivl_map.get(interval, '5')
+            step_ms = {'1m':60000,'3m':180000,'5m':300000,'15m':900000,'30m':1800000,
+                       '1h':3600000,'2h':7200000,'4h':14400000,'6h':21600000,
+                       '12h':43200000,'1d':86400000}.get(interval, 300000)
+            try:
+                url = (f"https://api.bybit.com/v5/market/kline?category=linear"
+                       f"&symbol=BTCUSDT&interval={bybit_ivl}&limit={limit}")
+                with urllib.request.urlopen(url, timeout=8) as r:
+                    data = json.loads(r.read())
+                rows = list(data.get("result", {}).get("list", []))
+                rows.reverse()    # Bybit newest-first → dashboard wants oldest-first
+                out = []
+                for b in rows:
+                    open_t = int(b[0])
+                    out.append([open_t, b[1], b[2], b[3], b[4], b[5], open_t + step_ms - 1])
+                return self._json_response(out)
+            except Exception as e:
+                return self._json_response({"error": str(e)}, code=502)
+
         # ── Bot API (public, no auth). Active strategies: ──
         # Routes by ?strategy= (preferred) or legacy ?env=:
         #   ?strategy=sr_dca       → V2.2 S/R paper bot (data/paper/state_paper.json)

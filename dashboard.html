@@ -1654,8 +1654,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 const WS_URL  = `${WS_HOST}/stream?streams=btcusdt@kline_5m/btcusdt@aggTrade`;
-const REST_HOST = URL_ENV === 'mainnet' ? 'https://fapi.binance.com' : 'https://testnet.binancefuture.com';
-const REST_URL  = `${REST_HOST}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=1`;
+// 2026-06-05 MOBILE FIX: REST endpoints proxied via our own server (Bybit
+// backend). Some mobile carriers block direct browser calls to
+// fapi.binance.com, leaving the dashboard with stale prices. Server-side
+// proxy returns Binance-shape JSON so this client code is unchanged.
+const REST_URL  = `/api/klines?interval=5m&limit=1`;
+const CHART_REST_URL = limit => `/api/klines?interval=5m&limit=${limit}`;
 function setLive(text, kind){
   $('liveText').textContent = text;
   $('liveBadge').className = 'live' + (kind ? ' ' + kind : '');
@@ -1958,7 +1962,10 @@ function renderPriceChart() {
 
 async function refreshPriceChart() {
   try {
-    const url = `${REST_HOST}/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=864`;
+    // 2026-06-05 MOBILE FIX: use the same server-proxied path as the live tick
+    // fallback so mobile carriers that block direct Binance calls still get
+    // chart data (and the same canonical price source).
+    const url = CHART_REST_URL(864);
     const r = await fetch(url);
     const klines = await r.json();
     if (!Array.isArray(klines) || klines.length === 0) return;
