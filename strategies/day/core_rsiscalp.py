@@ -90,8 +90,12 @@ SL_FROM_WORST = 0.01   # 2026-06-01: 2% → 1% for 3x. Backtest: 1% stop at 3x =
 # Re-arms: another BREAKER_LOSSES in a row -> pause again. Redundant on the
 # +Trend variant (gate already lowers DD) but kept for consistency.
 USE_CIRCUIT_BREAKER  = True
-BREAKER_LOSSES       = 2     # consecutive losses that trigger the pause
-BREAKER_PAUSE_HOURS  = 2     # how long to sit out after triggering
+BREAKER_LOSSES       = 1     # 2026-06-04 (user): 15-min cooldown after EVERY loss.
+BREAKER_PAUSE_HOURS  = 0.25  # NOTE backtest on plain RSI9 25/75 (no filter) was
+                             # WORSE this way (-48% -> -87%) — the 2-loss/2h breaker
+                             # braked loss-chains better. Applied per user request;
+                             # affects rsiscalp + rsiscalp_trend (NOT claude, which
+                             # sets its own breaker locally).
 
 Side = Literal["LONG", "SHORT"]
 
