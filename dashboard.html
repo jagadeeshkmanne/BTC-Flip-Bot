@@ -355,8 +355,13 @@ const isT = v => v === true || v === 'True' || v === 'true';
 const START_BALANCE = 5000;
 
 // ── URL params parsed early so other code can branch on them ──────
-// URL_ENV defaults to mainnet (paper bot's data source); ?env=testnet for legacy view.
-const URL_ENV = new URLSearchParams(location.search).get('env') === 'testnet' ? 'testnet' : 'mainnet';
+// 2026-06-05: URL_ENV hardcoded to 'mainnet'. Previously `?env=testnet` would
+// point the WS at wss://stream.binancefuture.com (Binance TEST network, which
+// has stale phantom prices unrelated to real BTC) and made the dashboard show
+// e.g. \$64,xxx when mainnet was at \$63,xxx. All current bots are paper on
+// mainnet kline data — there's no live testnet bot — so the testnet code path
+// was unused and only created confusion. Param ?env=testnet is now ignored.
+const URL_ENV = 'mainnet';
 // STRATEGY: ?strategy= picks the bot data source — 'sr_dca' (V2.2), 'divflip' (v1),
 // 'divflip_v2' (1h trend filter A/B test), or 'divflip_sharp' / 'divflip_pro' (legacy variants).
 // Default = sr_dca (currently the active, working paper bot).
