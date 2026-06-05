@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
-"""bot_rsiscalp_v3.py — RSI-Scalp +Trend v3 (RISK-BASED sizing + no DCA).
+"""bot_rsiscalp_v3.py — RSI-Scalp +Trend v3 (v2 + anti-breakout entry filter).
 
-Sibling to v1 and v2. Architectural upgrade adopting Gemini's risk-based design:
-  1. RISK-BASED SIZING: position size = (balance × 0.5%) / (entry × SL_distance)
-     → max loss per trade ALWAYS = 0.5% of balance, regardless of SL distance.
-  2. NO DCA: single entry, single exit. Removes the L2-amplification risk.
-  3. TIGHT SL: 0.5% fixed from entry (was 1% from worst with DCA in v2).
-  4. SINGLE TP: 0.5% from entry (was adaptive 0.25%/0.5% in v2).
-  5. KEEPS v2's GAP FILTER: trend gap ≥ 0.25% to skip knife-edge entries.
+CLONE of v2 with ONE additional entry filter to prevent fading active breakouts:
 
-Trade-off vs v2:
-  - PRO: Loss per trade capped at 0.5% (was up to 3.7% with DCA L2 SL).
-  - PRO: No catastrophic post-DCA SL hits.
-  - CON: Lower WR expected (no DCA averaging to capture bounces).
-  - CON: Smaller wins (smaller position size due to tight risk cap).
-  - Math: Need WR > 55% to break even after fees at 1:1 R:R.
+  ANTI-BREAKOUT (entry-side):
+    SHORT signal blocked if EITHER:
+      • MAX of last 3 closed 5m bars' close > 5m BB upper  (visible breakout)
+      • Current bar's volume > 2.0× SMA(20, vol)            (institutional flow)
+    LONG signal mirror: MIN(last 3 closes) < 5m BB lower, or vol spike
 
-Backtest status: UNTESTED — deployed as live-only experiment alongside v1/v2.
+  Rationale: when RSI hits 70 during an ongoing breakout (price already above BB
+  or massive volume), fading it = catching a moving train. Filter skips those
+  setups, waits for price to settle inside BB and volume to normalize.
+
+EVERYTHING ELSE same as v2:
+  - RSI(9) ≤30/≥70 entry signal
+  - 15m EMA20/EMA50 trend gate
+  - GAP firmness filter (≥0.25%)
+  - 2-leg DCA @ 0.5%
+  - Adaptive TP 0.5%/0.25% from avg
+  - SL 1% from worst entry
+  - 3× leverage
+  - 1-loss/15-min circuit breaker
 
 PAPER-ONLY. State / log / status: data/paper_rsiscalp_trend_v3/
+Backtest status: UNTESTED — live experiment alongside v1/v2.
 """
 from __future__ import annotations
 import os, sys, json, logging
@@ -43,12 +49,10 @@ from core_rsiscalp import (
 
 # ─── Paths ───
 DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"))
-# v2 GAP filter (kept in v3)
 TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
-# v3 RISK-BASED config (overrides core's DCA-based math)
-V3_RISK_PCT = 0.005       # 0.5% balance risk per trade
-V3_SL_PCT   = 0.005       # 0.5% fixed SL from entry
-V3_TP_PCT   = 0.005       # 0.5% fixed TP from entry (1:1 R:R)
+# v3 anti-breakout filter params (overridable via env)
+V3_BB_LOOKBACK = int(os.environ.get("RSISCALP_V3_BB_LOOKBACK", "3"))   # check last N closed bars
+V3_VOL_MULT    = float(os.environ.get("RSISCALP_V3_VOL_MULT", "2.0"))   # vol spike threshold
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, "state.json")
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
@@ -182,12 +186,7 @@ def partial_close(state, pos, exit_px: float, fraction: float) -> None:
 
 
 def open_position(state, side: str, entry_px: float, rsi_val: float) -> None:
-    # v3 RISK-BASED sizing: position so SL hit = V3_RISK_PCT of balance, ALWAYS.
-    # qty = (balance × risk_pct) / (entry × SL_distance)
-    # Also cap to leverage so we never exceed LEVERAGE× notional of balance.
-    risk_qty = (state["balance"] * V3_RISK_PCT) / (entry_px * V3_SL_PCT)
-    lev_cap_qty = (state["balance"] * 0.95 * LEVERAGE) / entry_px
-    qty = round(min(risk_qty, lev_cap_qty), 3)
+    qty = round(per_level_qty(state["balance"], entry_px), 3)  # BTCUSDT step 0.001
     if qty <= 0:
         log.warning(f"  qty {qty} too small to open")
         return
@@ -198,13 +197,29 @@ def open_position(state, side: str, entry_px: float, rsi_val: float) -> None:
         "leverage": LEVERAGE, "entry_time": datetime.now(timezone.utc).isoformat(),
         "rsi_at_entry": rsi_val, "partial_taken": False,
     }
-    log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}) "
-                f"[v3 risk-sized: risk=${state['balance']*V3_RISK_PCT:.2f}] | balance ${state['balance']:.2f}")
+    log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}) | balance ${state['balance']:.2f}")
 
 
 def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
-    """v3: NO DCA. Always returns False — single-entry architecture."""
-    return False
+    """Equal-size DCA leg at fixed adverse spacing, up to DCA_LEVELS total."""
+    if pos["filled"] >= DCA_LEVELS:
+        return False
+    side = pos["side"]
+    trigger = dca_price(side, pos["worst_entry"])
+    crossed = (side == "LONG" and live_px <= trigger) or (side == "SHORT" and live_px >= trigger)
+    if not crossed:
+        return False
+    qty = round(per_level_qty(balance, trigger), 3)
+    if qty <= 0:
+        return False
+    state["balance"] -= trigger * qty * COMMISSION_PCT
+    pos["entries"].append({"px": trigger, "qty": qty})
+    pos["worst_entry"] = min(pos["worst_entry"], trigger) if side == "LONG" else max(pos["worst_entry"], trigger)
+    pos["qty_total"] = sum(e["qty"] for e in pos["entries"])
+    pos["filled"] += 1
+    log.warning(f"  DCA L{pos['filled']} {side} {qty}@${trigger:.2f} (-{DCA_SPACING*100:.2f}%) | "
+                f"new avg=${avg_entry_of(pos):.2f} worst=${pos['worst_entry']:.2f}")
+    return True
 
 
 # ─── Main tick ───
@@ -226,6 +241,13 @@ def main():
         return
 
     df_5m["rsi"] = rsi_series(df_5m["close"], RSI_PERIOD)
+    # v3: BB(20,2) for anti-breakout filter
+    _mid = df_5m["close"].rolling(20).mean()
+    _sd  = df_5m["close"].rolling(20).std(ddof=0)
+    df_5m["bb_up"]  = _mid + 2.0 * _sd
+    df_5m["bb_low"] = _mid - 2.0 * _sd
+    # v3: SMA(20) of volume for vol-spike detection
+    df_5m["vol_sma20"] = df_5m["volume"].rolling(20).mean()
     last_idx = len(df_5m) - 2  # last CLOSED 5m bar
     last = df_5m.iloc[last_idx]
     close_px = float(last["close"])
@@ -272,17 +294,17 @@ def main():
         exit_reason = None
         exit_px = None
 
-        # v3: TP and SL are FIXED % from first_entry (no DCA averaging happening).
-        # avg_entry == first_entry since there's only one leg.
-        first_entry_v3 = pos["first_entry"]
-        # v3 fixed TP = V3_TP_PCT from entry
-        tp = first_entry_v3 * (1 + V3_TP_PCT) if side == "LONG" else first_entry_v3 * (1 - V3_TP_PCT)
-        if (side == "LONG" and live_px >= tp) or (side == "SHORT" and live_px <= tp):
-            exit_reason, exit_px = "TP", tp
-        # v3 fixed SL = V3_SL_PCT from entry (loss capped at V3_RISK_PCT of balance)
-        if exit_px is None:
-            slp = first_entry_v3 * (1 - V3_SL_PCT) if side == "LONG" else first_entry_v3 * (1 + V3_SL_PCT)
-            if (side == "LONG" and live_px <= slp) or (side == "SHORT" and live_px >= slp):
+        # Adaptive TP from avg — 0.50% while only L1 filled, 0.25% once DCA'd.
+        if USE_TAKE_PROFIT:
+            tp_pct = tp_pct_for(pos["filled"])
+            tp = avg_entry * (1 + tp_pct) if side == "LONG" else avg_entry * (1 - tp_pct)
+            if (side == "LONG" and live_px >= tp) or (side == "SHORT" and live_px <= tp):
+                exit_reason, exit_px = "TP", tp
+
+        # Loose catastrophic SL.
+        if exit_px is None and USE_STOP_LOSS:
+            slp = sl_price(side, pos["worst_entry"])
+            if slp is not None and ((side == "LONG" and live_px <= slp) or (side == "SHORT" and live_px >= slp)):
                 exit_reason, exit_px = "SL", slp
 
         if exit_px is not None:
@@ -320,6 +342,51 @@ def main():
                             f"weaker than required ±{gap_required:.2f}% (knife-edge)")
             log.info(f"  {block_reason}")
             sig = None
+
+    # ── 2026-06-05 v3: ANTI-BREAKOUT / ANTI-BREAKDOWN ENTRY FILTER ──
+    # Don't fade a moving train. Skip entry if either:
+    #   (a) any of the last N closed 5m bars closed beyond the opposite BB band
+    #       (visible breakout / breakdown in last 15 min)
+    #   (b) current bar volume is > V3_VOL_MULT × SMA(20, vol)
+    #       (institutional flow likely → momentum will continue)
+    if sig and state["position"] is None:
+        try:
+            # Last N closed bars (excluding the still-forming current bar at index -1)
+            n = V3_BB_LOOKBACK
+            last_n_closes = df_5m["close"].iloc[-1-n:-1].values
+            bb_up_now = float(df_5m["bb_up"].iloc[-2])
+            bb_lo_now = float(df_5m["bb_low"].iloc[-2])
+            vol_now = float(df_5m["volume"].iloc[-2])
+            vol_sma = float(df_5m["vol_sma20"].iloc[-2])
+            vol_spike = vol_sma > 0 and vol_now > vol_sma * V3_VOL_MULT
+            vol_ratio = vol_now / vol_sma if vol_sma > 0 else 0.0
+
+            if sig == "SHORT":
+                if last_n_closes.max() > bb_up_now:
+                    block_reason = (f"SHORT blocked — anti-breakout: max(last {n} closes) "
+                                    f"${last_n_closes.max():.0f} > 5m BB upper ${bb_up_now:.0f}")
+                    log.info(f"  {block_reason}")
+                    sig = None
+                elif vol_spike:
+                    block_reason = (f"SHORT blocked — anti-breakout: vol spike "
+                                    f"{vol_ratio:.1f}x SMA(20)")
+                    log.info(f"  {block_reason}")
+                    sig = None
+            elif sig == "LONG":
+                if last_n_closes.min() < bb_lo_now:
+                    block_reason = (f"LONG blocked — anti-breakdown: min(last {n} closes) "
+                                    f"${last_n_closes.min():.0f} < 5m BB lower ${bb_lo_now:.0f}")
+                    log.info(f"  {block_reason}")
+                    sig = None
+                elif vol_spike:
+                    block_reason = (f"LONG blocked — anti-breakdown: vol spike "
+                                    f"{vol_ratio:.1f}x SMA(20)")
+                    log.info(f"  {block_reason}")
+                    sig = None
+        except (KeyError, IndexError, ValueError) as e:
+            # If BB or vol_sma columns are missing/NaN early on, just allow the trade
+            log.warning(f"  anti-breakout filter skipped: {e}")
+
     if state["position"] is None and not exit_this_tick and sig:
         open_position(state, sig, live_px, rsi_val)
 
@@ -353,7 +420,7 @@ def main():
                        "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100},
         "trend_15m": trend, "block_reason": block_reason,
         "stats": state["stats"],
-        "strategy": f"RSI-Scalp +Trend v3 RISK-BASED (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% / NO DCA / TP {V3_TP_PCT*100:.2f}% / SL {V3_SL_PCT*100:.2f}% / risk {V3_RISK_PCT*100:.2f}%/trade ALWAYS) [PAPER]",
+        "strategy": f"RSI-Scalp +Trend v3 ANTI-BREAKOUT (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% + BB-skip last {V3_BB_LOOKBACK} bars + vol-skip {V3_VOL_MULT:.1f}× / {DCA_LEVELS} DCA / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% / SL {SL_FROM_WORST*100:.1f}% from worst) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })

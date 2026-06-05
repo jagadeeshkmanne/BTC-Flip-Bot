@@ -11,6 +11,8 @@ import hmac
 import secrets
 import base64
 import time
+import gzip
+import io
 import urllib.request
 import urllib.parse
 from urllib.parse import parse_qs, urlparse
@@ -399,12 +401,15 @@ def run_bot_now(env):
 
 class BotHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
-        # 2026-06-05: aggressive caching for hash-named React assets (immutable),
-        # no-cache for everything else (HTML / API / state.json). The hashed filenames
-        # mean assets never need re-fetching after the first download.
+        # 2026-06-05: caching policy.
+        # Assets: 5-min max-age, must-revalidate. Hashed filenames make stale-safe
+        # but we keep TTL short so a fresh deploy is picked up within minutes
+        # without users clearing cache. (Earlier `immutable` caused stale-chunk
+        # mismatches when filenames stayed the same across builds.)
+        # Everything else (HTML / API / state.json): no-cache.
         p = getattr(self, 'path', '') or ''
         if '/static/bots/assets/' in p or '/bots/assets/' in p:
-            self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+            self.send_header('Cache-Control', 'public, max-age=300, must-revalidate')
         else:
             self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
             self.send_header('Pragma', 'no-cache')
@@ -449,6 +454,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         if path == '/' or path == '/dashboard.html':
             self.send_response(302)
             self.send_header('Location', '/bots/v2')
+            self.end_headers()
+            return
+
+        # 2026-06-05: favicon stub so browsers don't see 401 in console.
+        if path == '/favicon.ico':
+            self.send_response(204)  # No Content
             self.end_headers()
             return
 

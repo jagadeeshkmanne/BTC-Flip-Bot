@@ -285,55 +285,68 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
 
   return (
     <div class="card-elev p-0 overflow-hidden">
-      {/* Top bar */}
-      <div class="px-4 py-3 border-b border-bg-border flex items-center justify-between">
+      {/* Top bar — unmistakable FLAT state */}
+      <div class="px-4 py-3 border-b border-bg-border bg-bg-subtle flex items-center justify-between">
         <div class="flex items-center gap-2">
           <span class="section-title">Position</span>
-          <span class="pill-muted">FLAT</span>
+          <span class="pill flex items-center gap-1 bg-bg-hover text-text-muted border border-bg-border">
+            <span class="size-1.5 rounded-full bg-text-dim" />
+            NO TRADE
+          </span>
         </div>
         {huntingSide && (
-          <span class={clsx('pill flex items-center gap-1',
-            huntingSide === 'LONG' ? 'pill-green' : 'pill-red')}>
-            {huntingSide === 'LONG' ? <TrendingUp size={11} strokeWidth={2.5}/> : <TrendingDown size={11} strokeWidth={2.5}/>}
-            HUNTING {huntingSide}
-          </span>
+          <div class="flex items-center gap-1.5 text-2xs text-text-muted">
+            <span>watching for</span>
+            <span class={clsx('font-semibold tracking-wide',
+              huntingSide === 'LONG' ? 'text-accent-green' : 'text-accent-red')}>
+              {huntingSide}
+            </span>
+            {huntingSide === 'LONG'
+              ? <TrendingUp size={12} strokeWidth={2.5} class={huntingSide === 'LONG' ? 'text-accent-green' : 'text-accent-red'} />
+              : <TrendingDown size={12} strokeWidth={2.5} class="text-accent-red" />}
+          </div>
         )}
       </div>
 
-      <div class="p-4">
-        {/* Hero status */}
-        <div class="mb-4">
-          <div class="text-text-muted text-xs mb-1">Waiting for entry</div>
-          <div class="text-xl font-semibold">
-            {huntingSide
-              ? <>Looking for <span class={huntingSide === 'LONG' ? 'text-accent-green' : 'text-accent-red'}>{huntingSide}</span> setup</>
-              : <span class="text-text-muted">No clear trend</span>}
+      <div class="p-4 space-y-4">
+        {/* Big unambiguous empty state */}
+        <div class="text-center py-2">
+          <div class="text-text-muted text-sm mb-1">No active position</div>
+          <div class="text-text-dim text-2xs">
+            Bot is monitoring · last tick {(status.updated_at || '').slice(11, 19)} UTC
           </div>
-          {nextCondHint && (
-            <div class="text-2xs text-text-dim mt-1">{nextCondHint}</div>
-          )}
         </div>
 
-        {/* Conditions checklist */}
+        {/* RSI gauge — clearly labeled as "RSI Indicator", not a position scale */}
+        {rsi != null && huntingSide && (
+          <div class="border-t border-bg-border pt-4">
+            <RsiGauge rsi={rsi} target={huntingSide === 'LONG' ? rsiOS : rsiOB} hunting={huntingSide} />
+          </div>
+        )}
+
+        {/* Conditions checklist — bigger values, colored by status */}
         {conds.length > 0 && (
           <div>
             <div class="flex items-center justify-between mb-2">
               <span class="text-2xs uppercase tracking-wider text-text-muted">Entry conditions</span>
               <span class="text-2xs font-mono text-text-muted">{metCount} / {conds.length} met</span>
             </div>
-            <div class="space-y-2">
+            <div class="space-y-2.5">
               {conds.map((c, i) => (
-                <div key={i} class="flex items-center justify-between gap-3 text-sm py-1">
+                <div key={i} class="flex items-center justify-between gap-3 py-1">
                   <div class="flex items-center gap-2 min-w-0">
                     <div class={clsx(
-                      'size-4 rounded-full flex items-center justify-center shrink-0',
+                      'size-5 rounded-full flex items-center justify-center shrink-0',
                       c.ok ? 'bg-accent-green/20 text-accent-green' : 'bg-bg-hover text-text-dim'
                     )}>
-                      {c.ok ? <Check size={10} strokeWidth={3} /> : <X size={10} strokeWidth={3} />}
+                      {c.ok ? <Check size={12} strokeWidth={3} /> : <X size={12} strokeWidth={3} />}
                     </div>
-                    <span class={clsx(c.ok ? 'text-text' : 'text-text-muted')}>{c.label}</span>
+                    <span class={clsx('text-sm', c.ok ? 'text-text' : 'text-text-muted')}>{c.label}</span>
                   </div>
-                  <span class="text-xs font-mono text-text-dim truncate">{c.value}</span>
+                  <span class={clsx(
+                    'text-sm font-mono font-semibold tabular-nums shrink-0',
+                    c.ok ? 'text-accent-green' : 'text-text'
+                  )}>{c.value}</span>
                 </div>
               ))}
             </div>
@@ -342,11 +355,70 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
 
         {/* Block reason */}
         {block && (
-          <div class="mt-3 p-2.5 rounded-md bg-accent-orange/10 border border-accent-orange/30 text-2xs text-accent-orange leading-relaxed">
+          <div class="p-2.5 rounded-md bg-accent-orange/10 border border-accent-orange/30 text-2xs text-accent-orange leading-relaxed">
             <Activity size={11} class="inline mr-1" />
             {block}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* RSI gauge — visual scale from 0-100 with marker at current RSI + target threshold. */
+function RsiGauge({ rsi, target, hunting }: { rsi: number; target: number; hunting: 'LONG' | 'SHORT' }) {
+  const isLong = hunting === 'LONG';
+  // For LONG: need RSI ≤ 30 → bar from 0 (left) goes UP, target on left, current marker shows distance from target
+  // For SHORT: need RSI ≥ 70 → target on right, current marker shows distance from target
+  const distance = isLong ? rsi - target : target - rsi;     // > 0 means not there yet
+  const isMet = distance <= 0;
+  const colorCls = isMet ? 'text-accent-green' : isLong ? 'text-accent-blue' : 'text-accent-orange';
+
+  return (
+    <div>
+      <div class="flex items-end justify-between mb-2">
+        <div>
+          <div class="text-2xs uppercase tracking-wider text-text-muted">RSI 9</div>
+          <div class={clsx('text-3xl font-bold font-mono tabular-nums leading-none', colorCls)}>
+            {rsi.toFixed(1)}
+          </div>
+        </div>
+        <div class="text-right">
+          <div class="text-2xs text-text-dim">target</div>
+          <div class={clsx('text-base font-mono font-semibold',
+            isLong ? 'text-accent-green' : 'text-accent-red')}>
+            {isLong ? '≤' : '≥'} {target}
+          </div>
+          <div class="text-2xs text-text-muted mt-0.5">
+            {isMet
+              ? <span class="text-accent-green">✓ ready</span>
+              : <span>needs {distance.toFixed(1)} more {isLong ? '↓' : '↑'}</span>}
+          </div>
+        </div>
+      </div>
+      {/* 0-100 bar with markers */}
+      <div class="relative h-2 rounded-full bg-bg-subtle overflow-visible">
+        {/* Oversold zone (0-30) and overbought zone (70-100) tinted */}
+        <div class="absolute inset-y-0 left-0 w-[30%] bg-accent-green/15 rounded-l-full" />
+        <div class="absolute inset-y-0 right-0 w-[30%] bg-accent-red/15 rounded-r-full" />
+        {/* Threshold markers (always visible) */}
+        <div class="absolute top-0 bottom-0 w-px bg-accent-green/60" style={{ left: '30%' }} />
+        <div class="absolute top-0 bottom-0 w-px bg-accent-red/60" style={{ left: '70%' }} />
+        {/* Current RSI marker */}
+        <div
+          class="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 z-10"
+          style={{ left: `${Math.max(0, Math.min(100, rsi))}%` }}
+        >
+          <div class={clsx('w-1 h-5 rounded-full ring-2 ring-bg-card',
+            isMet ? 'bg-accent-green' : isLong ? 'bg-accent-blue' : 'bg-accent-orange')} />
+        </div>
+      </div>
+      <div class="flex justify-between text-2xs text-text-dim mt-1 px-0">
+        <span>0</span>
+        <span class="text-accent-green">30</span>
+        <span>50</span>
+        <span class="text-accent-red">70</span>
+        <span>100</span>
       </div>
     </div>
   );

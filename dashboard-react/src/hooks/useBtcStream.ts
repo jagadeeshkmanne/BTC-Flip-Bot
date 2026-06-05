@@ -64,19 +64,28 @@ function connect() {
         const msg = JSON.parse(e.data);
         if (msg.topic !== 'tickers.BTCUSDT' || !msg.data) return;
         const d = msg.data;
-        const price = +d.lastPrice;
-        if (!price) return;
-        const prev24h = +d.prevPrice24h || price;
-        useTickerStore.getState().setTicker({
-          price,
-          prev24h,
-          change24h: price - prev24h,
-          change24hPct: prev24h > 0 ? ((price - prev24h) / prev24h) * 100 : 0,
-          high24h: +d.highPrice24h || price,
-          low24h: +d.lowPrice24h || price,
-          volume24h: +d.volume24h || 0,
-          ts: Date.now(),
-        });
+        // 2026-06-05 fix: Bybit V5 sends BOTH 'snapshot' (full state) and
+        // 'delta' (only changed fields) messages. Deltas often omit
+        // high/low/volume — must NOT overwrite cached snapshot values with
+        // current price as a fallback. Only include fields that are actually
+        // present in this message.
+        const patch: any = { ts: Date.now() };
+        if (d.lastPrice != null) patch.price = +d.lastPrice;
+        if (d.prevPrice24h != null) patch.prev24h = +d.prevPrice24h;
+        if (d.highPrice24h != null) patch.high24h = +d.highPrice24h;
+        if (d.lowPrice24h != null) patch.low24h = +d.lowPrice24h;
+        if (d.volume24h != null) patch.volume24h = +d.volume24h;
+        // Recompute derived 24h-change if we have both pieces (from this msg
+        // OR previously cached).
+        const cur = useTickerStore.getState();
+        const px = patch.price ?? cur.price;
+        const p24 = patch.prev24h ?? cur.prev24h;
+        if (px > 0 && p24 > 0) {
+          patch.change24h = px - p24;
+          patch.change24hPct = ((px - p24) / p24) * 100;
+        }
+        if (patch.price == null) return;  // nothing useful in this msg
+        useTickerStore.getState().setTicker(patch);
       } catch {}
     };
     ws.onclose = () => {

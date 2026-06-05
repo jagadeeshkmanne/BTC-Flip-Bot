@@ -22,6 +22,20 @@ function bollinger(closes: number[], n = 20, k = 2.0) {
   return { up, mid, lo };
 }
 
+// EMA — matches pandas .ewm(span=n, adjust=False).mean() (the bot's formula).
+function ema(closes: number[], n: number): (number | null)[] {
+  const out: (number | null)[] = new Array(closes.length).fill(null);
+  if (closes.length === 0) return out;
+  const k = 2 / (n + 1);
+  let prev = closes[0];
+  out[0] = prev;
+  for (let i = 1; i < closes.length; i++) {
+    prev = closes[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+
 type TF = '5m' | '15m' | '1h';
 const TIMEFRAMES: TF[] = ['5m', '15m', '1h'];
 
@@ -95,26 +109,32 @@ export function PriceChart() {
 
   const candleDataRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const bbUpRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const bbMidRef = useRef<ISeriesApi<'Line'> | null>(null);
   const bbLoRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const bb15UpRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const bb15MidRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const bb15LoRef = useRef<ISeriesApi<'Line'> | null>(null);
 
-  // Update candles + BB (uses selected timeframe)
+  // Update candles + BB (uses selected timeframe).
+  // 2026-06-05: stripped chart to just what matters for the bot's decisions —
+  //   - candles (price)
+  //   - 5m BB upper/lower (volatility envelope; thin dashed)
+  // 15m EMAs are added below (the bot's actual trend logic).
+  // Removed: 5m BB mid, 15m BB upper/mid/lower (too many lines, confusing).
   useEffect(() => {
-    const klines5m = klinesMain;  // alias for the selected-tf data
+    const klines5m = klinesMain;
     if (!chartRef.current || !klines5m?.length) return;
     if (!candleDataRef.current) {
       candleDataRef.current = chartRef.current.addCandlestickSeries({
-        upColor: '#10b981', downColor: '#ef4444',
-        borderUpColor: '#10b981', borderDownColor: '#ef4444',
-        wickUpColor: '#10b981', wickDownColor: '#ef4444',
+        upColor: '#0ecb81', downColor: '#f6465d',
+        borderUpColor: '#0ecb81', borderDownColor: '#f6465d',
+        wickUpColor: '#0ecb81', wickDownColor: '#f6465d',
         priceFormat: { type: 'price', precision: 0, minMove: 1 },
       });
-      bbUpRef.current = chartRef.current.addLineSeries({ color: 'rgba(249, 115, 22, 0.6)', lineWidth: 1, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false });
-      bbMidRef.current = chartRef.current.addLineSeries({ color: 'rgba(156, 163, 175, 0.4)', lineWidth: 1, lineStyle: LineStyle.Dotted, priceLineVisible: false, lastValueVisible: false });
-      bbLoRef.current = chartRef.current.addLineSeries({ color: 'rgba(123, 255, 158, 0.6)', lineWidth: 1, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false });
+      bbUpRef.current = chartRef.current.addLineSeries({
+        color: 'rgba(249, 115, 22, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed,
+        priceLineVisible: false, lastValueVisible: false,
+      });
+      bbLoRef.current = chartRef.current.addLineSeries({
+        color: 'rgba(123, 255, 158, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed,
+        priceLineVisible: false, lastValueVisible: false,
+      });
     }
     const candles = klines5m.map(k => ({
       time: Math.floor(+k[0] / 1000) as any,
@@ -125,7 +145,6 @@ export function PriceChart() {
     const bb = bollinger(closes, 20, 2.0);
     const tmap = candles.map(c => c.time);
     bbUpRef.current!.setData(tmap.map((t, i) => bb.up[i] != null ? { time: t, value: bb.up[i]! } : null).filter(Boolean) as any);
-    bbMidRef.current!.setData(tmap.map((t, i) => bb.mid[i] != null ? { time: t, value: bb.mid[i]! } : null).filter(Boolean) as any);
     bbLoRef.current!.setData(tmap.map((t, i) => bb.lo[i] != null ? { time: t, value: bb.lo[i]! } : null).filter(Boolean) as any);
     // Show last 200 bars by default (user can scroll/zoom from there) instead
     // of fitContent() which would cram all 1000 bars into the viewport.
@@ -134,20 +153,28 @@ export function PriceChart() {
     chartRef.current.timeScale().setVisibleRange({ from: t0 as any, to: t1 as any });
   }, [klinesMain]);
 
-  // Update 15m BB
+  // 15m EMA20/EMA50 — THE bot's trend gate. Gold above magenta = UP, below = DOWN.
+  const ema20Ref = useRef<ISeriesApi<'Line'> | null>(null);
+  const ema50Ref = useRef<ISeriesApi<'Line'> | null>(null);
+
   useEffect(() => {
     if (!chartRef.current || !klines15m?.length) return;
-    if (!bb15UpRef.current) {
-      bb15UpRef.current = chartRef.current.addLineSeries({ color: 'rgba(239, 68, 68, 0.9)', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-      bb15MidRef.current = chartRef.current.addLineSeries({ color: 'rgba(76, 201, 255, 0.7)', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      bb15LoRef.current = chartRef.current.addLineSeries({ color: 'rgba(46, 204, 111, 0.9)', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    if (!ema20Ref.current) {
+      ema20Ref.current = chartRef.current.addLineSeries({
+        color: '#fcd535', lineWidth: 3, priceLineVisible: false, lastValueVisible: true,
+        title: 'EMA20 (15m)',
+      });
+      ema50Ref.current = chartRef.current.addLineSeries({
+        color: '#e879f9', lineWidth: 3, priceLineVisible: false, lastValueVisible: true,
+        title: 'EMA50 (15m)',
+      });
     }
     const closes15 = klines15m.map(k => +k[4]);
-    const bb = bollinger(closes15, 20, 2.0);
-    const data = klines15m.map((k, i) => ({ time: Math.floor(+k[0] / 1000) as any, ...bb })).filter((_, i) => bb.up[i] != null);
-    bb15UpRef.current!.setData(klines15m.map((k, i) => bb.up[i] != null ? { time: Math.floor(+k[0] / 1000) as any, value: bb.up[i]! } : null).filter(Boolean) as any);
-    bb15MidRef.current!.setData(klines15m.map((k, i) => bb.mid[i] != null ? { time: Math.floor(+k[0] / 1000) as any, value: bb.mid[i]! } : null).filter(Boolean) as any);
-    bb15LoRef.current!.setData(klines15m.map((k, i) => bb.lo[i] != null ? { time: Math.floor(+k[0] / 1000) as any, value: bb.lo[i]! } : null).filter(Boolean) as any);
+    const ema20 = ema(closes15, 20);
+    const ema50 = ema(closes15, 50);
+    const times = klines15m.map(k => Math.floor(+k[0] / 1000) as any);
+    ema20Ref.current!.setData(times.map((t, i) => ema20[i] != null ? { time: t, value: ema20[i]! } : null).filter(Boolean) as any);
+    ema50Ref.current!.setData(times.map((t, i) => ema50[i] != null ? { time: t, value: ema50[i]! } : null).filter(Boolean) as any);
   }, [klines15m]);
 
   return (
@@ -172,7 +199,8 @@ export function PriceChart() {
           </div>
         </div>
         <span class="text-2xs text-text-dim hidden md:inline">
-          {tf} BB <span class="text-accent-orange">━━</span> · 15m BB <span class="text-accent-red">━━</span> · drag to pan · drag axes to zoom
+          <span style="color:#fcd535">━━ 15m EMA20</span> · <span style="color:#e879f9">━━ EMA50</span> ·
+          <span style="color:#f97316"> ┄┄ </span>/<span style="color:#7bff9e"> ┄┄ </span> 5m BB · drag to pan
         </span>
       </div>
       <div ref={containerRef} class="w-full" style={{ height: 'min(55vh, 500px)' }} />

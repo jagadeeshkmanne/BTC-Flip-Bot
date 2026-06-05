@@ -17,6 +17,7 @@ const fmtPct  = (n: number, d = 2) => (n >= 0 ? '+' : '') + n.toFixed(d) + '%';
 export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: BotState }) {
   const tickerPrice = useTickerStore(s => s.price);   // real-time WS price
   const balance = state?.balance ?? status?.balance ?? 0;
+  const peak = state?.peak_equity ?? status?.peak_equity ?? balance;
   const realizedUsd = balance - INITIAL;
   const realizedPct = (realizedUsd / INITIAL) * 100;
   const stats = state?.stats ?? status?.stats ?? { total: 0, wins: 0, pnl: 0 };
@@ -32,6 +33,11 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
   }
   const totalUsd = realizedUsd + unrealizedUsd;
   const totalPct = (totalUsd / INITIAL) * 100;
+
+  // Drawdown — current equity vs peak (includes unrealized for live DD view)
+  const liveEquity = balance + unrealizedUsd;
+  const ddUsd = liveEquity - peak;  // negative when underwater
+  const ddPct = peak > 0 ? (ddUsd / peak) * 100 : 0;
 
   return (
     <div class="card-elev px-4 md:px-5 py-3">
@@ -58,6 +64,13 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
           label="Realized"
           value={fmtSign(realizedUsd)} valueTone={realizedUsd}
           sub={`${fmtPct(realizedPct)} · closed`}
+        />
+        <Divider />
+        <Metric
+          label="Drawdown"
+          value={`${fmtPct(ddPct)}`}
+          valueTone={ddPct >= 0 ? 0 : -1}  // tone red only when in drawdown
+          sub={`peak ${fmtUsd(peak)}`}
         />
         <Divider />
         <Metric
