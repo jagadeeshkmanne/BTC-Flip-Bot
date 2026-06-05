@@ -1,7 +1,42 @@
+import { useEffect, useState } from 'preact/hooks';
 import clsx from 'clsx';
 import { TrendingDown, TrendingUp, Check, X, Clock, Activity } from 'lucide-react';
 import type { BotStatus, StrategyId } from '@/types/bot';
 import { useTickerStore } from '@/hooks/useBtcStream';
+
+// Compute "time until bot resumes" given the blocked hours list (UTC).
+// Returns null if not currently blocked. Otherwise returns ms until the
+// next minute after the last consecutive blocked hour ends.
+function msUntilResume(blockedHours: number[]): number | null {
+  if (!blockedHours.length) return null;
+  const now = new Date();
+  const curHour = now.getUTCHours();
+  if (!blockedHours.includes(curHour)) return null;
+  // Find the next hour NOT in blockedHours (handles non-contiguous lists too).
+  let h = curHour;
+  for (let i = 0; i < 24; i++) {
+    h = (h + 1) % 24;
+    if (!blockedHours.includes(h)) break;
+  }
+  // Next target: H:00:00 UTC. Compute date for that hour.
+  const target = new Date(now);
+  target.setUTCMinutes(0, 0, 0);
+  // Bump hours forward until we reach the unblocked hour
+  let advance = (h - curHour + 24) % 24;
+  if (advance === 0) advance = 24;
+  target.setUTCHours(curHour + advance);
+  return target.getTime() - now.getTime();
+}
+
+function fmtCountdown(ms: number): string {
+  if (ms <= 0) return '0m 0s';
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s.toString().padStart(2, '0')}s`;
+}
 
 interface Props {
   status?: BotStatus;
@@ -321,21 +356,9 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
           </div>
         </div>
 
-        {/* Hour-blocked banner — prominent when bot is in a no-fly hour */}
+        {/* Hour-blocked banner with LIVE countdown to resume */}
         {hourBlocked && (
-          <div class="p-3 rounded-md bg-accent-orange/15 border border-accent-orange/40 flex items-center gap-3">
-            <Activity size={18} class="text-accent-orange shrink-0" />
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-semibold text-accent-orange">
-                Waiting — high-risk hour blocked
-              </div>
-              <div class="text-2xs text-text-muted mt-0.5">
-                {curHour?.toString().padStart(2,'0')}:00 UTC is in blocked window {blockedHours.map(h => `${h.toString().padStart(2,'0')}:00`).join(', ')}
-                {' · '}
-                Bot will resume entries at {((Math.max(...blockedHours) + 1) % 24).toString().padStart(2,'0')}:00 UTC
-              </div>
-            </div>
-          </div>
+          <HourBlockedBanner blockedHours={blockedHours} curHour={curHour ?? 0} />
         )}
 
         {/* RSI gauge — clearly labeled as "RSI Indicator", not a position scale */}
@@ -440,6 +463,50 @@ function RsiGauge({ rsi, target, hunting }: { rsi: number; target: number; hunti
         <span>50</span>
         <span class="text-accent-red">70</span>
         <span>100</span>
+      </div>
+    </div>
+  );
+}
+
+/* Live countdown timer for the hour-blocked banner. Ticks every second. */
+function HourBlockedBanner({ blockedHours, curHour }:
+  { blockedHours: number[]; curHour: number }) {
+  const [remaining, setRemaining] = useState<number>(() => msUntilResume(blockedHours) ?? 0);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      const ms = msUntilResume(blockedHours);
+      setRemaining(ms ?? 0);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [blockedHours.join(',')]);
+
+  // After last contiguous blocked hour ends — that's resume time
+  let nextOpen = curHour;
+  for (let i = 0; i < 24; i++) {
+    nextOpen = (nextOpen + 1) % 24;
+    if (!blockedHours.includes(nextOpen)) break;
+  }
+  const resumeAtUtc = `${nextOpen.toString().padStart(2,'0')}:00 UTC`;
+
+  return (
+    <div class="p-3 rounded-md bg-accent-orange/15 border border-accent-orange/40 flex items-center gap-3">
+      <Activity size={18} class="text-accent-orange shrink-0 animate-pulse-slow" />
+      <div class="flex-1 min-w-0">
+        <div class="flex items-baseline justify-between gap-3 flex-wrap">
+          <span class="text-sm font-semibold text-accent-orange">
+            Waiting — high-risk hour blocked
+          </span>
+          <span class="text-base font-bold font-mono text-accent-orange tabular-nums">
+            {fmtCountdown(remaining)}
+          </span>
+        </div>
+        <div class="text-2xs text-text-muted mt-1">
+          {curHour.toString().padStart(2,'0')}:00 UTC is in blocked window
+          ({blockedHours.map(h => `${h.toString().padStart(2,'0')}:00`).join(', ')})
+          {' · '}
+          resumes at <span class="text-text font-semibold">{resumeAtUtc}</span>
+        </div>
       </div>
     </div>
   );
