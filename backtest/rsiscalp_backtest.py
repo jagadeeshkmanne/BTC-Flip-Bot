@@ -83,6 +83,29 @@ class Cfg:
     TRAIL = 0.0     # >0: trail SL this far behind best favorable price
     NO_TP = False   # True: disable the fixed TP (let trailing stop bank winners)
     TRAIL_CLOSE = 0.0  # conservative close-based trailing distance
+    VOL_CAP = 0.0   # 2026-06-05: >0: skip entries when vol[i] > vol_cap × SMA(20, volume)
+                    # (user theory: extreme volume = breakout/news, mean-rev fails)
+    # 2026-06-05: multi-signal "true breakout" exit. Count how many of these
+    # are true on the current bar; if count >= MULTI_EXIT_THRESHOLD, market-exit.
+    #   Sign 1: close beyond opposite 5m BB band (tactical, fast)
+    #   Sign 2: close beyond opposite 15m BB band (HTF confirm)
+    #   Sign 3: volume[i] > 2× SMA(20, vol) (institutional flow)
+    #   Sign 4: BBW expanded > 50% since trade entry (regime change)
+    #   Sign 5: 2 consecutive 5m closes > 0.4% adverse from entry (sustained pressure)
+    MULTI_EXIT_THRESHOLD = 0   # 0 = disabled; 3 = "3-of-5" recommended
+    MULTI_EXIT_VOL_MULT  = 2.0
+    MULTI_EXIT_BBW_EXP   = 0.50      # 50% BBW expansion since entry
+    MULTI_EXIT_ADVERSE   = 0.004     # 0.4% adverse close for streak
+    # 2026-06-05: v2 — from live-trade analysis (3 of 4 DCA fills were near-miss SL)
+    TREND_STABILITY = 0    # require N consecutive 15m bars same trend before entry (0 = off)
+    L2_GATE = False        # skip L2 DCA if vol-spike OR BBW expansion OR price beyond opp BB
+    L2_GATE_VOL_MULT = 1.5
+    L2_GATE_BBW_EXP  = 0.30    # 30% BBW expansion in last hour
+    BB_BREAK_EXIT = False  # close at next bar if close beyond opposite 5m BB
+    # 2026-06-05: TREND FIRMNESS — require |EMA20-EMA50|/EMA50 >= this %.
+    # Direct answer to user's "what if RSI hits 70 right when trend is about to flip up" worry.
+    TREND_GAP_MIN = 0.0    # e.g. 0.0015 = require 0.15% gap. 0 = off
+    # Need 15m EMA arrays for this — added in main()
 
 
 def tp_pct_for(filled):
@@ -95,6 +118,14 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
     l = df["low"].values
     o = df["open"].values
     rsi = df["rsi"].values
+    vol = df["volume"].values if "volume" in df.columns else None
+    vol_sma = df["vol_sma20"].values if "vol_sma20" in df.columns else None
+    # 2026-06-05 multi-signal exit support
+    bb_up_arr  = df["bb_up"].values  if "bb_up"  in df.columns else None
+    bb_low_arr = df["bb_low"].values if "bb_low" in df.columns else None
+    bbw_arr    = df["bbw"].values    if "bbw"    in df.columns else None
+    bb_up15_arr  = df["bb_up15"].values  if "bb_up15"  in df.columns else None
+    bb_low15_arr = df["bb_low15"].values if "bb_low15" in df.columns else None
 
     # filter masks computed per bar (evaluated on the SIGNAL bar = closed bar i)
     long_ok = np.ones(len(df), dtype=bool)
@@ -175,14 +206,35 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
                 trig = pos["worst"] * (1 - cfg.DCA_SPACING) if side == "LONG" else pos["worst"] * (1 + cfg.DCA_SPACING)
                 hit = (side == "LONG" and l[i] <= trig) or (side == "SHORT" and h[i] >= trig)
                 if hit:
-                    q = per_leg_qty(balance, trig)
-                    balance -= trig * q * cfg.COMMISSION
-                    pos["entries"].append((trig, q))
-                    pos["worst"] = min(pos["worst"], trig) if side == "LONG" else max(pos["worst"], trig)
-                    pos["qty"] = sum(e[1] for e in pos["entries"])
-                    pos["filled"] += 1
-                    pos["rsi_l2"] = rsi[i]  # RSI at the moment L2 (DCA) filled
-                    pos["l2_i"] = i         # bar index of L2 fill (indicator decision point)
+                    # 2026-06-05: v2 L2 GATE — skip DCA if anomalous conditions at trigger
+                    gate_block = False
+                    if cfg.L2_GATE:
+                        # Sign A: volume spike
+                        if vol is not None and vol_sma is not None and vol_sma[i] > 0:
+                            if vol[i] > vol_sma[i] * cfg.L2_GATE_VOL_MULT:
+                                gate_block = True
+                        # Sign B: BBW expanded > X% in last hour (12 5m-bars)
+                        if not gate_block and bbw_arr is not None and i >= 12:
+                            if not (np.isnan(bbw_arr[i]) or np.isnan(bbw_arr[i-12]) or bbw_arr[i-12] <= 0):
+                                if bbw_arr[i] / bbw_arr[i-12] > (1 + cfg.L2_GATE_BBW_EXP):
+                                    gate_block = True
+                        # Sign C: close beyond opposite 5m BB band
+                        if not gate_block and bb_up_arr is not None and bb_low_arr is not None:
+                            if not (np.isnan(bb_up_arr[i]) or np.isnan(bb_low_arr[i])):
+                                if side == "LONG" and c[i] < bb_low_arr[i]: gate_block = True
+                                if side == "SHORT" and c[i] > bb_up_arr[i]: gate_block = True
+                    if gate_block:
+                        # Mark that we BLOCKED a DCA — used for exit reason analysis
+                        pos["dca_blocked"] = pos.get("dca_blocked", 0) + 1
+                    else:
+                        q = per_leg_qty(balance, trig)
+                        balance -= trig * q * cfg.COMMISSION
+                        pos["entries"].append((trig, q))
+                        pos["worst"] = min(pos["worst"], trig) if side == "LONG" else max(pos["worst"], trig)
+                        pos["qty"] = sum(e[1] for e in pos["entries"])
+                        pos["filled"] += 1
+                        pos["rsi_l2"] = rsi[i]
+                        pos["l2_i"] = i
             avg = sum(p*q for p, q in pos["entries"]) / pos["qty"]
             # base catastrophic SL anchored to worst entry
             slp = pos["worst"] * (1 - cfg.SL) if side == "LONG" else pos["worst"] * (1 + cfg.SL)
@@ -226,6 +278,55 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
                         exit_px, reason = c[i], "EMA200X"
                     elif side == "SHORT" and c[i] > e2 * (1 + cfg.EMA200_EXIT):
                         exit_px, reason = c[i], "EMA200X"
+
+            # --- 2026-06-05: v2 BB BREAK EXIT (single fast signal) ---
+            if exit_px is None and cfg.BB_BREAK_EXIT and bb_up_arr is not None and bb_low_arr is not None:
+                if not (np.isnan(bb_up_arr[i]) or np.isnan(bb_low_arr[i])):
+                    if side == "LONG" and c[i] < bb_low_arr[i]:
+                        exit_px, reason = c[i], "BBBRK"
+                    elif side == "SHORT" and c[i] > bb_up_arr[i]:
+                        exit_px, reason = c[i], "BBBRK"
+
+            # --- 2026-06-05: MULTI-SIGNAL "true breakout" exit ---
+            # Counts how many of 5 signals confirm a real breakout against position.
+            # Exits at close if count >= threshold. Tracks adverse-streak in pos["adv_streak"].
+            if exit_px is None and cfg.MULTI_EXIT_THRESHOLD > 0:
+                entry_px = pos["entries"][0][0]  # L1 entry as the reference for adverse-pct
+                adverse_pct_now = (entry_px - c[i]) / entry_px if side == "LONG" else (c[i] - entry_px) / entry_px
+
+                # Track 2-bar adverse streak (Sign 5 prerequisite)
+                if adverse_pct_now > cfg.MULTI_EXIT_ADVERSE:
+                    pos["adv_streak"] = pos.get("adv_streak", 0) + 1
+                else:
+                    pos["adv_streak"] = 0
+
+                signs = 0
+                # Sign 1: close beyond opposite 5m BB
+                if bb_up_arr is not None and bb_low_arr is not None:
+                    if not (np.isnan(bb_up_arr[i]) or np.isnan(bb_low_arr[i])):
+                        if side == "LONG" and c[i] < bb_low_arr[i]: signs += 1
+                        if side == "SHORT" and c[i] > bb_up_arr[i]: signs += 1
+                # Sign 2: close beyond opposite 15m BB
+                if bb_up15_arr is not None and bb_low15_arr is not None:
+                    if not (np.isnan(bb_up15_arr[i]) or np.isnan(bb_low15_arr[i])):
+                        if side == "LONG" and c[i] < bb_low15_arr[i]: signs += 1
+                        if side == "SHORT" and c[i] > bb_up15_arr[i]: signs += 1
+                # Sign 3: volume spike
+                if vol is not None and vol_sma is not None:
+                    if vol_sma[i] > 0 and vol[i] > vol_sma[i] * cfg.MULTI_EXIT_VOL_MULT:
+                        signs += 1
+                # Sign 4: BBW expanded > 50% since entry
+                if bbw_arr is not None and "bbw_entry" in pos:
+                    bbw_now = bbw_arr[i]
+                    if not np.isnan(bbw_now) and pos["bbw_entry"] > 0:
+                        if bbw_now / pos["bbw_entry"] > (1 + cfg.MULTI_EXIT_BBW_EXP):
+                            signs += 1
+                # Sign 5: 2 consecutive adverse closes > 0.4%
+                if pos.get("adv_streak", 0) >= 2:
+                    signs += 1
+
+                if signs >= cfg.MULTI_EXIT_THRESHOLD:
+                    exit_px, reason = c[i], f"MULTI{signs}"
             if exit_px is None:
                 sl_hit = (side == "LONG" and l[i] <= slp) or (side == "SHORT" and h[i] >= slp)
                 tp_hit = (not cfg.NO_TP) and ((side == "LONG" and h[i] >= tpp) or (side == "SHORT" and l[i] <= tpp))
@@ -309,13 +410,43 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
                 sig = None
             if sig == "SHORT" and not short_ok[i]:
                 sig = None
+            # 2026-06-05: anti-volume filter (skip extreme-volume bars — likely breakouts)
+            if sig and cfg.VOL_CAP > 0 and vol is not None and vol_sma is not None:
+                v_now = vol[i]; v_avg = vol_sma[i]
+                if v_avg > 0 and v_now > v_avg * cfg.VOL_CAP:
+                    sig = None
+            # 2026-06-05: v2 TREND FIRMNESS — require EMA gap to exceed minimum (not knife-edge).
+            # For SHORT: gap must be < -TREND_GAP_MIN (firmly DOWN)
+            # For LONG : gap must be > +TREND_GAP_MIN (firmly UP)
+            if sig and cfg.TREND_GAP_MIN > 0 and "trend_gap_pct" in df.columns:
+                gap = df["trend_gap_pct"].values[i]
+                if not np.isnan(gap):
+                    if sig == "LONG" and gap < cfg.TREND_GAP_MIN: sig = None
+                    if sig == "SHORT" and gap > -cfg.TREND_GAP_MIN: sig = None
+            # 2026-06-05: v2 TREND STABILITY — require N consecutive 15m bars same trend.
+            # Counts in 5m-bar units: 15m = 3 bars, so 4×15m bars = 12 5m-bars.
+            if sig and cfg.TREND_STABILITY > 0 and "trend_up" in df.columns:
+                req_bars = cfg.TREND_STABILITY * 3  # convert 15m units to 5m-bar count
+                if i >= req_bars:
+                    if sig == "LONG":
+                        # all last req_bars must be UP
+                        if not df["trend_up"].values[i-req_bars+1:i+1].all():
+                            sig = None
+                    else:  # SHORT
+                        if df["trend_up"].values[i-req_bars+1:i+1].any():
+                            sig = None
+                else:
+                    sig = None  # not enough history
             if sig:
                 entry_px = o[i+1]
                 q = per_leg_qty(balance, entry_px)
                 balance -= entry_px * q * cfg.COMMISSION
+                # 2026-06-05: snapshot BBW at entry for multi-signal exit's "expansion" check
+                bbw_entry = bbw_arr[i+1] if bbw_arr is not None and not np.isnan(bbw_arr[i+1] if i+1 < len(bbw_arr) else float('nan')) else 0.0
                 pos = {"side": sig, "entries": [(entry_px, q)], "qty": q, "worst": entry_px,
                        "filled": 1, "entry_i": i+1, "rsi_entry": rsi[i],
-                       "first_entry": entry_px, "extreme": entry_px}
+                       "first_entry": entry_px, "extreme": entry_px,
+                       "bbw_entry": bbw_entry, "adv_streak": 0}
 
         peak = max(peak, balance)
         dd = balance / peak - 1
@@ -379,6 +510,21 @@ def main():
     ap.add_argument("--wincool", type=int, default=0, help="bars to block entries after any win")
     ap.add_argument("--winstreak", type=int, default=0)
     ap.add_argument("--winstreakcool", type=int, default=0)
+    ap.add_argument("--vol-cap", type=float, default=0.0,
+                    help="skip entries when vol[i] > VOL_CAP × SMA(20, vol). e.g. 2.0, 2.5, 3.0")
+    ap.add_argument("--multi-exit", type=int, default=0,
+                    help="multi-signal true-breakout exit threshold (0=disabled, 3=recommended)")
+    ap.add_argument("--multi-bbw-exp", type=float, default=0.50,
+                    help="BBW expansion ratio for Sign 4 (default 0.50 = +50%)")
+    # v2 filters
+    ap.add_argument("--trend-stability", type=int, default=0,
+                    help="require N consecutive 15m bars same trend before entry (0=off)")
+    ap.add_argument("--l2-gate", action="store_true",
+                    help="skip L2 DCA if vol-spike OR BBW-expansion OR price beyond opp BB")
+    ap.add_argument("--bb-break-exit", action="store_true",
+                    help="close trade if close beyond opposite 5m BB band")
+    ap.add_argument("--trend-gap-min", type=float, default=0.0,
+                    help="require |EMA20-EMA50|/EMA50 >= this fraction (e.g. 0.0015 = 0.15%)")
     args = ap.parse_args()
 
     Cfg.RSI_PERIOD = args.rsi; Cfg.RSI_OVERSOLD = args.os; Cfg.RSI_OVERBOUGHT = args.ob
@@ -387,6 +533,13 @@ def main():
     Cfg.BREAKER_LOSSES = args.blosses; Cfg.BREAKER_PAUSE_BARS = args.bpause; Cfg.DD_STOP = args.ddstop
     Cfg.WIN_COOLDOWN = args.wincool; Cfg.WINSTREAK_N = args.winstreak; Cfg.WINSTREAK_COOL = args.winstreakcool
     Cfg.FLIP_ON_SL = args.flip; Cfg.DCA_LEVELS = args.dca; Cfg.HOOK = args.hook; Cfg.EMA200_EXIT = args.emaexit
+    Cfg.VOL_CAP = args.vol_cap
+    Cfg.MULTI_EXIT_THRESHOLD = args.multi_exit
+    Cfg.MULTI_EXIT_BBW_EXP = args.multi_bbw_exp
+    Cfg.TREND_STABILITY = args.trend_stability
+    Cfg.L2_GATE = args.l2_gate
+    Cfg.BB_BREAK_EXIT = args.bb_break_exit
+    Cfg.TREND_GAP_MIN = args.trend_gap_min
 
     df = pd.read_csv(os.path.join(CACHE, "BTCUSDT_5m.csv"))
     df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -402,6 +555,7 @@ def main():
     df["bb_up"] = mid + 2 * sd
     df["bbw"] = (4 * sd) / mid  # band width as % of price
     df["adx"] = adx(df, 14)
+    df["vol_sma20"] = df["volume"].rolling(20).mean()
     tr = pd.concat([(df["high"]-df["low"]),
                     (df["high"]-df["close"].shift()).abs(),
                     (df["low"]-df["close"].shift()).abs()], axis=1).max(axis=1)
@@ -416,6 +570,14 @@ def main():
     e50 = d15.ewm(span=50, adjust=False).mean()
     tup = (e20 > e50).reindex(df["timestamp"], method="ffill").values
     df["trend_up"] = tup
+    # 2026-06-05: 15m EMA gap (signed) for trend-firmness filter
+    gap_pct = ((e20 - e50) / e50).reindex(df["timestamp"], method="ffill").values
+    df["trend_gap_pct"] = gap_pct
+    # 2026-06-05: 15m BB(20, 2) for multi-signal exit's HTF confirm (Sign 2)
+    bb15_mid = d15.rolling(20).mean()
+    bb15_sd  = d15.rolling(20).std(ddof=0)
+    df["bb_up15"]  = (bb15_mid + 2 * bb15_sd).reindex(df["timestamp"], method="ffill").values
+    df["bb_low15"] = (bb15_mid - 2 * bb15_sd).reindex(df["timestamp"], method="ffill").values
 
     all_filters = ["none", "ema200", "ema100", "ema200_slope", "ema200_adx",
                    "ema200_atr", "ema200_htf", "ema200_bbw", "adx_lt"]

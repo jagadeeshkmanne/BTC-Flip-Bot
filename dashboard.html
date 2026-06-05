@@ -213,8 +213,9 @@
     <span class="brand-tag" id="brandTag">Paper · Mainnet · S/R DCA</span>
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
-    <option value="rsiscalp_trend">RSI Scalp +Trend</option>
-    <option value="gemini">Gemini (multi-regime)</option>
+    <option value="rsiscalp_trend">RSI Scalp +Trend (v1)</option>
+    <option value="rsiscalp_trend_v2">RSI Scalp +Trend v2 (GAP firmness)</option>
+    <option value="rsiscalp_trend_v3">RSI Scalp +Trend v3 (risk-based, no DCA)</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -367,7 +368,7 @@ const URL_ENV = 'mainnet';
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  const allowed = ['rsiscalp_trend', 'gemini'];
+  const allowed = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3'];
   return allowed.includes(s) ? s : 'rsiscalp_trend';
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
@@ -379,9 +380,10 @@ const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIV
 // New 2026-06 bots (gemini/chatgpt/claude). They have no EOD window and no
 // S/R levels, so they render via the simple 24/7 RSISCALP path (balance /
 // position / stats / live indicator) with their own subtitle.
-const NEWBOT = STRATEGY === 'gemini' || STRATEGY === 'chatgpt' || STRATEGY === 'claude';
-const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend' || NEWBOT;
-const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend';
+// 2026-06-05: Gemini bots removed (didn't work as expected). Fleet is RSI-only.
+const NEWBOT = false;  // kept as constant so downstream `if (NEWBOT)` branches dead-code naturally
+const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend' || STRATEGY === 'rsiscalp_trend_v2' || STRATEGY === 'rsiscalp_trend_v3';
+const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend' || STRATEGY === 'rsiscalp_trend_v2' || STRATEGY === 'rsiscalp_trend_v3';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
 
 // Trend-filter labels — vary by strategy. v1 uses 15m EMA20/50, v2 uses 1h EMA50/200.
@@ -629,8 +631,28 @@ const RSISCALP_SHORT_CONDS = [
   {key: 'RSI ≥ overbought', check: d => d?.rsi != null && d.rsi >= (d?.rsi_overbought ?? 70),
    val: d => d?.rsi != null ? `RSI ${d.rsi.toFixed(1)} (need ≥ ${d?.rsi_overbought ?? 70})` : '—'},
 ];
-const LONG_CONDS  = RSISCALP ? RSISCALP_LONG_CONDS  : (isDivflipStrategy ? DIVFLIP_LONG_CONDS  : SR_LONG_CONDS);
-const SHORT_CONDS = RSISCALP ? RSISCALP_SHORT_CONDS : (isDivflipStrategy ? DIVFLIP_SHORT_CONDS : SR_SHORT_CONDS);
+// 2026-06-05: rsiscalp_trend_v2 ADDS the 15m EMA20/EMA50 gap-firmness gate.
+// trend_gap_pct is sent in status.indicators (signed, percent). LONG needs +gap, SHORT needs -gap.
+const RSISCALP_V2_LONG_CONDS = [
+  ...RSISCALP_LONG_CONDS,
+  {key: '15m trend gap firm (UP)',
+   check: d => d?.trend_gap_pct != null && d.trend_gap_pct >= (d?.trend_gap_min_pct ?? 0.25),
+   val: d => d?.trend_gap_pct != null ? `gap ${d.trend_gap_pct.toFixed(3)}% (need ≥ +${(d?.trend_gap_min_pct ?? 0.25).toFixed(2)}%)` : '—'},
+];
+const RSISCALP_V2_SHORT_CONDS = [
+  ...RSISCALP_SHORT_CONDS,
+  {key: '15m trend gap firm (DOWN)',
+   check: d => d?.trend_gap_pct != null && d.trend_gap_pct <= -(d?.trend_gap_min_pct ?? 0.25),
+   val: d => d?.trend_gap_pct != null ? `gap ${d.trend_gap_pct.toFixed(3)}% (need ≤ -${(d?.trend_gap_min_pct ?? 0.25).toFixed(2)}%)` : '—'},
+];
+// 2026-06-05: rsiscalp_trend_v2 AND v3 both use the GAP filter, so share the v2 condition set.
+const RSISCALP_V2 = STRATEGY === 'rsiscalp_trend_v2' || STRATEGY === 'rsiscalp_trend_v3';
+const LONG_CONDS  = RSISCALP_V2 ? RSISCALP_V2_LONG_CONDS
+                  : RSISCALP    ? RSISCALP_LONG_CONDS
+                  : (isDivflipStrategy ? DIVFLIP_LONG_CONDS  : SR_LONG_CONDS);
+const SHORT_CONDS = RSISCALP_V2 ? RSISCALP_V2_SHORT_CONDS
+                  : RSISCALP    ? RSISCALP_SHORT_CONDS
+                  : (isDivflipStrategy ? DIVFLIP_SHORT_CONDS : SR_SHORT_CONDS);
 
 // ── State caches (used by both refresh() and live WS updates) ───
 let positionSnapshot = null;
@@ -1590,37 +1612,26 @@ document.addEventListener('DOMContentLoaded', () => {
                     : DIVFLIP_SHARP ? 'DivFlip Sharp ⭐'
                     : DIVFLIP_V2 ? 'Divflip v2'
                     : STRATEGY === 'divflip' ? 'Divflip v1'
-                    : STRATEGY === 'gemini' ? 'Gemini ♊'
-                    : STRATEGY === 'chatgpt' ? 'ChatGPT 🤖'
-                    : STRATEGY === 'claude' ? 'Claude ✳️'
-                    : RSISCALP_TREND ? 'RSI Scalp +Trend'
+                    : STRATEGY === 'rsiscalp_trend_v2' ? 'RSI Scalp +Trend v2 🛡'
+                    : STRATEGY === 'rsiscalp_trend_v3' ? 'RSI Scalp +Trend v3 🎯 (risk-based)'
+                    : RSISCALP_TREND ? 'RSI Scalp +Trend (v1)'
                     : RSISCALP ? 'RSI Scalp'
-                    : 'S/R DCA';
+                    : 'RSI Scalp +Trend';
   const tag = document.getElementById('brandTag');
   if (tag) tag.textContent = (URL_ENV === 'testnet' ? 'Testnet' : 'Paper · Mainnet') + ' · ' + stratLabel;
   // Update the setup subtitle based on strategy
   const sub = document.getElementById('setupSub');
   if (sub) {
-    if (NEWBOT) {
-      sub.textContent = STRATEGY === 'gemini'
-        ? 'Gemini multi-regime — classifies BULL / BEAR / RANGE / SQUEEZE first. Trend-pullbacks WITH the trend in BULL/BEAR (pullback to EMA20, RSI7 hook, TP at the Bollinger band), Bollinger mean-reversion in RANGE, sits out the BB squeeze. 3× lev, risk 0.5%/trade, SL ≤0.6%, 15-min cooldown after a loss.'
-        : STRATEGY === 'chatgpt'
-        ? 'ChatGPT EMA-Pullback — trades only strong trends (ADX>25). LONG when EMA20>EMA50, price>EMA200, pullback to EMA20, next bar closes above the pullback high + volume>SMA20. TP1 1R (50%) / TP2 2R (25%) / runner trails EMA20. 3× lev, risk 0.5%/trade.'
-        : 'Claude — RSI(5) mean-reversion + 5m EMA200 trend gate. Enters RSI ≤20 (LONG, above EMA200) / ≥80 (SHORT, below EMA200). 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 30% equity drawdown-stop, 3× lev, 15-min cooldown after a loss. Backtest +539% / −30% DD over 5y.';
-    } else if (DIVFLIP_PRO) {
-      sub.textContent = 'DivFlip Pro (2026-05-26 v2). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤50/≥66. UK+NY hours UTC 08-20, FRIDAY BLOCKED. 2-leg DCA @ 0.3% (tightened). SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. REGIME: 15m EMA50 ±0.3% buf. ATR(14) ≥ 0.04%. Cooldowns: 6h after SL, 15min after TP (anti pump-and-dump).';
-    } else if (DIVFLIP_SHARP) {
-      sub.textContent = 'DivFlip Sharp (updated 2026-05-26 v3). RSI(14) div, pivot 5L/1R, fresh ≤21b, RSI@pivot ≤38/≥68. Active UTC 08-20 (IST 13:30-01:30), FRIDAY BLOCKED. 2-leg DCA @ 0.3%. SL 0.5%/avg, TP 1%/avg. BE: L1 +0.50%/Trail 0.2%, L2 +0.30%/Trail 0.2%. 3× lev. Cooldowns: 6h after SL, 15min after TP.';
+    if (STRATEGY === 'rsiscalp_trend_v2') {
+      sub.textContent = 'RSI Scalp +Trend v2 — same as v1 PLUS gap-firmness filter: 15m |EMA20-EMA50|/EMA50 must be ≥ 0.25% (skips knife-edge trends about to flip). Backtest: turns -75% (29mo OOS) baseline into +44% OOS (PF 1.33, MaxDD 21%, walk-forward validated). Trades ~30% less often than v1 but in much firmer trend regimes.';
+    } else if (STRATEGY === 'rsiscalp_trend_v3') {
+      sub.textContent = 'RSI Scalp +Trend v3 — RISK-BASED architecture (Gemini-style). Single entry NO DCA, position size sized to risk exactly 0.5% of balance per trade. Tight 0.5% SL + 0.5% TP (1:1 R:R). KEEPS v2 GAP filter. Max loss per trade ALWAYS 0.5% — predictable, no DCA-amplified catastrophes. Needs WR > 55% to profit. UNTESTED in backtest — live experiment alongside v1/v2.';
     } else if (RSISCALP_TREND) {
       sub.textContent = 'RSI mean-reversion + 15m TREND GATE — LONG only when 15m EMA20>EMA50 (uptrend), SHORT only when EMA20<EMA50 (downtrend). RSI(9) ≤30/≥70 entry, 2-leg DCA @0.50%, adaptive TP 0.50%/0.25% from avg, SL 1% from worst, 3× lev. Cooldown: 1-loss → 15-min pause (changed 2026-06-04 from 2-loss/2h). Trades ~half as often as plain RSI for ~half the drawdown.';
     } else if (RSISCALP) {
-      sub.textContent = 'Pure RSI mean-reversion — 24/7, NO trend filter. Enters LONG at RSI(9) ≤ 30, SHORT at RSI(9) ≥ 70 on 5m. 2-leg DCA @ 0.50%. Adaptive TP from avg — 0.50% (no DCA) / 0.25% (after DCA). SL 1% from worst, 3× lev, 2-loss→2h circuit breaker. NOTE: edge depends on maker (limit) execution.';
+      sub.textContent = 'Pure RSI mean-reversion — 24/7, NO trend filter. Enters LONG at RSI(9) ≤ 30, SHORT at RSI(9) ≥ 70 on 5m. 2-leg DCA @ 0.50%. Adaptive TP from avg — 0.50% (no DCA) / 0.25% (after DCA). SL 1% from worst, 3× lev, 2-loss→2h circuit breaker.';
     } else {
-      sub.textContent = DIVFLIP_V2
-        ? 'Divflip v2 (Option B test, 2026-05-31). Same as v1 BUT trend filter moved 15m EMA20/50 → 1h EMA50/200 to reduce filter lag during transitions. RSI@pivot ≤40 bull / ≥70 bear, 2-leg DCA @ 0.35%, profit trail floor +0.5% / trail 0.3%, SL 0.7% from worst. All v1 filters retained.'
-        : STRATEGY === 'divflip'
-        ? 'Fires on fresh RSI(10) div (≤21 bars, pivot 5L/1R), RSI@pivot ≤40 bull / ≥70 bear. 3x lev, 2-leg DCA @ 0.35%. Exit: profit trail — locks min +0.5% once reached, then trails 0.3% off peak (rides trends). SL 0.7% from worst entry. BE arms at +0.3%. Filters: 15m EMA20/50 trend gate, one-shot per pivot, IST 00-06 block, Friday block, 0.15% same-level block, 8h loss time-stop, 30min/15min cooldowns.'
-        : 'V2 fires when price touches prev_H/prev_L + volume ≥ 1.1× + fresh RSI divergence (≤20 bars). Cycle cap: 1/day. Force flatten: 20:00 UTC.';
+      sub.textContent = 'RSI Scalp +Trend';  // fallback
     }
   }
   // Divflip has no 20:00 UTC force-flatten — hide the "Closes by 20:00 UTC"
@@ -1763,6 +1774,7 @@ document.addEventListener('visibilitychange', () => {
 // kline WebSocket. Scroll/zoom via echarts dataZoom.
 let priceChart = null;
 let priceChartKlines = [];
+let priceChart15mKlines = [];   // 2026-06-05: 15m klines for HTF BB overlay on 5m chart
 function ensurePriceChart(){
   if (!priceChart) priceChart = echarts.init($('priceChart'), null, {renderer: 'canvas'});
   return priceChart;
@@ -1788,6 +1800,28 @@ function computeRSI(closes, period = 14) {
     rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   }
   return rsi;
+}
+
+// Bollinger Bands (n, k) — returns {upper, mid, lower} as arrays. Uses
+// population std-dev (matches the bot's `pd.Series.rolling(n).std()` —
+// pandas defaults to sample std, but the small difference is invisible here).
+function computeBollinger(closes, n = 20, k = 2.0) {
+  const len = closes.length;
+  const upper = new Array(len).fill(null);
+  const mid   = new Array(len).fill(null);
+  const lower = new Array(len).fill(null);
+  for (let i = n - 1; i < len; i++) {
+    let sum = 0;
+    for (let j = i - n + 1; j <= i; j++) sum += closes[j];
+    const m = sum / n;
+    let varSum = 0;
+    for (let j = i - n + 1; j <= i; j++) varSum += (closes[j] - m) ** 2;
+    const sd = Math.sqrt(varSum / n);
+    upper[i] = m + k * sd;
+    mid[i]   = m;
+    lower[i] = m - k * sd;
+  }
+  return { upper, mid, lower };
 }
 
 // Detect pivot-based divergences (5/5 spec). Returns
@@ -1832,6 +1866,33 @@ function renderPriceChart() {
   const pivotR = STRATEGY === 'divflip' ? 1 : 5;
   const rsi = computeRSI(closes, rsiLen);
   const divs = detectDivergences(highs, lows, rsi, 5, pivotR);
+  // 2026-06-05: 5m BB(20, 2) overlay — see squeezes, expansions, and price-vs-band positioning
+  const bb = computeBollinger(closes, 20, 2.0);
+
+  // 2026-06-05: 15m BB(20, 2) HTF overlay — smoother bands, harder to fake-break.
+  // Step-plot: each 15m bar's BB values apply to its 3 constituent 5m bars.
+  // (15m klines fetched separately in refreshPriceChart; falls back to [] gracefully.)
+  const bb15Up = new Array(closes.length).fill(null);
+  const bb15Md = new Array(closes.length).fill(null);
+  const bb15Lo = new Array(closes.length).fill(null);
+  if (priceChart15mKlines && priceChart15mKlines.length >= 20) {
+    const closes15 = priceChart15mKlines.map(k => +k[4]);
+    const bb15 = computeBollinger(closes15, 20, 2.0);
+    // Build a map: 15m bar openTime → its array index
+    const t15Map = new Map();
+    priceChart15mKlines.forEach((k, idx) => t15Map.set(+k[0], idx));
+    const FIFTEEN_MIN = 15 * 60 * 1000;
+    for (let i = 0; i < klines.length; i++) {
+      const t5 = +klines[i][0];
+      const t15 = Math.floor(t5 / FIFTEEN_MIN) * FIFTEEN_MIN;
+      const idx15 = t15Map.get(t15);
+      if (idx15 !== undefined) {
+        bb15Up[i] = bb15.upper[idx15];
+        bb15Md[i] = bb15.mid[idx15];
+        bb15Lo[i] = bb15.lower[idx15];
+      }
+    }
+  }
 
   // S/R levels — prefer bot status (matches live bot's adaptive range).
   // If bot indicators aren't loaded yet, fall back to computing prev_H/L
@@ -1896,12 +1957,9 @@ function renderPriceChart() {
   // the trade log changed.
   const markers = [];
 
-  // Horizontal lines for prev_H / prev_L / prev_mid only — trade levels are
-  // shown by the inline pill labels at the entry/exit markers (no extra lines).
-  const markLine = { silent: true, symbol: 'none', label: { fontSize: 10, color: '#cdd5e0', formatter: p => p.name, position: 'insideEndTop' }, data: [] };
-  if (prevH)   markLine.data.push({ name: `prev_H $${Math.round(prevH)}`, yAxis: prevH, lineStyle: { color: '#ff5b6e', type: 'dashed', width: 1.5 } });
-  if (prevL)   markLine.data.push({ name: `prev_L $${Math.round(prevL)}`, yAxis: prevL, lineStyle: { color: '#2ecc6f', type: 'dashed', width: 1.5 } });
-  if (prevMid) markLine.data.push({ name: `mid $${Math.round(prevMid)}`,  yAxis: prevMid, lineStyle: { color: '#4cc9ff', type: 'dotted', width: 1.5 } });
+  // 2026-06-05: range lines (prev_H / prev_L / mid) REMOVED per user request.
+  // Chart now shows pure 5m candles + BB(20,2) overlay only.
+  const markLine = { silent: true, symbol: 'none', data: [] };
 
   // Default zoom: last ~1 day (288 bars) so candles are visible at usable size.
   const zoomStart = Math.max(0, 100 - Math.round(100 * (288 / klines.length)));
@@ -1949,19 +2007,44 @@ function renderPriceChart() {
         textStyle: { color: '#9aa4b2', fontSize: 10 },
         brushSelect: false }
     ],
-    series: [{
-      type: 'candlestick', data: candles,
-      // Don't set large:true — it disables drag-pan and tooltip on the chart.
-      // largeThreshold prevents auto-large mode kicking in at 864 bars.
-      largeThreshold: 2000,
-      itemStyle: { color: '#2ecc6f', color0: '#ff5b6e', borderColor: '#2ecc6f', borderColor0: '#ff5b6e' },
-      markLine, markPoint: { data: markers, label: { show: false }, silent: true }
-    }]
+    series: [
+      {
+        type: 'candlestick', data: candles,
+        // Don't set large:true — it disables drag-pan and tooltip on the chart.
+        // largeThreshold prevents auto-large mode kicking in at 864 bars.
+        largeThreshold: 2000,
+        itemStyle: { color: '#2ecc6f', color0: '#ff5b6e', borderColor: '#2ecc6f', borderColor0: '#ff5b6e' },
+        markLine, markPoint: { data: markers, label: { show: false }, silent: true }
+      },
+      // 2026-06-05: 5m BB(20, 2) overlay — thin dashed lines
+      { type: 'line', name: '5m BB upper', data: bb.upper, showSymbol: false, z: 1,
+        lineStyle: { color: '#ff9b6e', width: 1, type: 'dashed', opacity: 0.55 },
+        itemStyle: { color: '#ff9b6e' }, tooltip: { show: false } },
+      { type: 'line', name: '5m BB mid',   data: bb.mid,   showSymbol: false, z: 1,
+        lineStyle: { color: '#9aa4b2', width: 1, type: 'dotted', opacity: 0.4 },
+        itemStyle: { color: '#9aa4b2' }, tooltip: { show: false } },
+      { type: 'line', name: '5m BB lower', data: bb.lower, showSymbol: false, z: 1,
+        lineStyle: { color: '#7bff9e', width: 1, type: 'dashed', opacity: 0.55 },
+        itemStyle: { color: '#7bff9e' }, tooltip: { show: false } },
+      // 2026-06-05: 15m BB(20, 2) HTF overlay — thicker, more vivid, step-plotted from 15m bars.
+      { type: 'line', name: '15m BB upper', data: bb15Up, showSymbol: false, z: 2,
+        lineStyle: { color: '#ff5b6e', width: 2, type: 'solid', opacity: 0.85 },
+        itemStyle: { color: '#ff5b6e' }, tooltip: { show: false } },
+      { type: 'line', name: '15m BB mid',   data: bb15Md, showSymbol: false, z: 2,
+        lineStyle: { color: '#4cc9ff', width: 1, type: 'solid', opacity: 0.7 },
+        itemStyle: { color: '#4cc9ff' }, tooltip: { show: false } },
+      { type: 'line', name: '15m BB lower', data: bb15Lo, showSymbol: false, z: 2,
+        lineStyle: { color: '#2ecc6f', width: 2, type: 'solid', opacity: 0.85 },
+        itemStyle: { color: '#2ecc6f' }, tooltip: { show: false } },
+    ]
   }, true);
 
-  // Update meta line with divergence count.
+  // Update meta line — confirms timeframe + lists overlays so user knows what's on the chart.
   const meta = $('priceChartMeta');
-  if (meta) meta.textContent = `${klines.length} bars · ${divs.bull.length} bull / ${divs.bear.length} bear divergences`;
+  if (meta) {
+    const has15 = priceChart15mKlines && priceChart15mKlines.length >= 20;
+    meta.textContent = `${klines.length} × 5m bars · 5m BB (dashed) ${has15 ? '+ 15m BB (solid) ' : ''}overlay · ${divs.bull.length} bull / ${divs.bear.length} bear divergences`;
+  }
 
 }
 
@@ -1971,10 +2054,18 @@ async function refreshPriceChart() {
     // fallback so mobile carriers that block direct Binance calls still get
     // chart data (and the same canonical price source).
     const url = CHART_REST_URL(864);
-    const r = await fetch(url);
-    const klines = await r.json();
+    // Parallel: fetch 5m klines + 15m klines (for HTF BB overlay)
+    const [r5, r15] = await Promise.all([
+      fetch(url),
+      fetch('/api/klines?interval=15m&limit=288').catch(() => null),  // 288 × 15m = 3 days
+    ]);
+    const klines = await r5.json();
     if (!Array.isArray(klines) || klines.length === 0) return;
     priceChartKlines = klines;
+    if (r15 && r15.ok) {
+      const klines15 = await r15.json();
+      if (Array.isArray(klines15)) priceChart15mKlines = klines15;
+    }
     renderPriceChart();
   } catch (e) { console.warn('priceChart refresh failed', e); }
 }

@@ -534,8 +534,13 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
-        elif strategy_q == 'gemini':
-            env_dir = 'paper_gemini'
+        elif strategy_q == 'rsiscalp_trend_v2':
+            env_dir = 'paper_rsiscalp_trend_v2'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
+        elif strategy_q == 'rsiscalp_trend_v3':
+            env_dir = 'paper_rsiscalp_trend_v3'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -609,9 +614,15 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     state_filename='state.json',
                     balance_key='balance',
                 ))
-            if env_dir == 'paper_gemini':
+            if env_dir == 'paper_rsiscalp_trend_v2':
                 return self._json_response(_query_paper_position(
-                    state_subdir=env_dir,
+                    state_subdir='paper_rsiscalp_trend_v2',
+                    state_filename='state.json',
+                    balance_key='balance',
+                ))
+            if env_dir == 'paper_rsiscalp_trend_v3':
+                return self._json_response(_query_paper_position(
+                    state_subdir='paper_rsiscalp_trend_v3',
                     state_filename='state.json',
                     balance_key='balance',
                 ))

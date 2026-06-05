@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""bot_rsiscalp_v3.py — RSI-Scalp +Trend v3 (RISK-BASED sizing + no DCA).
+
+Sibling to v1 and v2. Architectural upgrade adopting Gemini's risk-based design:
+  1. RISK-BASED SIZING: position size = (balance × 0.5%) / (entry × SL_distance)
+     → max loss per trade ALWAYS = 0.5% of balance, regardless of SL distance.
+  2. NO DCA: single entry, single exit. Removes the L2-amplification risk.
+  3. TIGHT SL: 0.5% fixed from entry (was 1% from worst with DCA in v2).
+  4. SINGLE TP: 0.5% from entry (was adaptive 0.25%/0.5% in v2).
+  5. KEEPS v2's GAP FILTER: trend gap ≥ 0.25% to skip knife-edge entries.
+
+Trade-off vs v2:
+  - PRO: Loss per trade capped at 0.5% (was up to 3.7% with DCA L2 SL).
+  - PRO: No catastrophic post-DCA SL hits.
+  - CON: Lower WR expected (no DCA averaging to capture bounces).
+  - CON: Smaller wins (smaller position size due to tight risk cap).
+  - Math: Need WR > 55% to break even after fees at 1:1 R:R.
+
+Backtest status: UNTESTED — deployed as live-only experiment alongside v1/v2.
+
+PAPER-ONLY. State / log / status: data/paper_rsiscalp_trend_v3/
+"""
+from __future__ import annotations
+import os, sys, json, logging
+from datetime import datetime, timezone, timedelta
+import requests
+import pandas as pd
+
+STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
+BOT_DIR = os.path.dirname(os.path.dirname(STRATEGY_DIR))
+sys.path.insert(0, STRATEGY_DIR)
+
+from core import rsi_series
+from core_rsiscalp import (
+    LEVERAGE, DCA_LEVELS, DCA_SPACING,
+    RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT,
+    USE_TAKE_PROFIT, TP_PCT_SINGLE, TP_PCT_DCA, tp_pct_for,
+    USE_STOP_LOSS, SL_FROM_WORST,
+    USE_TREND_FILTER, TREND_TF, TREND_EMA_FAST, TREND_EMA_SLOW,
+    USE_CIRCUIT_BREAKER, BREAKER_LOSSES, BREAKER_PAUSE_HOURS,
+    rsi_signal, dca_price, sl_price, per_level_qty,
+)
+
+# ─── Paths ───
+DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"))
+# v2 GAP filter (kept in v3)
+TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
+# v3 RISK-BASED config (overrides core's DCA-based math)
+V3_RISK_PCT = 0.005       # 0.5% balance risk per trade
+V3_SL_PCT   = 0.005       # 0.5% fixed SL from entry
+V3_TP_PCT   = 0.005       # 0.5% fixed TP from entry (1:1 R:R)
+os.makedirs(DATA_DIR, exist_ok=True)
+STATE_FILE  = os.path.join(DATA_DIR, "state.json")
+STATUS_FILE = os.path.join(DATA_DIR, "status.json")
+LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
+
+# ─── Config ───
+PAIR = "BTCUSDT"
+INITIAL_BALANCE = 5000.0
+COMMISSION_PCT = 0.0004  # 0.04% taker fee per side
+BINANCE_BASE = "https://fapi.binance.com"
+
+# ─── Logging ───
+log = logging.getLogger("bot_rsiscalp_v3")
+log.setLevel(logging.INFO)
+log.handlers.clear()
+fh = logging.FileHandler(LOG_FILE)
+fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+log.addHandler(fh)
+sh = logging.StreamHandler(sys.stdout)
+sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+log.addHandler(sh)
+
+
+# ─── Binance public fetchers ───
+def fetch_klines(interval: str, limit: int = 500) -> pd.DataFrame | None:
+    try:
+        r = requests.get(f"{BINANCE_BASE}/fapi/v1/klines",
+                         params={"symbol": PAIR, "interval": interval, "limit": limit}, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if not data:
+            return None
+        return pd.DataFrame([{
+            "timestamp": pd.to_datetime(k[0], unit="ms"),
+            "open": float(k[1]), "high": float(k[2]), "low": float(k[3]),
+            "close": float(k[4]), "volume": float(k[5]),
+        } for k in data])
+    except Exception as e:
+        log.error(f"klines fetch failed ({interval}): {e}")
+        return None
+
+
+def fetch_live_price() -> float | None:
+    try:
+        r = requests.get(f"{BINANCE_BASE}/fapi/v1/ticker/price", params={"symbol": PAIR}, timeout=10)
+        r.raise_for_status()
+        return float(r.json()["price"])
+    except Exception as e:
+        log.error(f"live price fetch failed: {e}")
+        return None
+
+
+# ─── State I/O ───
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {
+            "balance": INITIAL_BALANCE, "peak_equity": INITIAL_BALANCE,
+            "position": None, "stats": {"total": 0, "wins": 0, "pnl": 0.0}, "trade_log": [],
+        }
+    with open(STATE_FILE) as f:
+        return json.load(f)
+
+
+def save_state(s):
+    with open(STATE_FILE, "w") as f:
+        json.dump(s, f, default=str, indent=2)
+
+
+def write_status(payload):
+    with open(STATUS_FILE, "w") as f:
+        json.dump(payload, f, default=str, indent=2)
+
+
+# ─── Position management ───
+def avg_entry_of(pos) -> float:
+    entries = pos.get("entries", [])
+    total_qty = sum(e["qty"] for e in entries)
+    return sum(e["px"] * e["qty"] for e in entries) / total_qty if total_qty > 0 else pos.get("first_entry", 0.0)
+
+
+def _record_trade(state, trade_record, is_win: bool):
+    state.setdefault("trade_log", []).append(trade_record)
+    state["trade_log"] = state["trade_log"][-200:]
+    state["stats"]["total"] += 1
+    state["stats"]["pnl"] += trade_record["pnl_pct"]
+    if is_win:
+        state["stats"]["wins"] += 1
+
+
+def close_position(state, pos, exit_px: float, reason: str) -> None:
+    side = pos["side"]
+    qty_total = pos["qty_total"]
+    avg_entry = avg_entry_of(pos)
+    gross = (exit_px - avg_entry) * qty_total if side == "LONG" else (avg_entry - exit_px) * qty_total
+    fees = exit_px * qty_total * COMMISSION_PCT
+    net = gross - fees
+    balance_before = state["balance"]
+    state["balance"] += net
+    price_move_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
+    pnl_pct = (net / balance_before * 100) if balance_before > 0 else 0.0
+    _record_trade(state, {
+        "side": side, "first_entry": pos["first_entry"], "avg_entry": avg_entry, "exit": exit_px,
+        "entries": len(pos.get("entries", [])), "qty_total": qty_total, "reason": reason,
+        "pnl_usd": net, "pnl_pct": pnl_pct, "price_move_pct": price_move_pct,
+        "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
+        "exit_time": datetime.now(timezone.utc).isoformat(),
+        "rsi_at_entry": pos.get("rsi_at_entry"),
+    }, is_win=net > 0)
+    log.warning(f"  EXIT {side} via {reason} @${exit_px:.2f} | avg ${avg_entry:.2f} | "
+                f"net ${net:+.2f} (price {price_move_pct:+.2f}%) | balance ${state['balance']:.2f}")
+    # ── Circuit breaker: count consecutive losses; pause after BREAKER_LOSSES ──
+    if USE_CIRCUIT_BREAKER:
+        if net <= 0:
+            state["consec_losses"] = state.get("consec_losses", 0) + 1
+            if state["consec_losses"] >= BREAKER_LOSSES:
+                until = datetime.now(timezone.utc) + timedelta(hours=BREAKER_PAUSE_HOURS)
+                state["pause_until"] = until.isoformat()
+                state["consec_losses"] = 0
+                log.warning(f"  CIRCUIT BREAKER: {BREAKER_LOSSES} losses in a row — pausing entries until {until.isoformat()[:16]}")
+        else:
+            state["consec_losses"] = 0
+
+
+def partial_close(state, pos, exit_px: float, fraction: float) -> None:
+    side = pos["side"]
+    avg_entry = avg_entry_of(pos)
+    sell_qty = pos["qty_total"] * fraction
+    if sell_qty <= 0:
+        return
+    gross = (exit_px - avg_entry) * sell_qty if side == "LONG" else (avg_entry - exit_px) * sell_qty
+    fees = exit_px * sell_qty * COMMISSION_PCT
+    net = gross - fees
+    balance_before = state["balance"]
+    state["balance"] += net
+    pnl_pct = (net / balance_before * 100) if balance_before > 0 else 0.0
+    price_move_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
+    pos["qty_total"] -= sell_qty
+    for e in pos.get("entries", []):
+        e["qty"] *= (1 - fraction)
+    pos["partial_taken"] = True
+    _record_trade(state, {
+        "side": side, "first_entry": pos["first_entry"], "avg_entry": avg_entry, "exit": exit_px,
+        "entries": len(pos.get("entries", [])), "qty_total": sell_qty, "reason": "PARTIAL_TP",
+        "pnl_usd": net, "pnl_pct": pnl_pct, "price_move_pct": price_move_pct,
+        "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
+        "exit_time": datetime.now(timezone.utc).isoformat(), "rsi_at_entry": pos.get("rsi_at_entry"),
+    }, is_win=net > 0)
+    log.warning(f"  PARTIAL TP: sold {fraction*100:.0f}% ({sell_qty:.4f}) @${exit_px:.2f} "
+                f"net ${net:+.2f} | remaining {pos['qty_total']:.4f} rides to full TP")
+
+
+def open_position(state, side: str, entry_px: float, rsi_val: float) -> None:
+    # v3 RISK-BASED sizing: position so SL hit = V3_RISK_PCT of balance, ALWAYS.
+    # qty = (balance × risk_pct) / (entry × SL_distance)
+    # Also cap to leverage so we never exceed LEVERAGE× notional of balance.
+    risk_qty = (state["balance"] * V3_RISK_PCT) / (entry_px * V3_SL_PCT)
+    lev_cap_qty = (state["balance"] * 0.95 * LEVERAGE) / entry_px
+    qty = round(min(risk_qty, lev_cap_qty), 3)
+    if qty <= 0:
+        log.warning(f"  qty {qty} too small to open")
+        return
+    state["balance"] -= entry_px * qty * COMMISSION_PCT
+    state["position"] = {
+        "side": side, "first_entry": entry_px, "worst_entry": entry_px,
+        "entries": [{"px": entry_px, "qty": qty}], "qty_total": qty, "filled": 1,
+        "leverage": LEVERAGE, "entry_time": datetime.now(timezone.utc).isoformat(),
+        "rsi_at_entry": rsi_val, "partial_taken": False,
+    }
+    log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}) "
+                f"[v3 risk-sized: risk=${state['balance']*V3_RISK_PCT:.2f}] | balance ${state['balance']:.2f}")
+
+
+def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
+    """v3: NO DCA. Always returns False — single-entry architecture."""
+    return False
+
+
+# ─── Main tick ───
+def main():
+    log.info("=" * 60)
+    sl_desc = f"SL {SL_FROM_WORST*100:.1f}% from worst" if USE_STOP_LOSS else "NO SL"
+    log.info(f"RSI-Scalp Paper Bot — RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} | {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% | "
+             f"TP {TP_PCT_SINGLE*100:.2f}%(1leg)/{TP_PCT_DCA*100:.2f}%(DCA) from avg | {sl_desc} | {LEVERAGE:.0f}x")
+
+    state = load_state()
+
+    df_5m = fetch_klines("5m", 500)
+    if df_5m is None or len(df_5m) < RSI_PERIOD + 5:
+        log.error("insufficient klines")
+        return
+    live_px = fetch_live_price()
+    if live_px is None:
+        log.error("live price unavailable")
+        return
+
+    df_5m["rsi"] = rsi_series(df_5m["close"], RSI_PERIOD)
+    last_idx = len(df_5m) - 2  # last CLOSED 5m bar
+    last = df_5m.iloc[last_idx]
+    close_px = float(last["close"])
+    rsi_val = float(last["rsi"]) if pd.notna(last["rsi"]) else None
+
+    sig = rsi_signal(rsi_val)
+
+    # ── Optional 15m trend gate (entry only) ──
+    trend = None  # "UP" / "DOWN" / None
+    trend_gap_pct = None  # signed gap %: (EMA20 - EMA50) / EMA50 × 100
+    if USE_TREND_FILTER:
+        df_tf = fetch_klines(TREND_TF, 300)
+        if df_tf is not None and len(df_tf) >= TREND_EMA_SLOW:
+            ema_f = df_tf["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
+            ema_s = df_tf["close"].ewm(span=TREND_EMA_SLOW, adjust=False).mean()
+            ema_f_v = float(ema_f.iloc[-2])
+            ema_s_v = float(ema_s.iloc[-2])
+            trend = "UP" if ema_f_v > ema_s_v else "DOWN"
+            trend_gap_pct = (ema_f_v - ema_s_v) / ema_s_v * 100.0
+        else:
+            log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
+
+    gap_txt = f" | gap {trend_gap_pct:+.2f}%" if trend_gap_pct is not None else ""
+    log.info(f"  Balance: ${state['balance']:,.2f} | {PAIR}: ${close_px:,.2f} | live: ${live_px:,.2f} | "
+             f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}{' | 15m '+trend if trend else ''}{gap_txt}" if rsi_val is not None else
+             f"  Balance: ${state['balance']:,.2f} | RSI n/a")
+
+    if state["balance"] > state.get("peak_equity", 0):
+        state["peak_equity"] = state["balance"]
+    peak = state.get("peak_equity", state["balance"])
+    dd_pct = (state["balance"] / peak - 1) if peak > 0 else 0.0
+
+    pos = state.get("position")
+    exit_this_tick = False
+
+    if pos:
+        side = pos["side"]
+
+        # DCA first (improves avg before exit checks)
+        if maybe_dca(pos, live_px, state["balance"], state):
+            pos = state["position"]
+        avg_entry = avg_entry_of(pos)
+
+        exit_reason = None
+        exit_px = None
+
+        # v3: TP and SL are FIXED % from first_entry (no DCA averaging happening).
+        # avg_entry == first_entry since there's only one leg.
+        first_entry_v3 = pos["first_entry"]
+        # v3 fixed TP = V3_TP_PCT from entry
+        tp = first_entry_v3 * (1 + V3_TP_PCT) if side == "LONG" else first_entry_v3 * (1 - V3_TP_PCT)
+        if (side == "LONG" and live_px >= tp) or (side == "SHORT" and live_px <= tp):
+            exit_reason, exit_px = "TP", tp
+        # v3 fixed SL = V3_SL_PCT from entry (loss capped at V3_RISK_PCT of balance)
+        if exit_px is None:
+            slp = first_entry_v3 * (1 - V3_SL_PCT) if side == "LONG" else first_entry_v3 * (1 + V3_SL_PCT)
+            if (side == "LONG" and live_px <= slp) or (side == "SHORT" and live_px >= slp):
+                exit_reason, exit_px = "SL", slp
+
+        if exit_px is not None:
+            close_position(state, pos, exit_px, exit_reason)
+            state["position"] = None
+            pos = None
+            exit_this_tick = True
+        else:
+            fav = ((live_px - avg_entry) / avg_entry * 100) * (1 if side == "LONG" else -1)
+            log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} fav={fav:+.2f}%")
+
+    # Entry — RSI (+ optional 15m trend gate + circuit breaker). Don't re-enter on the tick we just exited.
+    block_reason = None
+    # Circuit breaker: skip entries while paused after a loss streak.
+    if USE_CIRCUIT_BREAKER and sig and state.get("pause_until"):
+        try:
+            if datetime.now(timezone.utc) < datetime.fromisoformat(state["pause_until"]):
+                block_reason = f"circuit breaker — paused after {BREAKER_LOSSES} losses (until {state['pause_until'][:16]} UTC)"
+                log.info(f"  {block_reason}")
+                sig = None
+        except Exception:
+            pass
+    if USE_TREND_FILTER and sig and trend is not None:
+        if (sig == "LONG" and trend != "UP") or (sig == "SHORT" and trend != "DOWN"):
+            block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
+            log.info(f"  {block_reason}")
+            sig = None
+    # ── 2026-06-05 v2: TREND-GAP FIRMNESS FILTER ──
+    # Only enter if the 15m EMA20/EMA50 gap is firm enough (not knife-edge).
+    # Knife-edge trends (small gap) are where the worst losses come from per OOS analysis.
+    if sig and trend_gap_pct is not None and TREND_GAP_MIN > 0:
+        gap_required = TREND_GAP_MIN * 100.0  # convert fraction to % for comparison
+        if abs(trend_gap_pct) < gap_required:
+            block_reason = (f"{sig} blocked — 15m trend gap {trend_gap_pct:+.3f}% "
+                            f"weaker than required ±{gap_required:.2f}% (knife-edge)")
+            log.info(f"  {block_reason}")
+            sig = None
+    if state["position"] is None and not exit_this_tick and sig:
+        open_position(state, sig, live_px, rsi_val)
+
+    stats = state["stats"]
+    wr = (stats["wins"] / stats["total"] * 100) if stats["total"] > 0 else 0.0
+    total_pnl_pct = (state["balance"] / INITIAL_BALANCE - 1) * 100
+    log.info(f"  Stats: {stats['total']} trades | WR {wr:.0f}% | PnL {total_pnl_pct:+.2f}%")
+
+    save_state(state)
+
+    pos = state.get("position")
+    pos_status = None
+    if pos:
+        avg_e = avg_entry_of(pos)
+        slp = sl_price(pos["side"], pos["worst_entry"])
+        tp_pct = tp_pct_for(pos["filled"])
+        tp_p = (avg_e * (1 + tp_pct) if pos["side"] == "LONG" else avg_e * (1 - tp_pct)) if USE_TAKE_PROFIT else None
+        fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
+        pos_status = {
+            "side": pos["side"], "first_entry": pos["first_entry"], "avg_entry": avg_e,
+            "worst_entry": pos["worst_entry"], "qty_total": pos["qty_total"], "filled": pos["filled"],
+            "tp_px": tp_p, "sl_px": slp, "fav_pct": fav_p, "entry_time": pos.get("entry_time"),
+        }
+
+    write_status({
+        "env": os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"),
+        "pair": PAIR, "price": close_px, "live_price": live_px,
+        "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
+        "position": pos_status, "signal": sig,
+        "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT,
+                       "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100},
+        "trend_15m": trend, "block_reason": block_reason,
+        "stats": state["stats"],
+        "strategy": f"RSI-Scalp +Trend v3 RISK-BASED (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% / NO DCA / TP {V3_TP_PCT*100:.2f}% / SL {V3_SL_PCT*100:.2f}% / risk {V3_RISK_PCT*100:.2f}%/trade ALWAYS) [PAPER]",
+        "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    log.info("=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        log.exception(f"FATAL: {e}")
+        sys.exit(1)
