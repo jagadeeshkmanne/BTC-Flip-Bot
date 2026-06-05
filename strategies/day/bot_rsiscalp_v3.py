@@ -58,7 +58,7 @@ LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
 PAIR = "BTCUSDT"
 INITIAL_BALANCE = 5000.0
 COMMISSION_PCT = 0.0004  # 0.04% taker fee per side
-BINANCE_BASE = "https://fapi.binance.com"
+# 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
 # ─── Logging ───
 log = logging.getLogger("bot_rsiscalp_v3")
@@ -72,33 +72,14 @@ sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 log.addHandler(sh)
 
 
-# ─── Binance public fetchers ───
-def fetch_klines(interval: str, limit: int = 500) -> pd.DataFrame | None:
-    try:
-        r = requests.get(f"{BINANCE_BASE}/fapi/v1/klines",
-                         params={"symbol": PAIR, "interval": interval, "limit": limit}, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if not data:
-            return None
-        return pd.DataFrame([{
-            "timestamp": pd.to_datetime(k[0], unit="ms"),
-            "open": float(k[1]), "high": float(k[2]), "low": float(k[3]),
-            "close": float(k[4]), "volume": float(k[5]),
-        } for k in data])
-    except Exception as e:
-        log.error(f"klines fetch failed ({interval}): {e}")
-        return None
+# ─── Bybit public fetchers (V5 USDT-M perp, BTCUSDT) ───
+from data_bybit import fetch_klines as _bb_klines, fetch_live_price as _bb_price
 
+def fetch_klines(interval: str, limit: int = 500) -> pd.DataFrame | None:
+    return _bb_klines(interval, limit, PAIR, log)
 
 def fetch_live_price() -> float | None:
-    try:
-        r = requests.get(f"{BINANCE_BASE}/fapi/v1/ticker/price", params={"symbol": PAIR}, timeout=10)
-        r.raise_for_status()
-        return float(r.json()["price"])
-    except Exception as e:
-        log.error(f"live price fetch failed: {e}")
-        return None
+    return _bb_price(PAIR, log)
 
 
 # ─── State I/O ───

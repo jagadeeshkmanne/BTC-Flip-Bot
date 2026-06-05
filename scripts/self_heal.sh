@@ -6,9 +6,10 @@
 set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
-SR_DATA_DIR="$BOT_DIR/data/paper"           # V2.2 S/R paper bot
-DIVFLIP_DATA_DIR="$BOT_DIR/data/paper_divflip"        # Divergence-Flip v1 paper bot
-DIVFLIP_V2_DATA_DIR="$BOT_DIR/data/paper_divflip_v2"  # Divergence-Flip v2 paper bot (3rd)
+# 2026-06-05: monitors RSI-fleet only (v1/v2/v3). Older bots all removed.
+RSI_V1_DIR="$BOT_DIR/data/paper_rsiscalp_trend"
+RSI_V2_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v2"
+RSI_V3_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v3"
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -71,13 +72,9 @@ check_bot() {
     fi
 }
 
-# ── Check 2: V2.2 S/R paper bot ───────────────────────────────────
-check_bot "V2.2 S/R" "$SR_DATA_DIR/bot_paper.log" "$SR_DATA_DIR/state_paper.json"
-
-# ── Check 3: Divergence-Flip v1 paper bot ─────────────────────────
-check_bot "Div-Flip" "$DIVFLIP_DATA_DIR/bot.log" "$DIVFLIP_DATA_DIR/state.json"
-
-# ── Check 4: Divergence-Flip v2 paper bot (3rd bot) ───────────────
-check_bot "Div-Flip v2" "$DIVFLIP_V2_DATA_DIR/bot.log" "$DIVFLIP_V2_DATA_DIR/state.json"
+# ── Check 2/3/4: RSI-Scalp +Trend fleet (v1, v2, v3) ─────────────
+check_bot "RSI-Scalp v1" "$RSI_V1_DIR/bot.log" "$RSI_V1_DIR/state.json"
+check_bot "RSI-Scalp v2" "$RSI_V2_DIR/bot.log" "$RSI_V2_DIR/state.json"
+check_bot "RSI-Scalp v3" "$RSI_V3_DIR/bot.log" "$RSI_V3_DIR/state.json"
 
 exit 0

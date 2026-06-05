@@ -423,6 +423,9 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             return True
         if path.startswith('/data/') or path.startswith('/api/bot/'):
             return True
+        # 2026-06-05: lightweight Preact dashboard built into static/bots/
+        if path == '/bots' or path.startswith('/bots/'):
+            return True
         return False
 
     def do_GET(self):
@@ -627,6 +630,29 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     balance_key='balance',
                 ))
             return self._json_response(_query_binance_position())
+
+        # 2026-06-05: Preact dashboard at /bots/* — MUST come before _is_public
+        # check (which would route everything to the default SimpleHTTPRequestHandler
+        # static handler and 404 on the SPA paths).
+        if path == '/bots' or path == '/bots/':
+            self.send_response(302)
+            self.send_header('Location', '/bots/v2')
+            self.end_headers()
+            return
+        if path.startswith('/bots/'):
+            static_root = os.path.join(BOT_DIR, 'static', 'bots')
+            rel = path[len('/bots/'):]  # e.g. "v2" or "assets/index-abc.js"
+            candidate = os.path.normpath(os.path.join(static_root, rel))
+            if not candidate.startswith(static_root):
+                self.send_error(403); return
+            if os.path.isfile(candidate):
+                self.path = '/static/bots/' + rel
+                return super().do_GET()
+            index = os.path.join(static_root, 'index.html')
+            if os.path.isfile(index):
+                self.path = '/static/bots/index.html'
+                return super().do_GET()
+            return self._json_response({"error": "dashboard not built yet"}, code=503)
 
         # Dashboard + static files are public (read-only)
         if self._is_public(path):

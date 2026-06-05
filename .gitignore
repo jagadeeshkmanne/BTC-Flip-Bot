@@ -21,3 +21,6 @@ botenv/
 freqai_lab/
 backups/
 backtest/_archive/
+
+# Built dashboard bundle (regenerate with `cd dashboard-react && npm run build`)
+static/bots/

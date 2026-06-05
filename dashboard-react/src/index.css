@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root { color-scheme: dark; }
+  body {
+    @apply bg-bg text-text font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+  }
+  ::selection { @apply bg-accent-blue/20 text-white; }
+  ::-webkit-scrollbar { @apply w-1 h-1; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-bg-border rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-text-dim; }
+  .font-mono, .tabular-nums { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  /* Clean, flat card — single subtle border, no gradient, no glow.
+     The professional look comes from typography + spacing, not effects. */
+  .card {
+    @apply bg-bg-card border border-bg-border rounded-md;
+  }
+  .card-elev { @apply card; }  /* alias kept for compat */
+  .card-pad  { @apply p-4 md:p-5; }
+  .card-hover {
+    @apply transition-colors duration-150 hover:bg-bg-hover/40;
+  }
+
+  /* Section header — quiet uppercase label, thin divider */
+  .section-head {
+    @apply flex items-center justify-between px-4 md:px-5 py-3 border-b border-bg-border;
+  }
+  .section-title {
+    @apply text-xs font-medium text-text-muted;
+  }
+
+  /* Buttons — kept neutral */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-colors;
+  }
+  .btn-primary { @apply btn bg-accent-blue/15 text-accent-blue hover:bg-accent-blue/25; }
+  .btn-ghost   { @apply btn text-text-muted hover:bg-bg-hover hover:text-text; }
+
+  /* Pills — small, neutral by default; colored only when semantically required */
+  .pill {
+    @apply inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs font-semibold tracking-wide uppercase;
+  }
+  .pill-green  { @apply pill bg-accent-green/10 text-accent-green; }
+  .pill-red    { @apply pill bg-accent-red/10 text-accent-red; }
+  .pill-blue   { @apply pill bg-accent-blue/10 text-accent-blue; }
+  .pill-orange { @apply pill bg-accent-orange/10 text-accent-orange; }
+  .pill-purple { @apply pill bg-accent-purple/10 text-accent-purple; }
+  .pill-muted  { @apply pill bg-bg-hover text-text-muted; }
+
+  /* Data row used across panels — clean key/value */
+  .data-row {
+    @apply flex items-center justify-between text-sm py-1.5;
+  }
+  .data-label { @apply text-text-muted text-xs; }
+  .data-value { @apply font-mono font-medium tabular-nums; }
+}
