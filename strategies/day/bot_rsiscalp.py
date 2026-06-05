@@ -30,6 +30,13 @@ from core_rsiscalp import (
 
 # ─── Paths ───
 DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp"))
+# 2026-06-05: high-vol UTC hours blocked across the whole fleet (consistency).
+# Default: 12 + 13 UTC (US pre-market). Live data: 3 of 3 near-miss trades happened
+# in these hours. Backtest: hours 12-18 lost biggest. Conservative pick = 2hrs/day.
+# Override via env: RSISCALP_BLOCKED_HOURS="12,13,18,21"
+BLOCKED_HOURS = set(int(h.strip()) for h in
+    os.environ.get("RSISCALP_BLOCKED_HOURS", "12,13").split(",")
+    if h.strip().isdigit())
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, "state.json")
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
@@ -298,6 +305,14 @@ def main():
             block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
             log.info(f"  {block_reason}")
             sig = None
+    # 2026-06-05: high-vol hour filter (consistency across v1/v2/v3)
+    if sig and BLOCKED_HOURS:
+        cur_hour = datetime.now(timezone.utc).hour
+        if cur_hour in BLOCKED_HOURS:
+            block_reason = (f"high-risk UTC hour ({cur_hour:02d}:00 blocked — "
+                            f"historical loss cluster)")
+            log.info(f"  {block_reason}")
+            sig = None
     if state["position"] is None and not exit_this_tick and sig:
         open_position(state, sig, live_px, rsi_val)
 
@@ -329,6 +344,8 @@ def main():
         "position": pos_status, "signal": sig,
         "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT, "price": close_px},
         "trend_15m": trend, "block_reason": block_reason,
+        "blocked_hours": sorted(BLOCKED_HOURS) if BLOCKED_HOURS else [],
+        "current_hour_utc": datetime.now(timezone.utc).hour,
         "stats": state["stats"],
         "strategy": f"RSI-Scalp{' +Trend' if USE_TREND_FILTER else ''} (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT}{' / 15m EMA'+str(TREND_EMA_FAST)+'/'+str(TREND_EMA_SLOW)+' gate' if USE_TREND_FILTER else ''} / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% adaptive / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",

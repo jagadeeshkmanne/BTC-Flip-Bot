@@ -51,8 +51,12 @@ from core_rsiscalp import (
 DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"))
 TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
 # v3 anti-breakout filter params (overridable via env)
-V3_BB_LOOKBACK = int(os.environ.get("RSISCALP_V3_BB_LOOKBACK", "3"))   # check last N closed bars
-V3_VOL_MULT    = float(os.environ.get("RSISCALP_V3_VOL_MULT", "2.0"))   # vol spike threshold
+V3_BB_LOOKBACK = int(os.environ.get("RSISCALP_V3_BB_LOOKBACK", "3"))
+V3_VOL_MULT    = float(os.environ.get("RSISCALP_V3_VOL_MULT", "2.0"))
+# Fleet-wide high-vol UTC hours blocked (default 12,13 = US pre-market)
+BLOCKED_HOURS = set(int(h.strip()) for h in
+    os.environ.get("RSISCALP_BLOCKED_HOURS", "12,13").split(",")
+    if h.strip().isdigit())
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, "state.json")
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
@@ -332,6 +336,14 @@ def main():
             block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
             log.info(f"  {block_reason}")
             sig = None
+    # 2026-06-05: high-vol UTC hour filter (consistency across v1/v2/v3)
+    if sig and BLOCKED_HOURS:
+        cur_hour = datetime.now(timezone.utc).hour
+        if cur_hour in BLOCKED_HOURS:
+            block_reason = (f"high-risk UTC hour ({cur_hour:02d}:00 blocked — "
+                            f"historical loss cluster)")
+            log.info(f"  {block_reason}")
+            sig = None
     # ── 2026-06-05 v2: TREND-GAP FIRMNESS FILTER ──
     # Only enter if the 15m EMA20/EMA50 gap is firm enough (not knife-edge).
     # Knife-edge trends (small gap) are where the worst losses come from per OOS analysis.
@@ -417,7 +429,9 @@ def main():
         "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos_status, "signal": sig,
         "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT,
-                       "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100},
+                       "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100,
+                       "blocked_hours": sorted(BLOCKED_HOURS) if BLOCKED_HOURS else [],
+                       "current_hour_utc": datetime.now(timezone.utc).hour},
         "trend_15m": trend, "block_reason": block_reason,
         "stats": state["stats"],
         "strategy": f"RSI-Scalp +Trend v3 ANTI-BREAKOUT (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% + BB-skip last {V3_BB_LOOKBACK} bars + vol-skip {V3_VOL_MULT:.1f}× / {DCA_LEVELS} DCA / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% / SL {SL_FROM_WORST*100:.1f}% from worst) [PAPER]",

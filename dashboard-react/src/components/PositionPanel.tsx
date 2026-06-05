@@ -282,6 +282,10 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
 
   const metCount = conds.filter(c => c.ok).length;
   const block = status.block_reason;
+  // 2026-06-05: hour-blocked state for prominent "WAITING" display
+  const blockedHours: number[] = (status as any).blocked_hours || (status.indicators as any).blocked_hours || [];
+  const curHour: number | null = (status as any).current_hour_utc ?? (status.indicators as any).current_hour_utc ?? null;
+  const hourBlocked = curHour != null && blockedHours.includes(curHour);
 
   return (
     <div class="card-elev p-0 overflow-hidden">
@@ -316,6 +320,23 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
             Bot is monitoring · last tick {(status.updated_at || '').slice(11, 19)} UTC
           </div>
         </div>
+
+        {/* Hour-blocked banner — prominent when bot is in a no-fly hour */}
+        {hourBlocked && (
+          <div class="p-3 rounded-md bg-accent-orange/15 border border-accent-orange/40 flex items-center gap-3">
+            <Activity size={18} class="text-accent-orange shrink-0" />
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-semibold text-accent-orange">
+                Waiting — high-risk hour blocked
+              </div>
+              <div class="text-2xs text-text-muted mt-0.5">
+                {curHour?.toString().padStart(2,'0')}:00 UTC is in blocked window {blockedHours.map(h => `${h.toString().padStart(2,'0')}:00`).join(', ')}
+                {' · '}
+                Bot will resume entries at {((Math.max(...blockedHours) + 1) % 24).toString().padStart(2,'0')}:00 UTC
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* RSI gauge — clearly labeled as "RSI Indicator", not a position scale */}
         {rsi != null && huntingSide && (

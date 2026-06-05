@@ -1,11 +1,22 @@
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
+import compression from 'vite-plugin-compression';
 import path from 'path';
 
 // Vite config: builds to ../static/bots so server.py can serve at /bots/
 // base: '/bots/' so all asset URLs in built HTML/JS are absolute under /bots/
 export default defineConfig({
-  plugins: [preact()],
+  plugins: [
+    preact(),
+    // Pre-compress assets at build time → server serves the .gz directly,
+    // no on-the-fly compression cost. Cuts JS/CSS transfer ~3×.
+    compression({
+      algorithm: 'gzip',
+      ext: '.gz',
+      threshold: 1024,        // only compress files > 1KB
+      deleteOriginFile: false, // keep originals as fallback
+    }),
+  ],
   base: '/bots/',
   resolve: {
     alias: {

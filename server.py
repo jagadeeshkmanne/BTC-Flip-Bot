@@ -417,10 +417,26 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def _json_response(self, data, code=200):
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        # 2026-06-05: gzip JSON responses when client supports it.
+        # Most modern browsers always send Accept-Encoding: gzip — cuts /api/bots/all
+        # from 7KB → 2KB on the wire.
+        body = json.dumps(data).encode()
+        accept_enc = (self.headers.get('Accept-Encoding') or '').lower()
+        if 'gzip' in accept_enc and len(body) > 512:
+            body = gzip.compress(body, compresslevel=6)
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Vary', 'Accept-Encoding')
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
     def _require_auth(self):
         """Returns True if auth OK, sends 401 and returns False if not."""
@@ -693,10 +709,44 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             if not candidate.startswith(static_root):
                 self.send_error(403); return
             if os.path.isfile(candidate):
+                # 2026-06-05: serve pre-compressed .gz if it exists and client supports it.
+                # ~3× smaller transfer for JS/CSS bundles. No on-the-fly CPU cost.
+                accept_enc = (self.headers.get('Accept-Encoding') or '').lower()
+                gz_path = candidate + '.gz'
+                if 'gzip' in accept_enc and os.path.isfile(gz_path):
+                    try:
+                        with open(gz_path, 'rb') as f: data = f.read()
+                        ctype = self.guess_type(candidate)  # type of ORIGINAL file
+                        self.send_response(200)
+                        self.send_header('Content-Type', ctype)
+                        self.send_header('Content-Length', str(len(data)))
+                        self.send_header('Content-Encoding', 'gzip')
+                        self.send_header('Vary', 'Accept-Encoding')
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    except OSError:
+                        pass  # fall through to uncompressed
                 self.path = '/static/bots/' + rel
                 return super().do_GET()
             index = os.path.join(static_root, 'index.html')
             if os.path.isfile(index):
+                # Same gzip path for SPA fallback HTML
+                accept_enc = (self.headers.get('Accept-Encoding') or '').lower()
+                gz_idx = index + '.gz'
+                if 'gzip' in accept_enc and os.path.isfile(gz_idx):
+                    try:
+                        with open(gz_idx, 'rb') as f: data = f.read()
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/html; charset=utf-8')
+                        self.send_header('Content-Length', str(len(data)))
+                        self.send_header('Content-Encoding', 'gzip')
+                        self.send_header('Vary', 'Accept-Encoding')
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    except OSError:
+                        pass
                 self.path = '/static/bots/index.html'
                 return super().do_GET()
             return self._json_response({"error": "dashboard not built yet"}, code=503)
