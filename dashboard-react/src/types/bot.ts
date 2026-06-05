@@ -1,12 +1,12 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3';
+export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3' | 'rsiscalp_trend_v4';
 
 export interface BotMeta {
   id: StrategyId;
-  short: string;        // "v1" / "v2" / "v3"
+  short: string;        // "v1" / "v2" / "v3" / "v4"
   label: string;        // "RSI Scalp +Trend v2"
   badge: string;        // "GAP firmness" / etc.
-  accent: 'blue' | 'green' | 'purple';
+  accent: 'blue' | 'green' | 'purple' | 'orange';
   description: string;
 }
 
@@ -31,9 +31,17 @@ export const BOTS: BotMeta[] = [
     id: 'rsiscalp_trend_v3',
     short: 'v3',
     label: 'RSI Scalp +Trend v3',
-    badge: 'risk-based',
+    badge: 'anti-breakout',
     accent: 'purple',
-    description: 'RISK-BASED sizing (Gemini-style). NO DCA. Single entry, position sized so SL hit = exactly 0.5% balance. Max loss/trade predictable.',
+    description: 'v2 + anti-breakout filter — skips SHORT if last 3 closes > 5m BB upper OR current bar vol > 2× SMA(20). Targets "don\'t fade a moving train". Same risk profile as v2 (DCA + $180 max loss).',
+  },
+  {
+    id: 'rsiscalp_trend_v4',
+    short: 'v4',
+    label: 'RSI Scalp +Trend v4',
+    badge: 'no-DCA · tight SL',
+    accent: 'orange',
+    description: 'v3 entries + NO DCA + tight SL (0.5% from entry). Same selective filters as v3, but loss-capped at ~$75/trade (vs v3 $180). Tests whether removing DCA-amplification beats DCA-rescue.',
   },
 ];
 
@@ -96,4 +104,7 @@ export interface TradeRecord {
   pnl_usd?: number;
   pnl_pct?: number;
   entries?: number;
+  // 2026-06-05: excursion stats — max favorable + max adverse during trade
+  max_fav_pct?: number;
+  max_adv_pct?: number;
 }

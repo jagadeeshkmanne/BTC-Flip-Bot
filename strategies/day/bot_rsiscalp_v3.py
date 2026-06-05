@@ -145,9 +145,12 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
         "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(),
         "rsi_at_entry": pos.get("rsi_at_entry"),
+        "max_fav_pct": pos.get("max_fav_pct", 0.0),
+        "max_adv_pct": pos.get("max_adv_pct", 0.0),
     }, is_win=net > 0)
     log.warning(f"  EXIT {side} via {reason} @${exit_px:.2f} | avg ${avg_entry:.2f} | "
-                f"net ${net:+.2f} (price {price_move_pct:+.2f}%) | balance ${state['balance']:.2f}")
+                f"net ${net:+.2f} (price {price_move_pct:+.2f}%) | balance ${state['balance']:.2f} "
+                f"| MFE {pos.get('max_fav_pct',0):+.2f}% MAE {pos.get('max_adv_pct',0):+.2f}%")
     # ── Circuit breaker: count consecutive losses; pause after BREAKER_LOSSES ──
     if USE_CIRCUIT_BREAKER:
         if net <= 0:
@@ -318,7 +321,10 @@ def main():
             exit_this_tick = True
         else:
             fav = ((live_px - avg_entry) / avg_entry * 100) * (1 if side == "LONG" else -1)
-            log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} fav={fav:+.2f}%")
+            # 2026-06-05: excursion tracking — recorded in trade_log at close
+            pos["max_fav_pct"] = max(pos.get("max_fav_pct", 0.0), fav)
+            pos["max_adv_pct"] = min(pos.get("max_adv_pct", 0.0), fav)
+            log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} fav={fav:+.2f}% | mfe {pos['max_fav_pct']:+.2f}% mae {pos['max_adv_pct']:+.2f}%")
 
     # Entry — RSI (+ optional 15m trend gate + circuit breaker). Don't re-enter on the tick we just exited.
     block_reason = None

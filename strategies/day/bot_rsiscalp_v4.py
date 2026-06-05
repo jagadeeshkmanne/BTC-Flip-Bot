@@ -1,11 +1,35 @@
 #!/usr/bin/env python3
-"""bot_rsiscalp.py — Paper bot for the pure-RSI mean-reversion scalper.
+"""bot_rsiscalp_v4.py — RSI-Scalp +Trend v4 (v3 entries + NO DCA + tight SL).
 
-Runs every 1 min via cron. Reads BTCUSDT mainnet 5m klines, computes RSI,
-enters on RSI extremes, scales out in the 0.25%–0.50% band. NO other logic.
+CLONE of v3 with TWO risk-management changes — same selective entries but
+loss-capped via no-DCA + tight SL. Built to test whether removing DCA
+amplification beats v3 over time.
 
-PAPER-ONLY — no live orders, no API keys (public Binance endpoints only).
-State / log / status: data/paper_rsiscalp/  (override via RSISCALP_DATA_DIR)
+CHANGES FROM v3:
+  - DCA_LEVELS = 1   (single entry only, no averaging-down)
+  - SL = 0.5% from entry (was 1% from worst-fill in v3)
+  - Max loss capped at ~$75 per trade (vs v3's $180 post-DCA SL)
+
+ENTRY FILTERS — IDENTICAL to v3:
+  - RSI(9) ≤30/≥70 + 15m EMA20/EMA50 trend gate
+  - GAP firmness ≥0.25%
+  - Anti-breakout (last 3 closes vs BB + vol spike skip)
+  - Fleet-wide UTC hour block (12-13 UTC default)
+
+POSITION SIZING — kept same as v3 (per_level_qty with DCA_LEVELS=1 → full
+notional in L1). ~0.24 BTC at $62.5k = $15,000 notional at 3× leverage.
+
+LOSS MATH at $62,500 entry:
+  SL hits at 0.5% adverse = $312.50 price move
+  Loss = $312.50 × 0.24 BTC = ~$75
+
+EXPECTED vs v3:
+  - Same trade frequency (same filters)
+  - Similar avg win (~$30 — TP unchanged)
+  - MUCH smaller losses ($75 vs $180 post-DCA)
+  - Break-even WR ~70% (vs v3's ~85%)
+
+PAPER-ONLY. State / log / status: data/paper_rsiscalp_trend_v4/
 """
 from __future__ import annotations
 import os, sys, json, logging
@@ -19,21 +43,37 @@ sys.path.insert(0, STRATEGY_DIR)
 
 from core import rsi_series
 from core_rsiscalp import (
-    LEVERAGE, DCA_LEVELS, DCA_SPACING,
+    LEVERAGE, DCA_LEVELS as _CORE_DCA_LEVELS, DCA_SPACING,
     RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT,
     USE_TAKE_PROFIT, TP_PCT_SINGLE, TP_PCT_DCA, tp_pct_for,
-    USE_STOP_LOSS, SL_FROM_WORST,
+    USE_STOP_LOSS, SL_FROM_WORST as _CORE_SL_FROM_WORST,
     USE_TREND_FILTER, TREND_TF, TREND_EMA_FAST, TREND_EMA_SLOW,
     USE_CIRCUIT_BREAKER, BREAKER_LOSSES, BREAKER_PAUSE_HOURS,
     rsi_signal, dca_price, sl_price, per_level_qty,
 )
+# v4 OVERRIDES — single-entry, tight SL
+DCA_LEVELS = 1                # was 2 → no DCA (single L1 entry only)
+SL_FROM_WORST = 0.005         # was 0.01 → 0.5% from entry (= worst since no DCA)
+
+# v4 local helpers (use OUR overridden DCA_LEVELS/SL_FROM_WORST instead of core's)
+def per_level_qty(equity: float, price: float) -> float:
+    """v4 sizing — full notional in L1 since DCA_LEVELS=1."""
+    if price <= 0: return 0.0
+    total = (equity * 0.95 * LEVERAGE) / price
+    return total / DCA_LEVELS  # = total, since DCA_LEVELS=1
+
+def sl_price(side: str, worst_entry: float):
+    """v4 SL — 0.5% from worst (= entry, since no DCA)."""
+    if not USE_STOP_LOSS: return None
+    return worst_entry * (1 - SL_FROM_WORST) if side == "LONG" else worst_entry * (1 + SL_FROM_WORST)
 
 # ─── Paths ───
-DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp"))
-# 2026-06-05: high-vol UTC hours blocked across the whole fleet (consistency).
-# Default: 12 + 13 UTC (US pre-market). Live data: 3 of 3 near-miss trades happened
-# in these hours. Backtest: hours 12-18 lost biggest. Conservative pick = 2hrs/day.
-# Override via env: RSISCALP_BLOCKED_HOURS="12,13,18,21"
+DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v4"))
+TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
+# v3 anti-breakout filter params (overridable via env)
+V3_BB_LOOKBACK = int(os.environ.get("RSISCALP_V3_BB_LOOKBACK", "3"))
+V3_VOL_MULT    = float(os.environ.get("RSISCALP_V3_VOL_MULT", "2.0"))
+# Fleet-wide high-vol UTC hours blocked (default 12,13 = US pre-market)
 BLOCKED_HOURS = set(int(h.strip()) for h in
     os.environ.get("RSISCALP_BLOCKED_HOURS", "12,13").split(",")
     if h.strip().isdigit())
@@ -46,11 +86,10 @@ LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
 PAIR = "BTCUSDT"
 INITIAL_BALANCE = 5000.0
 COMMISSION_PCT = 0.0004  # 0.04% taker fee per side
-# 2026-06-05: switched data source from Binance fapi → Bybit V5 (USDT-M perp).
-# Bot logic unchanged; only the kline + ticker fetchers come from data_bybit now.
+# 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
 # ─── Logging ───
-log = logging.getLogger("bot_rsiscalp")
+log = logging.getLogger("bot_rsiscalp_v4")
 log.setLevel(logging.INFO)
 log.handlers.clear()
 fh = logging.FileHandler(LOG_FILE)
@@ -126,6 +165,7 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
         "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(),
         "rsi_at_entry": pos.get("rsi_at_entry"),
+        # 2026-06-05: excursion tracking — max favorable + max adverse during trade
         "max_fav_pct": pos.get("max_fav_pct", 0.0),
         "max_adv_pct": pos.get("max_adv_pct", 0.0),
     }, is_win=net > 0)
@@ -229,6 +269,13 @@ def main():
         return
 
     df_5m["rsi"] = rsi_series(df_5m["close"], RSI_PERIOD)
+    # v3: BB(20,2) for anti-breakout filter
+    _mid = df_5m["close"].rolling(20).mean()
+    _sd  = df_5m["close"].rolling(20).std(ddof=0)
+    df_5m["bb_up"]  = _mid + 2.0 * _sd
+    df_5m["bb_low"] = _mid - 2.0 * _sd
+    # v3: SMA(20) of volume for vol-spike detection
+    df_5m["vol_sma20"] = df_5m["volume"].rolling(20).mean()
     last_idx = len(df_5m) - 2  # last CLOSED 5m bar
     last = df_5m.iloc[last_idx]
     close_px = float(last["close"])
@@ -238,17 +285,22 @@ def main():
 
     # ── Optional 15m trend gate (entry only) ──
     trend = None  # "UP" / "DOWN" / None
+    trend_gap_pct = None  # signed gap %: (EMA20 - EMA50) / EMA50 × 100
     if USE_TREND_FILTER:
         df_tf = fetch_klines(TREND_TF, 300)
         if df_tf is not None and len(df_tf) >= TREND_EMA_SLOW:
             ema_f = df_tf["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
             ema_s = df_tf["close"].ewm(span=TREND_EMA_SLOW, adjust=False).mean()
-            trend = "UP" if float(ema_f.iloc[-2]) > float(ema_s.iloc[-2]) else "DOWN"
+            ema_f_v = float(ema_f.iloc[-2])
+            ema_s_v = float(ema_s.iloc[-2])
+            trend = "UP" if ema_f_v > ema_s_v else "DOWN"
+            trend_gap_pct = (ema_f_v - ema_s_v) / ema_s_v * 100.0
         else:
             log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
 
+    gap_txt = f" | gap {trend_gap_pct:+.2f}%" if trend_gap_pct is not None else ""
     log.info(f"  Balance: ${state['balance']:,.2f} | {PAIR}: ${close_px:,.2f} | live: ${live_px:,.2f} | "
-             f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}{' | 15m '+trend if trend else ''}" if rsi_val is not None else
+             f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}{' | 15m '+trend if trend else ''}{gap_txt}" if rsi_val is not None else
              f"  Balance: ${state['balance']:,.2f} | RSI n/a")
 
     if state["balance"] > state.get("peak_equity", 0):
@@ -290,7 +342,9 @@ def main():
             exit_this_tick = True
         else:
             fav = ((live_px - avg_entry) / avg_entry * 100) * (1 if side == "LONG" else -1)
-            # 2026-06-05: excursion tracking — recorded in trade_log at close
+            # 2026-06-05: track running max favorable + max adverse excursion
+            # (recorded in trade_log at close, used for future analysis of how
+            # close winners came to SL / whether losers ever showed profit)
             pos["max_fav_pct"] = max(pos.get("max_fav_pct", 0.0), fav)
             pos["max_adv_pct"] = min(pos.get("max_adv_pct", 0.0), fav)
             log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} fav={fav:+.2f}% | mfe {pos['max_fav_pct']:+.2f}% mae {pos['max_adv_pct']:+.2f}%")
@@ -311,7 +365,7 @@ def main():
             block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
             log.info(f"  {block_reason}")
             sig = None
-    # 2026-06-05: high-vol hour filter (consistency across v1/v2/v3)
+    # 2026-06-05: high-vol UTC hour filter (consistency across v1/v2/v3)
     if sig and BLOCKED_HOURS:
         cur_hour = datetime.now(timezone.utc).hour
         if cur_hour in BLOCKED_HOURS:
@@ -319,6 +373,61 @@ def main():
                             f"historical loss cluster)")
             log.info(f"  {block_reason}")
             sig = None
+    # ── 2026-06-05 v2: TREND-GAP FIRMNESS FILTER ──
+    # Only enter if the 15m EMA20/EMA50 gap is firm enough (not knife-edge).
+    # Knife-edge trends (small gap) are where the worst losses come from per OOS analysis.
+    if sig and trend_gap_pct is not None and TREND_GAP_MIN > 0:
+        gap_required = TREND_GAP_MIN * 100.0  # convert fraction to % for comparison
+        if abs(trend_gap_pct) < gap_required:
+            block_reason = (f"{sig} blocked — 15m trend gap {trend_gap_pct:+.3f}% "
+                            f"weaker than required ±{gap_required:.2f}% (knife-edge)")
+            log.info(f"  {block_reason}")
+            sig = None
+
+    # ── 2026-06-05 v3: ANTI-BREAKOUT / ANTI-BREAKDOWN ENTRY FILTER ──
+    # Don't fade a moving train. Skip entry if either:
+    #   (a) any of the last N closed 5m bars closed beyond the opposite BB band
+    #       (visible breakout / breakdown in last 15 min)
+    #   (b) current bar volume is > V3_VOL_MULT × SMA(20, vol)
+    #       (institutional flow likely → momentum will continue)
+    if sig and state["position"] is None:
+        try:
+            # Last N closed bars (excluding the still-forming current bar at index -1)
+            n = V3_BB_LOOKBACK
+            last_n_closes = df_5m["close"].iloc[-1-n:-1].values
+            bb_up_now = float(df_5m["bb_up"].iloc[-2])
+            bb_lo_now = float(df_5m["bb_low"].iloc[-2])
+            vol_now = float(df_5m["volume"].iloc[-2])
+            vol_sma = float(df_5m["vol_sma20"].iloc[-2])
+            vol_spike = vol_sma > 0 and vol_now > vol_sma * V3_VOL_MULT
+            vol_ratio = vol_now / vol_sma if vol_sma > 0 else 0.0
+
+            if sig == "SHORT":
+                if last_n_closes.max() > bb_up_now:
+                    block_reason = (f"SHORT blocked — anti-breakout: max(last {n} closes) "
+                                    f"${last_n_closes.max():.0f} > 5m BB upper ${bb_up_now:.0f}")
+                    log.info(f"  {block_reason}")
+                    sig = None
+                elif vol_spike:
+                    block_reason = (f"SHORT blocked — anti-breakout: vol spike "
+                                    f"{vol_ratio:.1f}x SMA(20)")
+                    log.info(f"  {block_reason}")
+                    sig = None
+            elif sig == "LONG":
+                if last_n_closes.min() < bb_lo_now:
+                    block_reason = (f"LONG blocked — anti-breakdown: min(last {n} closes) "
+                                    f"${last_n_closes.min():.0f} < 5m BB lower ${bb_lo_now:.0f}")
+                    log.info(f"  {block_reason}")
+                    sig = None
+                elif vol_spike:
+                    block_reason = (f"LONG blocked — anti-breakdown: vol spike "
+                                    f"{vol_ratio:.1f}x SMA(20)")
+                    log.info(f"  {block_reason}")
+                    sig = None
+        except (KeyError, IndexError, ValueError) as e:
+            # If BB or vol_sma columns are missing/NaN early on, just allow the trade
+            log.warning(f"  anti-breakout filter skipped: {e}")
+
     if state["position"] is None and not exit_this_tick and sig:
         open_position(state, sig, live_px, rsi_val)
 
@@ -344,16 +453,17 @@ def main():
         }
 
     write_status({
-        "env": os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp"),
+        "env": os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v4"),
         "pair": PAIR, "price": close_px, "live_price": live_px,
         "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos_status, "signal": sig,
-        "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT, "price": close_px},
+        "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT,
+                       "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100,
+                       "blocked_hours": sorted(BLOCKED_HOURS) if BLOCKED_HOURS else [],
+                       "current_hour_utc": datetime.now(timezone.utc).hour},
         "trend_15m": trend, "block_reason": block_reason,
-        "blocked_hours": sorted(BLOCKED_HOURS) if BLOCKED_HOURS else [],
-        "current_hour_utc": datetime.now(timezone.utc).hour,
         "stats": state["stats"],
-        "strategy": f"RSI-Scalp{' +Trend' if USE_TREND_FILTER else ''} (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT}{' / 15m EMA'+str(TREND_EMA_FAST)+'/'+str(TREND_EMA_SLOW)+' gate' if USE_TREND_FILTER else ''} / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% adaptive / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
+        "strategy": f"RSI-Scalp +Trend v4 NO-DCA TIGHT-SL (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% + BB-skip last {V3_BB_LOOKBACK} bars + vol-skip {V3_VOL_MULT:.1f}× / NO DCA / TP {TP_PCT_SINGLE*100:.2f}% / SL {SL_FROM_WORST*100:.1f}% from entry) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })

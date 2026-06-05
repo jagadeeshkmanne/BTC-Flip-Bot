@@ -21,6 +21,13 @@ BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BOT_DIR)
 ENV_PATH = os.path.join(BOT_DIR, ".env")
 
+# 2026-06-05: in-memory caches for Bybit-proxy endpoints. Prevents thread
+# starvation when 6+ concurrent dashboard requests all proxy Bybit
+# simultaneously. Threading-safe enough for our use case (read-modify-write
+# is fine — worst case is a duplicate fetch).
+_TICKER_CACHE: dict = {}        # {'val': {'data': ..., 'cached_at_ms': ...}}
+_KLINES_CACHE: dict = {}        # {'<interval>:<limit>': {'data': ..., 'cached_at_ms': ...}}
+
 
 # ═══════════════════════════════════════════════════════════════
 # AUTH — password stored as hash in .env
@@ -401,15 +408,15 @@ def run_bot_now(env):
 
 class BotHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
-        # 2026-06-05: caching policy.
-        # Assets: 5-min max-age, must-revalidate. Hashed filenames make stale-safe
-        # but we keep TTL short so a fresh deploy is picked up within minutes
-        # without users clearing cache. (Earlier `immutable` caused stale-chunk
-        # mismatches when filenames stayed the same across builds.)
-        # Everything else (HTML / API / state.json): no-cache.
+        # 2026-06-05: hashed-filename assets are `immutable` — browser caches
+        # forever, never re-validates. New deploys get new hashes (Vite
+        # injects content hash into filename) so browser auto-fetches fresh.
+        # WITHOUT immutable, the prior `must-revalidate` made browser ask
+        # the server EVERY time → server hammered → timeouts under load.
+        # Everything else (HTML, API, state.json): no-cache.
         p = getattr(self, 'path', '') or ''
         if '/static/bots/assets/' in p or '/bots/assets/' in p:
-            self.send_header('Cache-Control', 'public, max-age=300, must-revalidate')
+            self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
         else:
             self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
             self.send_header('Pragma', 'no-cache')
@@ -489,19 +496,31 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # ─────────────────────────────────────────────────────────
         if path == '/api/ticker':
             # Live BTC price. Returns Binance-style {symbol, price, time}.
+            # 2026-06-05: 2-sec cache to prevent every browser request from
+            # hitting Bybit. Was causing thread starvation when 6+ concurrent
+            # dashboard requests all proxied Bybit simultaneously.
+            now_ms = int(time.time() * 1000)
+            cached = _TICKER_CACHE.get('val')
+            if cached and (now_ms - cached.get('cached_at_ms', 0)) < 2000:
+                return self._json_response(cached['data'])
             try:
                 with urllib.request.urlopen(
                     "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT",
-                    timeout=6) as r:
+                    timeout=3) as r:
                     data = json.loads(r.read())
                 row = data.get("result", {}).get("list", [{}])[0]
                 px = row.get("lastPrice") or row.get("markPrice")
-                return self._json_response({
+                resp = {
                     "symbol": "BTCUSDT",
                     "price":  str(px) if px is not None else None,
                     "time":   int(data.get("time") or 0),
-                })
+                }
+                _TICKER_CACHE['val'] = {'data': resp, 'cached_at_ms': now_ms}
+                return self._json_response(resp)
             except Exception as e:
+                # On error, return stale cache if available (better than 502)
+                if cached:
+                    return self._json_response(cached['data'])
                 return self._json_response({"error": str(e)}, code=502)
 
         if path == '/api/klines':
@@ -519,10 +538,17 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             step_ms = {'1m':60000,'3m':180000,'5m':300000,'15m':900000,'30m':1800000,
                        '1h':3600000,'2h':7200000,'4h':14400000,'6h':21600000,
                        '12h':43200000,'1d':86400000}.get(interval, 300000)
+            # 2026-06-05: 30-sec cache per (interval, limit) to avoid
+            # hammering Bybit on every dashboard refresh.
+            cache_key = f"{interval}:{limit}"
+            now_ms = int(time.time() * 1000)
+            cached = _KLINES_CACHE.get(cache_key)
+            if cached and (now_ms - cached.get('cached_at_ms', 0)) < 30000:
+                return self._json_response(cached['data'])
             try:
                 url = (f"https://api.bybit.com/v5/market/kline?category=linear"
                        f"&symbol=BTCUSDT&interval={bybit_ivl}&limit={limit}")
-                with urllib.request.urlopen(url, timeout=8) as r:
+                with urllib.request.urlopen(url, timeout=5) as r:
                     data = json.loads(r.read())
                 rows = list(data.get("result", {}).get("list", []))
                 rows.reverse()    # Bybit newest-first → dashboard wants oldest-first
@@ -530,6 +556,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                 for b in rows:
                     open_t = int(b[0])
                     out.append([open_t, b[1], b[2], b[3], b[4], b[5], open_t + step_ms - 1])
+                _KLINES_CACHE[cache_key] = {'data': out, 'cached_at_ms': now_ms}
                 return self._json_response(out)
             except Exception as e:
                 return self._json_response({"error": str(e)}, code=502)
@@ -539,11 +566,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # 6 connections every 5s) down to 1 connection. Big perf win for the
         # toy http.server.
         if path == '/api/bots/all':
-            ids = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3']
+            ids = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3', 'rsiscalp_trend_v4']
             id_to_dir = {
                 'rsiscalp_trend':     'paper_rsiscalp_trend',
                 'rsiscalp_trend_v2':  'paper_rsiscalp_trend_v2',
                 'rsiscalp_trend_v3':  'paper_rsiscalp_trend_v3',
+                'rsiscalp_trend_v4':  'paper_rsiscalp_trend_v4',
             }
             out = {}
             for sid in ids:
@@ -607,6 +635,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             log_filename = 'bot.log'
         elif strategy_q == 'rsiscalp_trend_v3':
             env_dir = 'paper_rsiscalp_trend_v3'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
+        elif strategy_q == 'rsiscalp_trend_v4':
+            env_dir = 'paper_rsiscalp_trend_v4'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -689,6 +722,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             if env_dir == 'paper_rsiscalp_trend_v3':
                 return self._json_response(_query_paper_position(
                     state_subdir='paper_rsiscalp_trend_v3',
+                    state_filename='state.json',
+                    balance_key='balance',
+                ))
+            if env_dir == 'paper_rsiscalp_trend_v4':
+                return self._json_response(_query_paper_position(
+                    state_subdir='paper_rsiscalp_trend_v4',
                     state_filename='state.json',
                     balance_key='balance',
                 ))
@@ -851,6 +890,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
 
-print("Starting server on http://localhost:8888")
-print("Dashboard:  http://localhost:8888/dashboard.html")
-http.server.ThreadingHTTPServer(('', 8888), BotHandler).serve_forever()
+# 2026-06-05: port configurable via env (BTC_BOT_PORT). Default 8888 to keep
+# back-compat. nginx setup uses 8889 (internal-only) with nginx fronting 8888.
+_PORT = int(os.environ.get("BTC_BOT_PORT", "8888"))
+_BIND = os.environ.get("BTC_BOT_BIND", "")  # empty = all interfaces; '127.0.0.1' to lock to localhost
+print(f"Starting server on http://{_BIND or 'localhost'}:{_PORT}")
+print(f"Dashboard:  http://localhost:{_PORT}/dashboard.html")
+http.server.ThreadingHTTPServer((_BIND, _PORT), BotHandler).serve_forever()

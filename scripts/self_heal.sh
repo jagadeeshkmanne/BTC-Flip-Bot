@@ -10,33 +10,45 @@ LOG_FILE="$BOT_DIR/data/self_heal.log"
 RSI_V1_DIR="$BOT_DIR/data/paper_rsiscalp_trend"
 RSI_V2_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v2"
 RSI_V3_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v3"
+RSI_V4_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v4"
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "$(ts) $*" >> "$LOG_FILE"; }
 
 # ── Check 1: Dashboard server responding ──────────────────────────
+# 2026-06-05: health-check via /api/bots/all (returns 200 JSON), not
+# /dashboard.html (which now returns 302 redirect to /bots/v2).
+# Try 3 times with 10s timeout each — server can be transiently slow under
+# parallel load, false-positive restarts cause more issues than they solve.
 SERVER_OK=0
-if curl -s -o /dev/null -w "%{http_code}" -m 5 http://localhost:8888/dashboard.html 2>/dev/null | grep -q "^200$"; then
-    SERVER_OK=1
-fi
+for attempt in 1 2 3; do
+    if curl -s -o /dev/null -w "%{http_code}" -m 10 http://localhost:8888/api/bots/all 2>/dev/null | grep -q "^200$"; then
+        SERVER_OK=1
+        break
+    fi
+    sleep 2
+done
 
 if [ "$SERVER_OK" -ne 1 ]; then
-    log "Server DOWN — attempting restart"
-    # Kill any stuck server processes
-    pkill -f "$BOT_DIR/server.py" 2>/dev/null
-    sleep 2
-    # Start fresh
-    cd "$BOT_DIR" || { log "ERR: cannot cd to $BOT_DIR"; exit 1; }
-    nohup /usr/bin/python3 "$BOT_DIR/server.py" > "$BOT_DIR/data/server.log" 2>&1 &
-    echo $! > "$SERVER_PID_FILE"
-    disown
+    log "Server DOWN after 3 attempts — attempting restart via systemctl"
+    # Stop service cleanly (systemctl waits up to 30s for graceful exit)
+    sudo systemctl stop btc-bot-server 2>&1 | head -1 >> "$LOG_FILE"
     sleep 3
+    # If port still bound, kill any stale process matching exact path
+    if sudo ss -tlnp 2>/dev/null | grep -q ":8888"; then
+        log "Port 8888 still bound — killing zombie processes"
+        sudo pkill -9 -f "/home/jags/BTC-Flip-Bot/server.py" 2>/dev/null
+        sleep 2
+    fi
+    # Start fresh via systemctl (consistent with how it was deployed)
+    sudo systemctl start btc-bot-server 2>&1 | head -1 >> "$LOG_FILE"
+    sleep 4
     # Verify
-    if curl -s -o /dev/null -w "%{http_code}" -m 5 http://localhost:8888/dashboard.html 2>/dev/null | grep -q "^200$"; then
-        log "Server restart OK (pid $(cat $SERVER_PID_FILE 2>/dev/null))"
+    if curl -s -o /dev/null -w "%{http_code}" -m 10 http://localhost:8888/api/bots/all 2>/dev/null | grep -q "^200$"; then
+        log "Server restart OK"
     else
-        log "Server restart FAILED"
+        log "Server restart FAILED — manual intervention needed"
     fi
 fi
 
@@ -76,5 +88,6 @@ check_bot() {
 check_bot "RSI-Scalp v1" "$RSI_V1_DIR/bot.log" "$RSI_V1_DIR/state.json"
 check_bot "RSI-Scalp v2" "$RSI_V2_DIR/bot.log" "$RSI_V2_DIR/state.json"
 check_bot "RSI-Scalp v3" "$RSI_V3_DIR/bot.log" "$RSI_V3_DIR/state.json"
+check_bot "RSI-Scalp v4" "$RSI_V4_DIR/bot.log" "$RSI_V4_DIR/state.json"
 
 exit 0

@@ -65,12 +65,13 @@ export function Layout({ active, children }: Props) {
                     : 'text-text-muted hover:bg-bg-hover hover:text-text'
                 )}
               >
-                {b.label}
+                <span class="uppercase font-bold tracking-wide">{b.short}</span>
                 <span class={clsx(
                   'ml-2 pill text-[10px]',
                   b.accent === 'green' && 'pill-green',
                   b.accent === 'purple' && 'pill bg-accent-purple/15 text-accent-purple',
                   b.accent === 'blue' && 'pill-blue',
+                  b.accent === 'orange' && 'pill bg-accent-orange/15 text-accent-orange',
                 )}>{b.badge}</span>
               </Link>
             ))}
