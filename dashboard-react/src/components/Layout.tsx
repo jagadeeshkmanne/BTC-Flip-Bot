@@ -139,7 +139,7 @@ export function Layout({ active, children }: Props) {
       )}
 
       {/* ── MAIN ── */}
-      <main class="flex-1 max-w-7xl w-full mx-auto px-3 md:px-6 py-4 md:py-6">
+      <main class="flex-1 max-w-7xl w-full mx-auto px-2 sm:px-3 md:px-6 py-3 md:py-6 min-w-0">
         {children}
       </main>
 

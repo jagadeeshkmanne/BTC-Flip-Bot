@@ -4,9 +4,16 @@
 
 @layer base {
   :root { color-scheme: dark; }
+  /* Prevent horizontal scroll from any escaping element on mobile */
+  html, body {
+    @apply overflow-x-hidden;
+  }
   body {
     @apply bg-bg text-text font-sans antialiased;
     font-feature-settings: 'cv11', 'ss01', 'ss03';
+    /* Better mobile font rendering */
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
   }
   ::selection { @apply bg-accent-blue/20 text-white; }
   ::-webkit-scrollbar { @apply w-1 h-1; }
@@ -23,7 +30,7 @@
     @apply bg-bg-card border border-bg-border rounded-md;
   }
   .card-elev { @apply card; }  /* alias kept for compat */
-  .card-pad  { @apply p-4 md:p-5; }
+  .card-pad  { @apply p-3 md:p-5; }
   .card-hover {
     @apply transition-colors duration-150 hover:bg-bg-hover/40;
   }

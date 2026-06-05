@@ -95,12 +95,12 @@ function ActivePosition({ status }: { status: BotStatus }) {
             {pos.filled > 1 && <span class="ml-2 pill-orange">DCA L{pos.filled}</span>}
           </div>
         </div>
-        <div class="text-right shrink-0">
-          <div class={clsx('text-2xl md:text-3xl font-bold font-mono tabular-nums leading-none',
+        <div class="text-right shrink-0 min-w-0">
+          <div class={clsx('text-lg sm:text-xl md:text-3xl font-bold font-mono tabular-nums leading-none truncate',
             isProfit ? 'text-accent-green' : 'text-accent-red')}>
             {isProfit ? '+' : ''}${unrealizedUsd.toFixed(2)}
           </div>
-          <div class={clsx('text-sm font-mono mt-1',
+          <div class={clsx('text-2xs md:text-sm font-mono mt-1',
             isProfit ? 'text-accent-green' : 'text-accent-red')}>
             {isProfit ? '+' : ''}{unrealizedPct.toFixed(2)}%
           </div>

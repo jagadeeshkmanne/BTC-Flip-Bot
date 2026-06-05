@@ -40,8 +40,9 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
   const ddPct = peak > 0 ? (ddUsd / peak) * 100 : 0;
 
   return (
-    <div class="card-elev px-4 md:px-5 py-3">
-      <div class="flex items-center flex-wrap gap-x-8 gap-y-3">
+    <div class="card-elev px-3 md:px-5 py-3">
+      {/* Mobile: 2-col grid. Desktop: horizontal flex with dividers. */}
+      <div class="grid grid-cols-2 gap-y-3 gap-x-4 md:flex md:items-center md:flex-wrap md:gap-x-8 md:gap-y-3">
         <Metric label="Balance" big value={fmtUsd(balance)} sub={`from ${fmtUsd(INITIAL, 0)}`} />
         <Divider />
         <Metric
@@ -69,7 +70,7 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
         <Metric
           label="Drawdown"
           value={`${fmtPct(ddPct)}`}
-          valueTone={ddPct >= 0 ? 0 : -1}  // tone red only when in drawdown
+          valueTone={ddPct >= 0 ? 0 : -1}
           sub={`peak ${fmtUsd(peak)}`}
         />
         <Divider />
@@ -83,8 +84,9 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
   );
 }
 
+// Divider only shows on desktop (md+). Mobile uses grid spacing.
 function Divider() {
-  return <div class="h-8 w-px bg-bg-border" />;
+  return <div class="hidden md:block h-8 w-px bg-bg-border" />;
 }
 
 function Metric({ label, value, sub, valueTone, big }: {
@@ -94,13 +96,13 @@ function Metric({ label, value, sub, valueTone, big }: {
     : valueTone >= 0 ? 'text-accent-green' : 'text-accent-red';
   return (
     <div class="flex flex-col leading-tight min-w-0">
-      <span class="text-2xs uppercase tracking-wider text-text-dim font-medium">{label}</span>
+      <span class="text-2xs uppercase tracking-wider text-text-dim font-medium truncate">{label}</span>
       <span class={clsx(
-        big ? 'text-xl md:text-2xl' : 'text-lg md:text-xl',
-        'font-bold font-mono tabular-nums tracking-tight',
+        big ? 'text-base md:text-xl lg:text-2xl' : 'text-sm md:text-lg lg:text-xl',
+        'font-bold font-mono tabular-nums tracking-tight truncate',
         toneCls,
       )}>{value}</span>
-      {sub && <span class="text-2xs text-text-dim font-mono mt-0.5">{sub}</span>}
+      {sub && <span class="text-2xs text-text-dim font-mono mt-0.5 truncate">{sub}</span>}
     </div>
   );
 }

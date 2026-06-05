@@ -18,20 +18,19 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
   const trades = state.data?.trade_log ?? [];
 
   return (
-    <div class="space-y-3 md:space-y-4">
+    <div class="space-y-3 md:space-y-4 min-w-0">
       {/* Strategy label */}
-      <div class="flex items-baseline justify-between gap-2 flex-wrap">
-        <div class="min-w-0">
-          <h1 class="text-base md:text-lg font-bold tracking-tight flex items-baseline gap-2">
-            {bot.label}
-            <span class={`text-2xs font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-              bot.accent === 'green'  ? 'bg-accent-green/15 text-accent-green'  :
-              bot.accent === 'purple' ? 'bg-accent-purple/15 text-accent-purple' :
-                                        'bg-accent-blue/15 text-accent-blue'
-            }`}>{bot.badge}</span>
-          </h1>
-          <p class="text-2xs text-text-dim mt-1 max-w-3xl leading-relaxed">{bot.description}</p>
-        </div>
+      <div class="min-w-0">
+        <h1 class="text-sm md:text-lg font-bold tracking-tight flex items-baseline gap-2 flex-wrap">
+          <span class="truncate">{bot.label}</span>
+          <span class={`text-2xs font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${
+            bot.accent === 'green'  ? 'bg-accent-green/15 text-accent-green'  :
+            bot.accent === 'purple' ? 'bg-accent-purple/15 text-accent-purple' :
+            bot.accent === 'orange' ? 'bg-accent-orange/15 text-accent-orange' :
+                                      'bg-accent-blue/15 text-accent-blue'
+          }`}>{bot.badge}</span>
+        </h1>
+        <p class="text-2xs text-text-dim mt-1 leading-relaxed">{bot.description}</p>
       </div>
 
       {/* Market header — huge live BTC price + 24h stats */}
