@@ -437,10 +437,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             pw_set = bool(get_dashboard_password())
             return self._json_response({"password_set": pw_set})
 
-        # Redirect root to dashboard
-        if path == '/':
+        # 2026-06-05: root + classic dashboard both redirect to the new Preact dashboard.
+        # (Classic dashboard.html still on disk for reference but no longer served.)
+        if path == '/' or path == '/dashboard.html':
             self.send_response(302)
-            self.send_header('Location', '/dashboard.html')
+            self.send_header('Location', '/bots/v2')
             self.end_headers()
             return
 

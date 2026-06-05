@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from 'preact/hooks';
-import { createChart, ColorType, LineStyle, CandlestickSeriesOptions, type IChartApi, type ISeriesApi } from 'lightweight-charts';
+import { useEffect, useState, useRef } from 'preact/hooks';
+import { createChart, ColorType, LineStyle, CrosshairMode, type IChartApi, type ISeriesApi } from 'lightweight-charts';
 import { useKlines } from '@/api/bots';
+import clsx from 'clsx';
 
 // Bollinger Bands (n, k) — same formula as bot's pandas .rolling(n).std(ddof=0).
 function bollinger(closes: number[], n = 20, k = 2.0) {
@@ -21,14 +22,20 @@ function bollinger(closes: number[], n = 20, k = 2.0) {
   return { up, mid, lo };
 }
 
+type TF = '5m' | '15m' | '1h';
+const TIMEFRAMES: TF[] = ['5m', '15m', '1h'];
+
 export function PriceChart() {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const [tf, setTf] = useState<TF>('5m');
 
-  const { data: klines5m } = useKlines('5m', 288);
-  const { data: klines15m } = useKlines('15m', 192);
+  // Load more bars (1000) for proper scroll/zoom history
+  const { data: klinesMain } = useKlines(tf, 1000);
+  const { data: klines15m }  = useKlines('15m', 500);
 
-  // Init chart once
+  // Init chart once — Binance-style: full drag/scroll/pinch-zoom, mouse-wheel zoom,
+  // magnetic crosshair, both axes scalable.
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
@@ -46,12 +53,36 @@ export function PriceChart() {
         borderColor: '#1f2937',
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: 12,                 // visible space to the right of the last bar
+        barSpacing: 6,                   // tighter default bar spacing
+        minBarSpacing: 0.5,              // allow strong zoom-out
+        lockVisibleTimeRangeOnResize: false,
+        rightBarStaysOnScroll: true,    // keep latest bar visible while panning
       },
-      rightPriceScale: { borderColor: '#1f2937' },
+      rightPriceScale: {
+        borderColor: '#1f2937',
+        scaleMargins: { top: 0.08, bottom: 0.08 },
+      },
       crosshair: {
+        mode: CrosshairMode.Normal,
         vertLine: { color: '#3b82f6', width: 1, labelBackgroundColor: '#3b82f6' },
         horzLine: { color: '#3b82f6', width: 1, labelBackgroundColor: '#3b82f6' },
       },
+      // Interactions: drag-to-pan + axis-drag-to-zoom + pinch.
+      // mouseWheel disabled on BOTH scroll and scale → page scroll passes through
+      // when wheeling over the chart (user requested 2026-06-05).
+      handleScroll: {
+        mouseWheel: false,           // wheel = page scroll, not chart pan
+        pressedMouseMove: true,      // drag to pan
+        horzTouchDrag: true,
+        vertTouchDrag: true,
+      },
+      handleScale: {
+        mouseWheel: false,           // wheel = page scroll, not chart zoom
+        pinch: true,                 // pinch-zoom on mobile
+        axisPressedMouseMove: { time: true, price: true },  // drag axes to zoom
+      },
+      kineticScroll: { touch: true, mouse: false },
     });
     chartRef.current = chart;
     const ro = new ResizeObserver(entries => {
@@ -70,8 +101,9 @@ export function PriceChart() {
   const bb15MidRef = useRef<ISeriesApi<'Line'> | null>(null);
   const bb15LoRef = useRef<ISeriesApi<'Line'> | null>(null);
 
-  // Update 5m candles + BB
+  // Update candles + BB (uses selected timeframe)
   useEffect(() => {
+    const klines5m = klinesMain;  // alias for the selected-tf data
     if (!chartRef.current || !klines5m?.length) return;
     if (!candleDataRef.current) {
       candleDataRef.current = chartRef.current.addCandlestickSeries({
@@ -95,8 +127,12 @@ export function PriceChart() {
     bbUpRef.current!.setData(tmap.map((t, i) => bb.up[i] != null ? { time: t, value: bb.up[i]! } : null).filter(Boolean) as any);
     bbMidRef.current!.setData(tmap.map((t, i) => bb.mid[i] != null ? { time: t, value: bb.mid[i]! } : null).filter(Boolean) as any);
     bbLoRef.current!.setData(tmap.map((t, i) => bb.lo[i] != null ? { time: t, value: bb.lo[i]! } : null).filter(Boolean) as any);
-    chartRef.current.timeScale().fitContent();
-  }, [klines5m]);
+    // Show last 200 bars by default (user can scroll/zoom from there) instead
+    // of fitContent() which would cram all 1000 bars into the viewport.
+    const t0 = candles[Math.max(0, candles.length - 200)].time;
+    const t1 = candles[candles.length - 1].time;
+    chartRef.current.timeScale().setVisibleRange({ from: t0 as any, to: t1 as any });
+  }, [klinesMain]);
 
   // Update 15m BB
   useEffect(() => {
@@ -116,13 +152,30 @@ export function PriceChart() {
 
   return (
     <div class="card p-0 overflow-hidden">
-      <div class="px-4 py-3 border-b border-bg-border flex items-center justify-between">
-        <span class="text-sm font-semibold uppercase tracking-wide text-text-muted">5m chart</span>
-        <span class="text-xs text-text-dim">
-          5m BB <span class="text-accent-orange">━━</span> · 15m BB <span class="text-accent-red">━━</span>
+      <div class="section-head">
+        <div class="flex items-center gap-3">
+          <span class="section-title">BTCUSDT</span>
+          {/* Timeframe toggle — Binance-style */}
+          <div class="flex items-center gap-0.5 bg-bg p-0.5 rounded">
+            {TIMEFRAMES.map(t => (
+              <button
+                key={t}
+                onClick={() => setTf(t)}
+                class={clsx(
+                  'px-2 py-0.5 rounded text-xs font-medium transition-colors',
+                  tf === t
+                    ? 'bg-bg-hover text-text'
+                    : 'text-text-muted hover:text-text'
+                )}
+              >{t}</button>
+            ))}
+          </div>
+        </div>
+        <span class="text-2xs text-text-dim hidden md:inline">
+          {tf} BB <span class="text-accent-orange">━━</span> · 15m BB <span class="text-accent-red">━━</span> · drag to pan · drag axes to zoom
         </span>
       </div>
-      <div ref={containerRef} class="w-full" style={{ height: 'min(50vh, 400px)' }} />
+      <div ref={containerRef} class="w-full" style={{ height: 'min(55vh, 500px)' }} />
     </div>
   );
 }
