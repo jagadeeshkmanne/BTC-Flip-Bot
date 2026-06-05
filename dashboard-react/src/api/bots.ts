@@ -1,26 +1,42 @@
 import { useQuery } from '@tanstack/react-query';
 import type { BotState, BotStatus, StrategyId } from '@/types/bot';
 
-// Dev: Vite proxies /api → live server. Prod: served by same server, relative path works.
 const fetchJSON = async <T,>(url: string): Promise<T> => {
   const r = await fetch(url, { cache: 'no-store' });
   if (!r.ok) throw new Error(`${url} → ${r.status}`);
   return r.json() as Promise<T>;
 };
 
-export const useBotStatus = (strategy: StrategyId) =>
+// 2026-06-05: single batched endpoint that returns ALL bots' status + state.
+// One HTTP request every 5s instead of 6 (3 statuses × 3 states).
+export interface AllBots {
+  [strategy: string]: { status: BotStatus | null; state: BotState | null };
+}
+
+export const useAllBots = () =>
   useQuery({
-    queryKey: ['status', strategy],
-    queryFn: () => fetchJSON<BotStatus>(`/api/bot/day/status?strategy=${strategy}`),
+    queryKey: ['bots-all'],
+    queryFn: () => fetchJSON<AllBots>('/api/bots/all'),
     refetchInterval: 5_000,
   });
 
-export const useBotState = (strategy: StrategyId) =>
-  useQuery({
-    queryKey: ['state', strategy],
-    queryFn: () => fetchJSON<BotState>(`/api/bot/day/state?strategy=${strategy}`),
-    refetchInterval: 10_000,
-  });
+// Per-bot hooks now derive from the batched query so all 3 bot pages share
+// the SAME network request. Single source of truth.
+export function useBotStatus(strategy: StrategyId) {
+  const q = useAllBots();
+  return {
+    ...q,
+    data: q.data?.[strategy]?.status ?? undefined,
+  };
+}
+
+export function useBotState(strategy: StrategyId) {
+  const q = useAllBots();
+  return {
+    ...q,
+    data: q.data?.[strategy]?.state ?? undefined,
+  };
+}
 
 export const useKlines = (interval: '5m' | '15m' | '1h', limit = 288) =>
   useQuery({

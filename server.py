@@ -399,9 +399,16 @@ def run_bot_now(env):
 
 class BotHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
-        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
-        self.send_header('Pragma', 'no-cache')
-        self.send_header('Expires', '0')
+        # 2026-06-05: aggressive caching for hash-named React assets (immutable),
+        # no-cache for everything else (HTML / API / state.json). The hashed filenames
+        # mean assets never need re-fetching after the first download.
+        p = getattr(self, 'path', '') or ''
+        if '/static/bots/assets/' in p or '/bots/assets/' in p:
+            self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+        else:
+            self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
         super().end_headers()
 
     def _json_response(self, data, code=200):
@@ -421,7 +428,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         """Public pages: dashboards + data files. No auth needed."""
         if path in ('/', '/dashboard.html'):
             return True
-        if path.startswith('/data/') or path.startswith('/api/bot/'):
+        if path.startswith('/data/') or path.startswith('/api/bot/') or path == '/api/bots/all':
             return True
         # 2026-06-05: lightweight Preact dashboard built into static/bots/
         if path == '/bots' or path.startswith('/bots/'):
@@ -499,6 +506,34 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                 return self._json_response(out)
             except Exception as e:
                 return self._json_response({"error": str(e)}, code=502)
+
+        # 2026-06-05: batch endpoint — return all 3 RSI bots' status + state in ONE
+        # response. Cuts the dashboard's per-bot poll storm (3 statuses + 3 states =
+        # 6 connections every 5s) down to 1 connection. Big perf win for the
+        # toy http.server.
+        if path == '/api/bots/all':
+            ids = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3']
+            id_to_dir = {
+                'rsiscalp_trend':     'paper_rsiscalp_trend',
+                'rsiscalp_trend_v2':  'paper_rsiscalp_trend_v2',
+                'rsiscalp_trend_v3':  'paper_rsiscalp_trend_v3',
+            }
+            out = {}
+            for sid in ids:
+                d = id_to_dir[sid]
+                sf = os.path.join(BOT_DIR, 'data', d, 'state.json')
+                stf = os.path.join(BOT_DIR, 'data', d, 'status.json')
+                entry = {'state': None, 'status': None}
+                try:
+                    if os.path.exists(stf):
+                        with open(stf) as f: entry['status'] = json.load(f)
+                except Exception: pass
+                try:
+                    if os.path.exists(sf):
+                        with open(sf) as f: entry['state'] = json.load(f)
+                except Exception: pass
+                out[sid] = entry
+            return self._json_response(out)
 
         # ── Bot API (public, no auth). Active strategies: ──
         # Routes by ?strategy= (preferred) or legacy ?env=:
