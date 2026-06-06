@@ -3,14 +3,16 @@ import { Layout } from '@/components/Layout';
 import { BotPage } from '@/pages/BotPage';
 import { BOTS, type StrategyId } from '@/types/bot';
 
-// short ("v1.1") → strategy id ("rsiscalp_trend")
+// short ("v1") → strategy id ("rsiscalp_trend")
 const SHORT_TO_ID = Object.fromEntries(BOTS.map(b => [b.short, b.id])) as Record<string, StrategyId>;
 
-// Backward-compat aliases (old URLs from before versioning)
+// Backward-compat aliases — collapse versioned + removed-bot URLs onto current shorts
 const ALIAS: Record<string, string> = {
-  'v1': 'v1.1', 'v2': 'v2.0', 'v5': 'v5.0',
-  // Removed bots redirect to v1.1 (the winner)
-  'v3': 'v1.1', 'v4': 'v1.1',
+  'v1.1': 'v1',   // 1h-RSI filter reverted, v1.1 → v1
+  'v2.0': 'v2',
+  'v5.0': 'v5',
+  'v3':   'v1',   // removed bot → winner
+  'v4':   'v1',   // removed bot → winner
 };
 
 export function App() {
@@ -22,7 +24,7 @@ export function App() {
           const aliased = ALIAS[short!];
           if (aliased) return <Redirect to={`/bots/${aliased}`} />;
           const id = SHORT_TO_ID[short!];
-          if (!id) return <Redirect to="/bots/v1.1" />;
+          if (!id) return <Redirect to="/bots/v1" />;
           return (
             <Layout active={id}>
               <BotPage strategy={id} />
@@ -30,8 +32,8 @@ export function App() {
           );
         }}
       </Route>
-      <Route path="/bots"><Redirect to="/bots/v1.1" /></Route>
-      <Route><Redirect to="/bots/v1.1" /></Route>
+      <Route path="/bots"><Redirect to="/bots/v1" /></Route>
+      <Route><Redirect to="/bots/v1" /></Route>
     </Switch>
   );
 }

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""bot_rsiscalp.py — RSI-Scalp +Trend ULTIMATE v1.1 (with 1h RSI HTF filter).
+"""bot_rsiscalp.py — RSI-Scalp +Trend ULTIMATE (v1).
 
-v1.1 added 2026-06-06: 1h RSI 50-split filter (Agent 2 finding).
-5-year backtest improvement: +220% → +2,023% return, -27% → -14% DD.
-Fixes 2024 (the bad year): -$1,311 → +$5,518.
-Mechanism: only fade WITH higher-TF momentum (1h RSI on right side of 50).
+2026-06-06: v1.1's 1h RSI 50-split filter REVERTED — faithful (no-lookahead)
+5-year backtest showed it hurt (+8.52% → +6.73% / 5yr, DD got worse too).
+Prior +2,023% claim was leaky backtest. Kept code path behind env flag
+(off by default), no longer in the live filter chain.
 
-THE BEST CONFIG — empirically derived from 6-month backtest (Dec 2025 - Jun 2026):
-  +103.42% return, -2.94% MaxDD, $-242 worst single trade, 76% WR
+FAITHFUL 5-year backtest (no lookahead): +8.52% return, -32% MaxDD, 64% WR.
+Realistic, not the inflated original claim.
   
 ENTRY FILTERS (proven over 1000+ historical trades):
   - RSI(9) ≤30/≥70 entry signal
@@ -74,9 +74,12 @@ WEEKEND_QTY_MULT = float(os.environ.get("RSISCALP_WEEKEND_QTY_MULT", "2.0"))
 # Enable trend-flip exit (close on 15m EMA reversal)
 USE_TREND_FLIP_EXIT = os.environ.get("RSISCALP_TREND_FLIP_EXIT", "1") == "1"
 
-# 2026-06-06 v1.1: 1h RSI 50-split filter (HTF momentum alignment).
-# Only fade WITH higher-TF momentum. Backtest: +220%→+2023% over 5yr.
-USE_1H_RSI_FILTER = os.environ.get("RSISCALP_1H_RSI_FILTER", "1") == "1"
+# 2026-06-06: 1h RSI 50-split filter was added in v1.1 then REVERTED.
+# Faithful (no-lookahead) 5-yr backtest showed filter HURTS
+# (+8.52% → +6.73% return, -32% → -33% DD). Prior +2,023% claim
+# came from a leaky backtest. Kept disabled by default; the code path
+# below still works if RSISCALP_1H_RSI_FILTER=1 is set explicitly.
+USE_1H_RSI_FILTER = os.environ.get("RSISCALP_1H_RSI_FILTER", "0") == "1"
 RSI_1H_THRESHOLD  = float(os.environ.get("RSISCALP_1H_RSI_THRESHOLD", "50.0"))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, "state.json")

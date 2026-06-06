@@ -6,11 +6,9 @@
 set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
-# 2026-06-05: monitors RSI-fleet only (v1/v2/v3). Older bots all removed.
+# 2026-06-06: monitors 3-bot fleet — v1.1 (Ultimate), v2.0 (DCA), v5.0 (Capped).
 RSI_V1_DIR="$BOT_DIR/data/paper_rsiscalp_trend"
 RSI_V2_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v2"
-RSI_V3_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v3"
-RSI_V4_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v4"
 RSI_V5_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v5"
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
@@ -85,9 +83,9 @@ check_bot() {
     fi
 }
 
-# ── Check 2/3/4: RSI-Scalp +Trend fleet (v1, v2, v3) ─────────────
-check_bot "RSI-Scalp v1" "$RSI_V1_DIR/bot.log" "$RSI_V1_DIR/state.json"
-check_bot "RSI-Scalp v2" "$RSI_V2_DIR/bot.log" "$RSI_V2_DIR/state.json"
-check_bot "RSI-Scalp v5" "$RSI_V5_DIR/bot.log" "$RSI_V5_DIR/state.json"
+# ── Check 2/3/4: RSI-Scalp +Trend fleet (v1.1, v2.0, v5.0) ─────────────
+check_bot "RSI-Scalp v1.1" "$RSI_V1_DIR/bot.log" "$RSI_V1_DIR/state.json"
+check_bot "RSI-Scalp v2.0" "$RSI_V2_DIR/bot.log" "$RSI_V2_DIR/state.json"
+check_bot "RSI-Scalp v5.0" "$RSI_V5_DIR/bot.log" "$RSI_V5_DIR/state.json"
 
 exit 0
