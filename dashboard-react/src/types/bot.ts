@@ -13,7 +13,7 @@ export interface BotMeta {
 export const BOTS: BotMeta[] = [
   {
     id: 'rsiscalp_trend',
-    short: 'v1',
+    short: 'v1.1',
     label: 'v1.1 · Ultimate',
     badge: 'Ultimate',
     accent: 'blue',
@@ -21,16 +21,16 @@ export const BOTS: BotMeta[] = [
   },
   {
     id: 'rsiscalp_trend_v2',
-    short: 'v2',
-    label: 'v2 · DCA',
+    short: 'v2.0',
+    label: 'v2.0 · DCA',
     badge: 'DCA',
     accent: 'green',
     description: 'RSI + 15m trend + GAP firmness ≥ 0.25% + ATR + 1h filters + 2-leg DCA. Standard SL 1% from worst entry. Backtest: +52% over 6 months, $-268 worst trade.',
   },
   {
     id: 'rsiscalp_trend_v5',
-    short: 'v5',
-    label: 'v5 · Capped',
+    short: 'v5.0',
+    label: 'v5.0 · Capped',
     badge: 'Capped',
     accent: 'red',
     description: 'RSI + 15m trend + GAP firmness + ATR + 1h filters + NO DCA + tight SL 0.5% from entry. Same entries as v2 but loss-capped at ~$75/trade. Tests bounded-loss without anti-breakout filter.',
