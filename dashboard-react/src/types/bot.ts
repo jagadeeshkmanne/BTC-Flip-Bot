@@ -47,9 +47,9 @@ export const BOTS: BotMeta[] = [
     id: 'rsiscalp_trend_v5',
     short: 'v5',
     label: 'RSI Scalp +Trend v5',
-    badge: 'simple + R:R',
+    badge: 'v2 + tight SL',
     accent: 'red',
-    description: 'v1 entries (NO GAP, NO anti-breakout) + NO DCA + tight SL + new fleet-wide ATR/1h filters. Simplest entries + bounded loss. Tests: does v1\'s aggressive style + good R:R beat heavy filtering?',
+    description: 'v2 entries (GAP firmness filter) + NO DCA + tight SL (0.5% from entry). Same proven filters as v2 but loss-capped at ~$75. 6-month backtest: +23% return with -14% DD vs v2 +52%/-10%. Tests no-DCA on best-performing entries.',
   },
 ];
 

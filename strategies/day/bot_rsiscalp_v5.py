@@ -1,11 +1,47 @@
 #!/usr/bin/env python3
-"""bot_rsiscalp.py — Paper bot for the pure-RSI mean-reversion scalper.
+"""bot_rsiscalp_v5.py — RSI-Scalp +Trend v5 (v2 entries + NO DCA + tight SL).
 
-Runs every 1 min via cron. Reads BTCUSDT mainnet 5m klines, computes RSI,
-enters on RSI extremes, scales out in the 0.25%–0.50% band. NO other logic.
+CLONE of v2 with v4-style risk management. Best of both worlds:
+  - v2's proven entry filter (GAP firmness ≥ 0.25%) for high WR
+  - v4's bounded loss (no DCA + 0.5% SL from entry)
 
-PAPER-ONLY — no live orders, no API keys (public Binance endpoints only).
-State / log / status: data/paper_rsiscalp/  (override via RSISCALP_DATA_DIR)
+CHANGES FROM v2:
+  - DCA_LEVELS = 1               (no DCA — single entry only)
+  - SL = 0.5% from entry         (was 1% from worst-fill in v2)
+  - Max loss capped at ~$75      (vs v2's $180 post-DCA SL)
+  - Better R:R                   (avg win:loss ~1:1.2)
+  
+ENTRY FILTERS — IDENTICAL to v2 (all the proven filters):
+  - RSI(9) ≤30/≥70 + 15m EMA20/EMA50 trend gate
+  - GAP firmness ≥0.25%          ⭐ key filter (backtest: best in fleet)
+  - Hour 12-13 UTC blocked
+  - ATR/1h fleet-wide filters
+
+NOT INCLUDED (intentionally):
+  - Anti-breakout filter (v3/v4 have it — backtest shows marginal value)
+
+6-MONTH BACKTEST RESULTS (vs other bots):
+  v2:  +51.68% (DCA design, highest return but $180 max loss)
+  v5:  +23.52% (no-DCA design, similar to v4, smoother equity)
+  v4:  +22.46% (v3 entries + no-DCA, similar to v5)
+  v1:  +32.54% (high DD -28%)
+  v3:  +27.13% (over-filtered)
+
+PAPER-ONLY. State / log / status: data/paper_rsiscalp_trend_v5/
+
+
+Sibling to bot_rsiscalp.py (v1) — does NOT modify v1. Adds ONE entry filter:
+  TREND-GAP FIRMNESS: only enter when 15m |EMA20-EMA50|/EMA50 >= TREND_GAP_MIN
+  (skips entries when trend is knife-edge / about to flip)
+
+Backtest evidence (29-mo OOS + walk-forward train 2024 / test 2025-26):
+  Baseline (no gap filter): -75% / 29mo, PF 1.05
+  GAP >= 0.25%:            +44% OOS (2025-26), PF 1.33, MaxDD 21%
+  GAP >= 0.40%:            +77% OOS (2025-26), PF 1.62, MaxDD 14%
+
+Default threshold: 0.25% (balanced). Override via RSISCALP_V2_GAP_MIN.
+
+PAPER-ONLY. State / log / status: data/paper_rsiscalp_trend_v2/
 """
 from __future__ import annotations
 import os, sys, json, logging
@@ -27,11 +63,11 @@ from core_rsiscalp import (
     USE_CIRCUIT_BREAKER, BREAKER_LOSSES, BREAKER_PAUSE_HOURS,
     rsi_signal, dca_price, sl_price, per_level_qty,
 )
-# v5 OVERRIDES — same risk-mgmt as v4
-DCA_LEVELS    = 1       # was 2 → single entry only, no averaging-down
-SL_FROM_WORST = 0.005   # was 0.01 → 0.5% from entry (= worst, since no DCA)
+# v5 OVERRIDES — same risk-mgmt as v4 (no DCA + tight SL)
+DCA_LEVELS    = 1       # single entry only, no averaging-down
+SL_FROM_WORST = 0.005   # 0.5% from entry (= worst, since no DCA)
 
-# Local helpers using OUR overridden constants (core ones are unchanged)
+# Local helpers using OUR overridden constants
 def per_level_qty(equity: float, price: float) -> float:
     """v5 sizing — full notional in L1 since DCA_LEVELS=1."""
     if price <= 0: return 0.0
@@ -45,14 +81,11 @@ def sl_price(side: str, worst_entry: float):
 
 # ─── Paths ───
 DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v5"))
-# 2026-06-06: fleet-wide chop/momentum filters (ATR + 1h cumulative move).
-# Tunable per-bot via env vars.
-RSISCALP_ATR_MAX_PCT     = float(os.environ.get("RSISCALP_ATR_MAX_PCT", "0.60"))     # skip if 5m ATR > this %
-RSISCALP_1H_MOVE_MAX_PCT = float(os.environ.get("RSISCALP_1H_MOVE_MAX_PCT", "2.0"))  # skip SHORT if +X% / LONG if -X% in last 1h
-# 2026-06-05: high-vol UTC hours blocked across the whole fleet (consistency).
-# Default: 12 + 13 UTC (US pre-market). Live data: 3 of 3 near-miss trades happened
-# in these hours. Backtest: hours 12-18 lost biggest. Conservative pick = 2hrs/day.
-# Override via env: RSISCALP_BLOCKED_HOURS="12,13,18,21"
+TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
+# Fleet-wide chop/momentum filters (per-bot env override)
+RSISCALP_ATR_MAX_PCT     = float(os.environ.get("RSISCALP_ATR_MAX_PCT", "0.60"))
+RSISCALP_1H_MOVE_MAX_PCT = float(os.environ.get("RSISCALP_1H_MOVE_MAX_PCT", "2.0"))
+# Fleet-wide high-vol UTC hours blocked (default 12,13 = US pre-market)
 BLOCKED_HOURS = set(int(h.strip()) for h in
     os.environ.get("RSISCALP_BLOCKED_HOURS", "12,13").split(",")
     if h.strip().isdigit())
@@ -65,8 +98,7 @@ LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
 PAIR = "BTCUSDT"
 INITIAL_BALANCE = 5000.0
 COMMISSION_PCT = 0.0004  # 0.04% taker fee per side
-# 2026-06-05: switched data source from Binance fapi → Bybit V5 (USDT-M perp).
-# Bot logic unchanged; only the kline + ticker fetchers come from data_bybit now.
+# 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
 # ─── Logging ───
 log = logging.getLogger("bot_rsiscalp_v5")
@@ -277,17 +309,22 @@ def main():
 
     # ── Optional 15m trend gate (entry only) ──
     trend = None  # "UP" / "DOWN" / None
+    trend_gap_pct = None  # signed gap %: (EMA20 - EMA50) / EMA50 × 100
     if USE_TREND_FILTER:
         df_tf = fetch_klines(TREND_TF, 300)
         if df_tf is not None and len(df_tf) >= TREND_EMA_SLOW:
             ema_f = df_tf["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
             ema_s = df_tf["close"].ewm(span=TREND_EMA_SLOW, adjust=False).mean()
-            trend = "UP" if float(ema_f.iloc[-2]) > float(ema_s.iloc[-2]) else "DOWN"
+            ema_f_v = float(ema_f.iloc[-2])
+            ema_s_v = float(ema_s.iloc[-2])
+            trend = "UP" if ema_f_v > ema_s_v else "DOWN"
+            trend_gap_pct = (ema_f_v - ema_s_v) / ema_s_v * 100.0
         else:
             log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
 
+    gap_txt = f" | gap {trend_gap_pct:+.2f}%" if trend_gap_pct is not None else ""
     log.info(f"  Balance: ${state['balance']:,.2f} | {PAIR}: ${close_px:,.2f} | live: ${live_px:,.2f} | "
-             f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}{' | 15m '+trend if trend else ''}" if rsi_val is not None else
+             f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}{' | 15m '+trend if trend else ''}{gap_txt}" if rsi_val is not None else
              f"  Balance: ${state['balance']:,.2f} | RSI n/a")
 
     if state["balance"] > state.get("peak_equity", 0):
@@ -357,12 +394,28 @@ def main():
             block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
             log.info(f"  {block_reason}")
             sig = None
-    # 2026-06-05: high-vol hour filter (consistency across v1/v2/v3)
+    # 2026-06-05: high-vol UTC hour filter (consistency across v1/v2/v3)
     if sig and BLOCKED_HOURS:
         cur_hour = datetime.now(timezone.utc).hour
         if cur_hour in BLOCKED_HOURS:
             block_reason = (f"high-risk UTC hour ({cur_hour:02d}:00 blocked — "
                             f"historical loss cluster)")
+            log.info(f"  {block_reason}")
+            sig = None
+    # ── 2026-06-05 v2: TREND-GAP FIRMNESS FILTER ──
+    # Only enter if the 15m EMA20/EMA50 gap is firm enough (not knife-edge).
+    # Knife-edge trends (small gap) are where the worst losses come from per OOS analysis.
+    # 2026-06-05 FIX: GAP filter is DEFENSIVE — block when gap data unavailable
+    # (same fail-closed pattern as the trend filter fix).
+    if sig and TREND_GAP_MIN > 0:
+        gap_required = TREND_GAP_MIN * 100.0
+        if trend_gap_pct is None:
+            block_reason = f"{sig} blocked — 15m trend GAP data unavailable (defensive)"
+            log.info(f"  {block_reason}")
+            sig = None
+        elif abs(trend_gap_pct) < gap_required:
+            block_reason = (f"{sig} blocked — 15m trend gap {trend_gap_pct:+.3f}% "
+                            f"weaker than required ±{gap_required:.2f}% (knife-edge)")
             log.info(f"  {block_reason}")
             sig = None
     # 2026-06-06: ATR + 1h cumulative move filters (fail-closed).
@@ -434,12 +487,13 @@ def main():
         "pair": PAIR, "price": close_px, "live_price": live_px,
         "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos_status, "signal": sig,
-        "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT, "price": close_px},
+        "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT,
+                       "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100,
+                       "blocked_hours": sorted(BLOCKED_HOURS) if BLOCKED_HOURS else [],
+                       "current_hour_utc": datetime.now(timezone.utc).hour},
         "trend_15m": trend, "block_reason": block_reason,
-        "blocked_hours": sorted(BLOCKED_HOURS) if BLOCKED_HOURS else [],
-        "current_hour_utc": datetime.now(timezone.utc).hour,
         "stats": state["stats"],
-        "strategy": f"RSI-Scalp +Trend v5 NO-DCA TIGHT-SL (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT}{' / 15m EMA'+str(TREND_EMA_FAST)+'/'+str(TREND_EMA_SLOW)+' gate' if USE_TREND_FILTER else ''} / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% adaptive / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
+        "strategy": f"RSI-Scalp +Trend v5 NO-DCA TIGHT-SL (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} gate + GAP firmness ≥{TREND_GAP_MIN*100:.2f}% / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% adaptive / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / {'SL '+format(SL_FROM_WORST*100,'.1f')+'%' if USE_STOP_LOSS else 'NO SL'}) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
