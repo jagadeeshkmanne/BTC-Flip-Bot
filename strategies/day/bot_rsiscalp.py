@@ -74,6 +74,12 @@ WEEKEND_QTY_MULT = float(os.environ.get("RSISCALP_WEEKEND_QTY_MULT", "2.0"))
 # Enable trend-flip exit (close on 15m EMA reversal)
 USE_TREND_FLIP_EXIT = os.environ.get("RSISCALP_TREND_FLIP_EXIT", "1") == "1"
 
+# 2026-06-06: Break-even after DCA fires. When position has L2+ filled, move SL
+# to avg entry price. Caps "DCA into a runaway move" losses at near-zero.
+# Live-trade audit: the one catastrophic -$193 loss had DCA fire, then move
+# continued adverse. BE-L2 would have exited at avg (~$0) instead of -$193.
+USE_BE_AFTER_DCA = os.environ.get("RSISCALP_BE_AFTER_DCA", "1") == "1"
+
 # 2026-06-06: 1h RSI 50-split filter was added in v1.1 then REVERTED.
 # Faithful (no-lookahead) 5-yr backtest showed filter HURTS
 # (+8.52% → +6.73% return, -32% → -33% DD). Prior +2,023% claim
@@ -376,10 +382,15 @@ def main():
                 exit_reason, exit_px = "TP", tp
 
         # Loose catastrophic SL.
+        # 2026-06-06: BE-after-DCA — when DCA fired (filled >= 2), SL moves to
+        # avg entry price. Caps "DCA into runaway" losses at ~$0.
         if exit_px is None and USE_STOP_LOSS:
-            slp = sl_price(side, pos["worst_entry"])
+            if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2:
+                slp = avg_entry_of(pos)
+            else:
+                slp = sl_price(side, pos["worst_entry"])
             if slp is not None and ((side == "LONG" and live_px <= slp) or (side == "SHORT" and live_px >= slp)):
-                exit_reason, exit_px = "SL", slp
+                exit_reason, exit_px = ("BE-DCA" if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2 else "SL"), slp
 
         # 2026-06-06: TREND FLIP EXIT — close on 15m EMA reversal (early reversal catch)
         # Backtest: catches losing trades before they hit SL, reduces avg loss size
@@ -530,7 +541,11 @@ def main():
     pos_status = None
     if pos:
         avg_e = avg_entry_of(pos)
-        slp = sl_price(pos["side"], pos["worst_entry"])
+        # Display BE-after-DCA SL if active
+        if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2:
+            slp = avg_e
+        else:
+            slp = sl_price(pos["side"], pos["worst_entry"])
         tp_pct = tp_pct_for(pos["filled"])
         tp_p = (avg_e * (1 + tp_pct) if pos["side"] == "LONG" else avg_e * (1 - tp_pct)) if USE_TAKE_PROFIT else None
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
