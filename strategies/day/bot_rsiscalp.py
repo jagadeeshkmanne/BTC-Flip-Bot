@@ -56,10 +56,18 @@ DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "pa
 TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
 # Fleet-wide chop/momentum filters (per-bot env override)
 RSISCALP_ATR_MAX_PCT     = float(os.environ.get("RSISCALP_ATR_MAX_PCT", "0.60"))
-RSISCALP_1H_MOVE_MAX_PCT = float(os.environ.get("RSISCALP_1H_MOVE_MAX_PCT", "2.0"))
+# 2026-06-06: 1h move filter DISABLED. Live audit on 11 paper trades showed
+# it drops 1 win ($30) while being redundant with ATR filter on the
+# catastrophic loss. ATR alone is sufficient. Set RSISCALP_1H_MOVE_MAX_PCT=2.0
+# (or any value <100) to re-enable. Default 100 = effectively off.
+RSISCALP_1H_MOVE_MAX_PCT = float(os.environ.get("RSISCALP_1H_MOVE_MAX_PCT", "100.0"))
 # Fleet-wide high-vol UTC hours blocked (default 12,13 = US pre-market)
+# 2026-06-06: Hour blocking DISABLED. Live audit on 11 paper trades showed
+# it dropped 4 winning trades (-$159) while ATR filter alone catches the
+# catastrophic loss. Empty default = no blocked hours. Override via
+# RSISCALP_BLOCKED_HOURS="5,6,11,12,13,20" to re-enable.
 BLOCKED_HOURS = set(int(h.strip()) for h in
-    os.environ.get("RSISCALP_BLOCKED_HOURS", "5,6,11,12,13,20").split(",")
+    os.environ.get("RSISCALP_BLOCKED_HOURS", "").split(",")
     if h.strip().isdigit())
 
 # 2026-06-06: SL tightened from 1.0% to 0.6% (backtest -3.42% DD vs -7%)
