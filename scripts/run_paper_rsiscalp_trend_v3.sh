@@ -8,4 +8,4 @@ cd /home/jags/BTC-Flip-Bot
 RSISCALP_DATA_DIR=paper_rsiscalp_trend_v3 \
 RSISCALP_TREND=1 \
 RSISCALP_V2_GAP_MIN=0.0025 \
-  /usr/bin/python3 strategies/day/bot_rsiscalp_v3.py 2>&1
+  /usr/bin/flock -n /tmp/rsiscalp_v3.lock /usr/bin/python3 strategies/day/bot_rsiscalp_v3.py 2>&1 || exit 0

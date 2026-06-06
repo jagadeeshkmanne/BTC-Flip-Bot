@@ -6,4 +6,4 @@
 # Schedule via crontab:
 #   * * * * * /home/jags/BTC-Flip-Bot/scripts/run_paper_rsiscalp_trend.sh >> /home/jags/BTC-Flip-Bot/data/paper_rsiscalp_trend/cron.log 2>&1
 cd /home/jags/BTC-Flip-Bot
-RSISCALP_DATA_DIR=paper_rsiscalp_trend RSISCALP_TREND=1 /usr/bin/python3 strategies/day/bot_rsiscalp.py 2>&1
+RSISCALP_DATA_DIR=paper_rsiscalp_trend RSISCALP_TREND=1 /usr/bin/flock -n /tmp/rsiscalpv1.lock /usr/bin/python3 strategies/day/bot_rsiscalp.py 2>&1 || exit 0
