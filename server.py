@@ -566,12 +566,13 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # 6 connections every 5s) down to 1 connection. Big perf win for the
         # toy http.server.
         if path == '/api/bots/all':
-            ids = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3', 'rsiscalp_trend_v4']
+            ids = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3', 'rsiscalp_trend_v4', 'rsiscalp_trend_v5']
             id_to_dir = {
                 'rsiscalp_trend':     'paper_rsiscalp_trend',
                 'rsiscalp_trend_v2':  'paper_rsiscalp_trend_v2',
                 'rsiscalp_trend_v3':  'paper_rsiscalp_trend_v3',
                 'rsiscalp_trend_v4':  'paper_rsiscalp_trend_v4',
+                'rsiscalp_trend_v5':  'paper_rsiscalp_trend_v5',
             }
             out = {}
             for sid in ids:
@@ -640,6 +641,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             log_filename = 'bot.log'
         elif strategy_q == 'rsiscalp_trend_v4':
             env_dir = 'paper_rsiscalp_trend_v4'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
+        elif strategy_q == 'rsiscalp_trend_v5':
+            env_dir = 'paper_rsiscalp_trend_v5'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -728,6 +734,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             if env_dir == 'paper_rsiscalp_trend_v4':
                 return self._json_response(_query_paper_position(
                     state_subdir='paper_rsiscalp_trend_v4',
+                    state_filename='state.json',
+                    balance_key='balance',
+                ))
+            if env_dir == 'paper_rsiscalp_trend_v5':
+                return self._json_response(_query_paper_position(
+                    state_subdir='paper_rsiscalp_trend_v5',
                     state_filename='state.json',
                     balance_key='balance',
                 ))

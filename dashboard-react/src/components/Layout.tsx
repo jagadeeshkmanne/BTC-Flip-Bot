@@ -72,6 +72,7 @@ export function Layout({ active, children }: Props) {
                   b.accent === 'purple' && 'pill bg-accent-purple/15 text-accent-purple',
                   b.accent === 'blue' && 'pill-blue',
                   b.accent === 'orange' && 'pill bg-accent-orange/15 text-accent-orange',
+                  b.accent === 'red' && 'pill bg-accent-red/15 text-accent-red',
                 )}>{b.badge}</span>
               </Link>
             ))}

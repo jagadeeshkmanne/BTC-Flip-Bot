@@ -27,6 +27,7 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
             bot.accent === 'green'  ? 'bg-accent-green/15 text-accent-green'  :
             bot.accent === 'purple' ? 'bg-accent-purple/15 text-accent-purple' :
             bot.accent === 'orange' ? 'bg-accent-orange/15 text-accent-orange' :
+            bot.accent === 'red'    ? 'bg-accent-red/15 text-accent-red'       :
                                       'bg-accent-blue/15 text-accent-blue'
           }`}>{bot.badge}</span>
         </h1>

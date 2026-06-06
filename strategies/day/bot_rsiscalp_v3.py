@@ -29,6 +29,7 @@ Backtest status: UNTESTED — live experiment alongside v1/v2.
 from __future__ import annotations
 import os, sys, json, logging
 from datetime import datetime, timezone, timedelta
+import math
 import requests
 import pandas as pd
 
@@ -50,6 +51,9 @@ from core_rsiscalp import (
 # ─── Paths ───
 DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"))
 TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
+# Fleet-wide chop/momentum filters (per-bot env override)
+RSISCALP_ATR_MAX_PCT     = float(os.environ.get("RSISCALP_ATR_MAX_PCT", "0.60"))
+RSISCALP_1H_MOVE_MAX_PCT = float(os.environ.get("RSISCALP_1H_MOVE_MAX_PCT", "2.0"))
 # v3 anti-breakout filter params (overridable via env)
 V3_BB_LOOKBACK = int(os.environ.get("RSISCALP_V3_BB_LOOKBACK", "3"))
 V3_VOL_MULT    = float(os.environ.get("RSISCALP_V3_VOL_MULT", "2.0"))
@@ -102,13 +106,25 @@ def load_state():
 
 
 def save_state(s):
-    with open(STATE_FILE, "w") as f:
+    # 2026-06-05 FIX: atomic write via temp + rename. Previously a crash
+    # mid-json.dump would corrupt state.json → next tick fails to load,
+    # entire trade history lost.
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(s, f, default=str, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATE_FILE)  # atomic on POSIX
 
 
 def write_status(payload):
-    with open(STATUS_FILE, "w") as f:
+    # Same atomic pattern for status.json
+    tmp = STATUS_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(payload, f, default=str, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATUS_FILE)
 
 
 # ─── Position management ───
@@ -248,6 +264,14 @@ def main():
         return
 
     df_5m["rsi"] = rsi_series(df_5m["close"], RSI_PERIOD)
+    # 2026-06-06: ATR(14) for chop-regime filter + 1h cumulative price move
+    _prev_close = df_5m["close"].shift(1)
+    _tr = pd.concat([
+        df_5m["high"] - df_5m["low"],
+        (df_5m["high"] - _prev_close).abs(),
+        (df_5m["low"]  - _prev_close).abs(),
+    ], axis=1).max(axis=1)
+    df_5m["atr_14"] = _tr.rolling(14).mean()
     # v3: BB(20,2) for anti-breakout filter
     _mid = df_5m["close"].rolling(20).mean()
     _sd  = df_5m["close"].rolling(20).std(ddof=0)
@@ -337,8 +361,15 @@ def main():
                 sig = None
         except Exception:
             pass
-    if USE_TREND_FILTER and sig and trend is not None:
-        if (sig == "LONG" and trend != "UP") or (sig == "SHORT" and trend != "DOWN"):
+    # 2026-06-05 FIX: trend filter is DEFENSIVE — if data unavailable, BLOCK the
+    # entry (was previously skipping the check entirely, which let v2 LONG into a
+    # DOWN trend at 14:00 UTC when Bybit returned partial 15m data).
+    if USE_TREND_FILTER and sig:
+        if trend is None:
+            block_reason = f"{sig} blocked — 15m trend data unavailable (defensive)"
+            log.info(f"  {block_reason}")
+            sig = None
+        elif (sig == "LONG" and trend != "UP") or (sig == "SHORT" and trend != "DOWN"):
             block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
             log.info(f"  {block_reason}")
             sig = None
@@ -353,9 +384,15 @@ def main():
     # ── 2026-06-05 v2: TREND-GAP FIRMNESS FILTER ──
     # Only enter if the 15m EMA20/EMA50 gap is firm enough (not knife-edge).
     # Knife-edge trends (small gap) are where the worst losses come from per OOS analysis.
-    if sig and trend_gap_pct is not None and TREND_GAP_MIN > 0:
-        gap_required = TREND_GAP_MIN * 100.0  # convert fraction to % for comparison
-        if abs(trend_gap_pct) < gap_required:
+    # 2026-06-05 FIX: GAP filter is DEFENSIVE — block when gap data unavailable
+    # (same fail-closed pattern as the trend filter fix).
+    if sig and TREND_GAP_MIN > 0:
+        gap_required = TREND_GAP_MIN * 100.0
+        if trend_gap_pct is None:
+            block_reason = f"{sig} blocked — 15m trend GAP data unavailable (defensive)"
+            log.info(f"  {block_reason}")
+            sig = None
+        elif abs(trend_gap_pct) < gap_required:
             block_reason = (f"{sig} blocked — 15m trend gap {trend_gap_pct:+.3f}% "
                             f"weaker than required ±{gap_required:.2f}% (knife-edge)")
             log.info(f"  {block_reason}")
@@ -376,6 +413,17 @@ def main():
             bb_lo_now = float(df_5m["bb_low"].iloc[-2])
             vol_now = float(df_5m["volume"].iloc[-2])
             vol_sma = float(df_5m["vol_sma20"].iloc[-2])
+
+            # 2026-06-05 FIX: NaN-safe check. If BB or vol-SMA isn't ready
+            # (insufficient bars), block defensively (same fail-closed pattern
+            # as trend + GAP filters). Previously NaN comparisons silently
+            # returned False → filter passed when data wasn't actually checked.
+            if math.isnan(bb_up_now) or math.isnan(bb_lo_now) or math.isnan(vol_sma):
+                block_reason = f"{sig} blocked — BB/vol indicators not ready (defensive)"
+                log.info(f"  {block_reason}")
+                sig = None
+                raise StopIteration  # exit the try block cleanly
+
             vol_spike = vol_sma > 0 and vol_now > vol_sma * V3_VOL_MULT
             vol_ratio = vol_now / vol_sma if vol_sma > 0 else 0.0
 
@@ -401,9 +449,53 @@ def main():
                                     f"{vol_ratio:.1f}x SMA(20)")
                     log.info(f"  {block_reason}")
                     sig = None
+        except StopIteration:
+            pass  # already blocked above
         except (KeyError, IndexError, ValueError) as e:
-            # If BB or vol_sma columns are missing/NaN early on, just allow the trade
-            log.warning(f"  anti-breakout filter skipped: {e}")
+            # Block defensively if filter data totally missing
+            block_reason = f"{sig} blocked — anti-breakout filter data missing: {e}"
+            log.warning(f"  {block_reason}")
+            sig = None
+
+    # 2026-06-06: ATR + 1h cumulative move filters (fail-closed).
+    # Per-bot threshold via env vars.
+    if sig and state["position"] is None:
+        try:
+            atr_val = float(df_5m["atr_14"].iloc[-2])  # ATR at last closed bar
+            atr_pct = (atr_val / close_px) * 100 if close_px > 0 else 0
+            if pd.isna(atr_val) or atr_val <= 0:
+                block_reason = f"{sig} blocked — ATR data not ready (defensive)"
+                log.info(f"  {block_reason}")
+                sig = None
+            elif atr_pct > RSISCALP_ATR_MAX_PCT:
+                block_reason = (f"{sig} blocked — ATR {atr_pct:.2f}% > "
+                                f"{RSISCALP_ATR_MAX_PCT:.2f}% (chop regime)")
+                log.info(f"  {block_reason}")
+                sig = None
+        except (KeyError, IndexError, ValueError) as e:
+            block_reason = f"{sig} blocked — ATR filter error: {e}"
+            log.warning(f"  {block_reason}")
+            sig = None
+
+    if sig and state["position"] is None and len(df_5m) >= 14:
+        try:
+            close_now    = float(df_5m["close"].iloc[-2])    # last closed
+            close_1h_ago = float(df_5m["close"].iloc[-14])   # 12 bars before
+            chg_1h_pct = (close_now / close_1h_ago - 1) * 100 if close_1h_ago > 0 else 0
+            if sig == "SHORT" and chg_1h_pct > RSISCALP_1H_MOVE_MAX_PCT:
+                block_reason = (f"SHORT blocked — 1h rally {chg_1h_pct:+.2f}% > "
+                                f"{RSISCALP_1H_MOVE_MAX_PCT:.2f}% (fading momentum)")
+                log.info(f"  {block_reason}")
+                sig = None
+            elif sig == "LONG" and chg_1h_pct < -RSISCALP_1H_MOVE_MAX_PCT:
+                block_reason = (f"LONG blocked — 1h drop {chg_1h_pct:+.2f}% < "
+                                f"-{RSISCALP_1H_MOVE_MAX_PCT:.2f}% (fading momentum)")
+                log.info(f"  {block_reason}")
+                sig = None
+        except (KeyError, IndexError, ValueError) as e:
+            block_reason = f"{sig} blocked — 1h filter error: {e}"
+            log.warning(f"  {block_reason}")
+            sig = None
 
     if state["position"] is None and not exit_this_tick and sig:
         open_position(state, sig, live_px, rsi_val)

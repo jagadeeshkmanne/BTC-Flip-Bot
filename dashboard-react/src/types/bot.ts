@@ -1,12 +1,12 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3' | 'rsiscalp_trend_v4';
+export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3' | 'rsiscalp_trend_v4' | 'rsiscalp_trend_v5';
 
 export interface BotMeta {
   id: StrategyId;
-  short: string;        // "v1" / "v2" / "v3" / "v4"
-  label: string;        // "RSI Scalp +Trend v2"
-  badge: string;        // "GAP firmness" / etc.
-  accent: 'blue' | 'green' | 'purple' | 'orange';
+  short: string;        // "v1" / "v2" / "v3" / "v4" / "v5"
+  label: string;
+  badge: string;
+  accent: 'blue' | 'green' | 'purple' | 'orange' | 'red';
   description: string;
 }
 
@@ -42,6 +42,14 @@ export const BOTS: BotMeta[] = [
     badge: 'no-DCA · tight SL',
     accent: 'orange',
     description: 'v3 entries + NO DCA + tight SL (0.5% from entry). Same selective filters as v3, but loss-capped at ~$75/trade (vs v3 $180). Tests whether removing DCA-amplification beats DCA-rescue.',
+  },
+  {
+    id: 'rsiscalp_trend_v5',
+    short: 'v5',
+    label: 'RSI Scalp +Trend v5',
+    badge: 'simple + R:R',
+    accent: 'red',
+    description: 'v1 entries (NO GAP, NO anti-breakout) + NO DCA + tight SL + new fleet-wide ATR/1h filters. Simplest entries + bounded loss. Tests: does v1\'s aggressive style + good R:R beat heavy filtering?',
   },
 ];
 
