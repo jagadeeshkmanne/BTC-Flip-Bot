@@ -6,9 +6,9 @@ import { BOTS, type StrategyId } from '@/types/bot';
 // short ("v1") → strategy id ("rsiscalp_trend")
 const SHORT_TO_ID = Object.fromEntries(BOTS.map(b => [b.short, b.id])) as Record<string, StrategyId>;
 
-// Backward-compat aliases — collapse versioned + removed-bot URLs onto current shorts
+// Backward-compat aliases — for prior-version URLs / removed bots only.
+// v1.1 is NOT here — it's a real bot now (Time-SL variant).
 const ALIAS: Record<string, string> = {
-  'v1.1': 'v1',   // 1h-RSI filter reverted, v1.1 → v1
   'v2.0': 'v2',
   'v5.0': 'v5',
   'v3':   'v1',   // removed bot → winner
