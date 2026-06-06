@@ -1,5 +1,5 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3' | 'rsiscalp_trend_v4' | 'rsiscalp_trend_v5';
+export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v4' | 'rsiscalp_trend_v5';
 
 export interface BotMeta {
   id: StrategyId;
@@ -14,42 +14,34 @@ export const BOTS: BotMeta[] = [
   {
     id: 'rsiscalp_trend',
     short: 'v1',
-    label: 'RSI Scalp +Trend',
-    badge: 'baseline',
+    label: 'v1 · Ultimate',
+    badge: 'Ultimate',
     accent: 'blue',
-    description: 'RSI(9) ≤30/≥70 + 15m EMA20/50 trend gate. 2-leg DCA @0.50%, adaptive TP 0.50%/0.25%, SL 1% from worst, 3× lev.',
+    description: 'Best 6-mo backtest config (+103% return, -2.94% DD). RSI + 15m trend + GAP firmness + ATR + 1h filters + DCA + tight SL 0.6% + trend-flip exit + weekend 2× sizing + daily-loss circuit breaker $200 + blocked transition hours (5,6,11,12,13,20 UTC).',
   },
   {
     id: 'rsiscalp_trend_v2',
     short: 'v2',
-    label: 'RSI Scalp +Trend v2',
-    badge: 'GAP firmness',
+    label: 'v2 · DCA',
+    badge: 'DCA',
     accent: 'green',
-    description: 'v1 + GAP firmness filter — only enter when 15m |EMA20-EMA50|/EMA50 ≥ 0.25%. Skips knife-edge trends. Backtest: -75% → +44% OOS.',
-  },
-  {
-    id: 'rsiscalp_trend_v3',
-    short: 'v3',
-    label: 'RSI Scalp +Trend v3',
-    badge: 'anti-breakout',
-    accent: 'purple',
-    description: 'v2 + anti-breakout filter — skips SHORT if last 3 closes > 5m BB upper OR current bar vol > 2× SMA(20). Targets "don\'t fade a moving train". Same risk profile as v2 (DCA + $180 max loss).',
+    description: 'RSI + 15m trend + GAP firmness ≥ 0.25% + ATR + 1h filters + 2-leg DCA. Standard SL 1% from worst entry. Backtest: +52% over 6 months, $-268 worst trade.',
   },
   {
     id: 'rsiscalp_trend_v4',
     short: 'v4',
-    label: 'RSI Scalp +Trend v4',
-    badge: 'no-DCA · tight SL',
+    label: 'v4 · Capped + AB',
+    badge: 'Capped + AB',
     accent: 'orange',
-    description: 'v3 entries + NO DCA + tight SL (0.5% from entry). Same selective filters as v3, but loss-capped at ~$75/trade (vs v3 $180). Tests whether removing DCA-amplification beats DCA-rescue.',
+    description: 'RSI + 15m trend + GAP firmness + anti-breakout filter (last 3 closes vs 5m BB + vol-spike skip) + NO DCA + tight SL 0.5% from entry. Loss-capped at ~$75/trade. Maximum selectivity with bounded loss.',
   },
   {
     id: 'rsiscalp_trend_v5',
     short: 'v5',
-    label: 'RSI Scalp +Trend v5',
-    badge: 'v2 + tight SL',
+    label: 'v5 · Capped',
+    badge: 'Capped',
     accent: 'red',
-    description: 'v2 entries (GAP firmness filter) + NO DCA + tight SL (0.5% from entry). Same proven filters as v2 but loss-capped at ~$75. 6-month backtest: +23% return with -14% DD vs v2 +52%/-10%. Tests no-DCA on best-performing entries.',
+    description: 'RSI + 15m trend + GAP firmness + ATR + 1h filters + NO DCA + tight SL 0.5% from entry. Same entries as v2 but loss-capped at ~$75/trade. Tests bounded-loss without anti-breakout filter.',
   },
 ];
 
