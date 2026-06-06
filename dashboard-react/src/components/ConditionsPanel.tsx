@@ -49,16 +49,18 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
     });
   }
 
-  // Both sides — hour-filter check
-  const hourCond: Cond = {
-    label: 'Hour not blocked',
-    value: hour != null ? `${String(hour).padStart(2, '0')}:00 UTC (blocked: ${blockedHours.map(h => String(h).padStart(2, '0')).join(',')})` : '—',
-    ok: !inBlockedHour,
-  };
-  LONG.push(hourCond); SHORT.push(hourCond);
+  // Hour-filter — only show if bot has blocked hours configured
+  if (blockedHours.length > 0) {
+    const hourCond: Cond = {
+      label: 'Hour not blocked',
+      value: hour != null ? `${String(hour).padStart(2, '0')}:00 UTC (blocked: ${blockedHours.map(h => String(h).padStart(2, '0')).join(',')})` : '—',
+      ok: !inBlockedHour,
+    };
+    LONG.push(hourCond); SHORT.push(hourCond);
+  }
 
-  // ATR chop filter
-  if (atrPct != null) {
+  // ATR chop filter — only show if bot has a meaningful threshold (<10%)
+  if (atrPct != null && atrMax < 10) {
     const atrCond: Cond = {
       label: 'ATR not in chop',
       value: `${atrPct.toFixed(2)}% (need < ${atrMax.toFixed(2)}%)`,
@@ -67,8 +69,8 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
     LONG.push(atrCond); SHORT.push(atrCond);
   }
 
-  // 1h cumulative move filter (direction-aware)
-  if (chg1h != null) {
+  // 1h cumulative move filter — only show if bot has meaningful threshold (<10%)
+  if (chg1h != null && chg1hMax < 10) {
     LONG.push({
       label: '1h move not collapsing',
       value: `${chg1h >= 0 ? '+' : ''}${chg1h.toFixed(2)}% (need > -${chg1hMax.toFixed(1)}%)`,
