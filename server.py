@@ -476,7 +476,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # (Classic dashboard.html still on disk for reference but no longer served.)
         if path == '/' or path == '/dashboard.html':
             self.send_response(302)
-            self.send_header('Location', '/bots/v2')
+            self.send_header('Location', '/bots/v1')
             self.end_headers()
             return
 
@@ -749,7 +749,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # static handler and 404 on the SPA paths).
         if path == '/bots' or path == '/bots/':
             self.send_response(302)
-            self.send_header('Location', '/bots/v2')
+            self.send_header('Location', '/bots/v1')
             self.end_headers()
             return
         if path.startswith('/bots/'):

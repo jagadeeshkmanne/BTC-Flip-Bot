@@ -20,8 +20,8 @@ export function App() {
           );
         }}
       </Route>
-      <Route path="/bots"><Redirect to="/bots/v2" /></Route>
-      <Route><Redirect to="/bots/v2" /></Route>
+      <Route path="/bots"><Redirect to="/bots/v1" /></Route>
+      <Route><Redirect to="/bots/v1" /></Route>
     </Switch>
   );
 }
