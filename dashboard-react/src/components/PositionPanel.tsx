@@ -112,15 +112,29 @@ function ActivePosition({ status }: { status: BotStatus }) {
         <PriceScale isLong={isLong} entry={entry} live={live} tp={tp} sl={sl} l2={l2} />
       </div>
 
-      {/* Opened timestamp */}
-      {pos.entry_time && (
-        <div class="px-4 pb-3 flex items-center gap-1.5 text-2xs text-text-dim">
-          <Clock size={11} />
-          opened {new Date(pos.entry_time).toLocaleString(undefined, {
-            month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit'
-          })}
-        </div>
-      )}
+      {/* Opened timestamp + v1.1 Time-SL countdown */}
+      <div class="px-4 pb-3 flex items-center justify-between gap-3 text-2xs text-text-dim flex-wrap">
+        {pos.entry_time && (
+          <div class="flex items-center gap-1.5">
+            <Clock size={11} />
+            opened {new Date(pos.entry_time).toLocaleString(undefined, {
+              month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit'
+            })}
+          </div>
+        )}
+        {(pos as any).time_sl_at && (
+          <div class="flex items-center gap-1.5 text-accent-orange font-mono">
+            <Clock size={11} />
+            <span class="uppercase tracking-wider">Time-SL</span>
+            <span>{(pos as any).time_sl_bars_remaining ?? 0} bars left</span>
+            <span class="text-text-dim">
+              ({new Date((pos as any).time_sl_at).toLocaleTimeString(undefined, {
+                hour: '2-digit', minute: '2-digit'
+              })})
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

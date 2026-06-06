@@ -581,10 +581,23 @@ def main():
         tp_pct = tp_pct_for(pos["filled"])
         tp_p = (avg_e * (1 + tp_pct) if pos["side"] == "LONG" else avg_e * (1 - tp_pct)) if USE_TAKE_PROFIT else None
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
+        # v1.1: compute when time-SL would force-close this position
+        time_sl_at = None
+        bars_remaining = None
+        if TIME_SL_BARS > 0 and pos.get("entry_time"):
+            try:
+                ent_dt = datetime.fromisoformat(pos["entry_time"])
+                close_dt = ent_dt + timedelta(minutes=TIME_SL_BARS * 5)
+                time_sl_at = close_dt.isoformat()
+                bars_elapsed = int((datetime.now(timezone.utc) - ent_dt).total_seconds() // 300)
+                bars_remaining = max(0, TIME_SL_BARS - bars_elapsed)
+            except Exception:
+                pass
         pos_status = {
             "side": pos["side"], "first_entry": pos["first_entry"], "avg_entry": avg_e,
             "worst_entry": pos["worst_entry"], "qty_total": pos["qty_total"], "filled": pos["filled"],
             "tp_px": tp_p, "sl_px": slp, "fav_pct": fav_p, "entry_time": pos.get("entry_time"),
+            "time_sl_at": time_sl_at, "time_sl_bars_remaining": bars_remaining,
         }
 
     write_status({
