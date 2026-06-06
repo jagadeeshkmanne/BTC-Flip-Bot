@@ -1,5 +1,5 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v5';
+export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v11' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v5';
 
 export interface BotMeta {
   id: StrategyId;
@@ -18,6 +18,14 @@ export const BOTS: BotMeta[] = [
     badge: 'Ultimate',
     accent: 'blue',
     description: 'Faithful 5-year backtest (no lookahead): +8.5% return, -32% DD, 64% WR. RSI + 15m trend + GAP firmness + ATR + 1h cumulative move filters + DCA + tight SL 0.6% + trend-flip exit + weekend 2× sizing + daily-loss circuit breaker $200 + blocked transition hours (5,6,11,12,13,20 UTC). The v1.1 1h-RSI HTF filter was reverted — faithful backtest showed it hurt slightly.',
+  },
+  {
+    id: 'rsiscalp_trend_v11',
+    short: 'v1.1',
+    label: 'v1.1 · Time-SL',
+    badge: 'Time-SL',
+    accent: 'purple',
+    description: '5-year backtest: +290% / -6.9% DD (beats v1 baseline +21pp return, -1.5pp DD). Same as v1 (RSI + 15m trend + GAP + ATR + DCA + BE-after-DCA + tight SL 0.6%) PLUS 72-bar (6h) time-based force exit. Catches stuck positions that would otherwise bleed slowly to SL. Saves ~42 SL hits over 5 years.',
   },
   {
     id: 'rsiscalp_trend_v2',
