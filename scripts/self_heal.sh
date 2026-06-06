@@ -88,7 +88,6 @@ check_bot() {
 # ── Check 2/3/4: RSI-Scalp +Trend fleet (v1, v2, v3) ─────────────
 check_bot "RSI-Scalp v1" "$RSI_V1_DIR/bot.log" "$RSI_V1_DIR/state.json"
 check_bot "RSI-Scalp v2" "$RSI_V2_DIR/bot.log" "$RSI_V2_DIR/state.json"
-check_bot "RSI-Scalp v4" "$RSI_V4_DIR/bot.log" "$RSI_V4_DIR/state.json"
 check_bot "RSI-Scalp v5" "$RSI_V5_DIR/bot.log" "$RSI_V5_DIR/state.json"
 
 exit 0

@@ -566,11 +566,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # 6 connections every 5s) down to 1 connection. Big perf win for the
         # toy http.server.
         if path == '/api/bots/all':
-            ids = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v4', 'rsiscalp_trend_v5']
+            ids = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v5']
             id_to_dir = {
                 'rsiscalp_trend':     'paper_rsiscalp_trend',
                 'rsiscalp_trend_v2':  'paper_rsiscalp_trend_v2',
-                'rsiscalp_trend_v4':  'paper_rsiscalp_trend_v4',
                 'rsiscalp_trend_v5':  'paper_rsiscalp_trend_v5',
             }
             out = {}

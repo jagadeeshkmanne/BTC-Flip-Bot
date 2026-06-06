@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""bot_rsiscalp.py — RSI-Scalp +Trend ULTIMATE.
+"""bot_rsiscalp.py — RSI-Scalp +Trend ULTIMATE v1.1 (with 1h RSI HTF filter).
+
+v1.1 added 2026-06-06: 1h RSI 50-split filter (Agent 2 finding).
+5-year backtest improvement: +220% → +2,023% return, -27% → -14% DD.
+Fixes 2024 (the bad year): -$1,311 → +$5,518.
+Mechanism: only fade WITH higher-TF momentum (1h RSI on right side of 50).
 
 THE BEST CONFIG — empirically derived from 6-month backtest (Dec 2025 - Jun 2026):
   +103.42% return, -2.94% MaxDD, $-242 worst single trade, 76% WR
@@ -68,6 +73,11 @@ WEEKEND_QTY_MULT = float(os.environ.get("RSISCALP_WEEKEND_QTY_MULT", "2.0"))
 
 # Enable trend-flip exit (close on 15m EMA reversal)
 USE_TREND_FLIP_EXIT = os.environ.get("RSISCALP_TREND_FLIP_EXIT", "1") == "1"
+
+# 2026-06-06 v1.1: 1h RSI 50-split filter (HTF momentum alignment).
+# Only fade WITH higher-TF momentum. Backtest: +220%→+2023% over 5yr.
+USE_1H_RSI_FILTER = os.environ.get("RSISCALP_1H_RSI_FILTER", "1") == "1"
+RSI_1H_THRESHOLD  = float(os.environ.get("RSISCALP_1H_RSI_THRESHOLD", "50.0"))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, "state.json")
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
@@ -316,6 +326,21 @@ def main():
         else:
             log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
 
+    # ── 2026-06-06 v1.1: 1h RSI 50-split filter (HTF alignment) ──
+    # Backtest 5yr: +220% → +2,023% return, -27% → -14% DD, 2024 -$1311 → +$5518.
+    # Mechanism: only fade WITH higher-TF momentum (1h RSI on the right side of 50).
+    # Same principle as 15m EMA gate, just one timeframe up.
+    rsi_1h_val = None
+    if USE_1H_RSI_FILTER:
+        df_1h = fetch_klines("1h", 100)
+        if df_1h is not None and len(df_1h) >= RSI_PERIOD + 1:
+            rsi_1h_series = rsi_series(df_1h["close"], RSI_PERIOD)
+            rsi_1h_raw = rsi_1h_series.iloc[-2]  # last CLOSED 1h bar
+            if pd.notna(rsi_1h_raw):
+                rsi_1h_val = float(rsi_1h_raw)
+        else:
+            log.warning(f"  1h RSI: insufficient data — filter inactive this tick")
+
     gap_txt = f" | gap {trend_gap_pct:+.2f}%" if trend_gap_pct is not None else ""
     log.info(f"  Balance: ${state['balance']:,.2f} | {PAIR}: ${close_px:,.2f} | live: ${live_px:,.2f} | "
              f"RSI {rsi_val:.1f} | Signal: {sig or 'NONE'}{' | 15m '+trend if trend else ''}{gap_txt}" if rsi_val is not None else
@@ -470,6 +495,24 @@ def main():
             log.warning(f"  {block_reason}")
             sig = None
 
+    # 2026-06-06 v1.1: 1h RSI 50-split — HTF momentum alignment.
+    # Same fail-closed pattern as other filters.
+    if sig and USE_1H_RSI_FILTER:
+        if rsi_1h_val is None:
+            block_reason = f"{sig} blocked — 1h RSI data unavailable (defensive)"
+            log.info(f"  {block_reason}")
+            sig = None
+        elif sig == "SHORT" and rsi_1h_val >= RSI_1H_THRESHOLD:
+            block_reason = (f"SHORT blocked — 1h RSI {rsi_1h_val:.1f} ≥ "
+                            f"{RSI_1H_THRESHOLD:.0f} (HTF still overbought)")
+            log.info(f"  {block_reason}")
+            sig = None
+        elif sig == "LONG" and rsi_1h_val <= RSI_1H_THRESHOLD:
+            block_reason = (f"LONG blocked — 1h RSI {rsi_1h_val:.1f} ≤ "
+                            f"{RSI_1H_THRESHOLD:.0f} (HTF still oversold)")
+            log.info(f"  {block_reason}")
+            sig = None
+
     if state["position"] is None and not exit_this_tick and sig:
         open_position(state, sig, live_px, rsi_val)
 
@@ -508,6 +551,9 @@ def main():
                        "atr_max_pct": RSISCALP_ATR_MAX_PCT,
                        "chg_1h_pct": (close_px / float(df_5m["close"].iloc[-14]) - 1) * 100 if len(df_5m) >= 14 else None,
                        "chg_1h_max_pct": RSISCALP_1H_MOVE_MAX_PCT,
+                       # v1.1: 1h RSI for HTF alignment check
+                       "rsi_1h": rsi_1h_val,
+                       "rsi_1h_threshold": RSI_1H_THRESHOLD,
                        # ULTIMATE-specific
                        "daily_loss": state.get("daily_loss", 0.0),
                        "daily_max_loss": DAILY_MAX_LOSS,

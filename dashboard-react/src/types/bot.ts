@@ -1,5 +1,5 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v4' | 'rsiscalp_trend_v5';
+export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v5';
 
 export interface BotMeta {
   id: StrategyId;
@@ -14,10 +14,10 @@ export const BOTS: BotMeta[] = [
   {
     id: 'rsiscalp_trend',
     short: 'v1',
-    label: 'v1 · Ultimate',
+    label: 'v1.1 · Ultimate',
     badge: 'Ultimate',
     accent: 'blue',
-    description: 'Best 6-mo backtest config (+103% return, -2.94% DD). RSI + 15m trend + GAP firmness + ATR + 1h filters + DCA + tight SL 0.6% + trend-flip exit + weekend 2× sizing + daily-loss circuit breaker $200 + blocked transition hours (5,6,11,12,13,20 UTC).',
+    description: '5-year backtest: +2,023% return, -14% DD. RSI + 15m trend + GAP + ATR + 1h move + 1h RSI HTF filter (only short if 1h RSI < 50, long if > 50) + DCA + tight SL 0.6% + trend-flip exit + weekend 2× sizing + daily-loss circuit breaker $200 + blocked transition hours (5,6,11,12,13,20 UTC).',
   },
   {
     id: 'rsiscalp_trend_v2',
@@ -26,14 +26,6 @@ export const BOTS: BotMeta[] = [
     badge: 'DCA',
     accent: 'green',
     description: 'RSI + 15m trend + GAP firmness ≥ 0.25% + ATR + 1h filters + 2-leg DCA. Standard SL 1% from worst entry. Backtest: +52% over 6 months, $-268 worst trade.',
-  },
-  {
-    id: 'rsiscalp_trend_v4',
-    short: 'v4',
-    label: 'v4 · Capped + AB',
-    badge: 'Capped + AB',
-    accent: 'orange',
-    description: 'RSI + 15m trend + GAP firmness + anti-breakout filter (last 3 closes vs 5m BB + vol-spike skip) + NO DCA + tight SL 0.5% from entry. Loss-capped at ~$75/trade. Maximum selectivity with bounded loss.',
   },
   {
     id: 'rsiscalp_trend_v5',
