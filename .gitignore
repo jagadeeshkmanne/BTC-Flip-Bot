@@ -24,3 +24,7 @@ backtest/_archive/
 
 # Built dashboard bundle (regenerate with `cd dashboard-react && npm run build`)
 static/bots/
+
+# Gainium backtester library (cloned from github.com/Gainium/backtester)
+backtest/gainium/node_modules/
+backtest/gainium/dist/

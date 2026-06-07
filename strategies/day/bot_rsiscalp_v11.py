@@ -95,7 +95,24 @@ USE_BE_AFTER_DCA = os.environ.get("RSISCALP_BE_AFTER_DCA", "1") == "1"
 # 2026-06-06 v1.1: TIME-BASED SL. Force exit any position after N 5m bars.
 # Backtest: 72 bars (6h) sweet spot — +21pp return vs v1 baseline, -1.5pp DD.
 # Affects ~137 trades over 5y (rare safety net for stuck positions).
+# 2026-06-06 v1.2: bumped to 144 bars (12h). Pair with SMART_TIME_SL=1 below.
 TIME_SL_BARS = int(os.environ.get("RSISCALP_TIME_SL_BARS", "72"))
+
+# 2026-06-06 v1.2: SMART time-SL only fires when the position is in loss at the
+# threshold. Winners keep running to TP. Default OFF (backwards-compatible).
+SMART_TIME_SL = os.environ.get("RSISCALP_SMART_TIME_SL", "0") == "1"
+
+# ─── v1.2 PARAMETER OVERRIDES (env vars layered on top of core constants) ───
+# Lets v1.1 deploy with looser RSI + wider TPs without touching core_rsiscalp.py
+# (so v1, v2, v5 keep their original numbers).
+RSI_OVERSOLD   = int(os.environ.get("RSISCALP_RSI_OVERSOLD",   str(RSI_OVERSOLD)))
+RSI_OVERBOUGHT = int(os.environ.get("RSISCALP_RSI_OVERBOUGHT", str(RSI_OVERBOUGHT)))
+TP_PCT_SINGLE  = float(os.environ.get("RSISCALP_TP_SINGLE",    str(TP_PCT_SINGLE)))
+TP_PCT_DCA     = float(os.environ.get("RSISCALP_TP_DCA",       str(TP_PCT_DCA)))
+
+# Shadow tp_pct_for so it uses the (possibly overridden) v1.2 constants
+def tp_pct_for(filled: int) -> float:
+    return TP_PCT_SINGLE if filled <= 1 else TP_PCT_DCA
 
 # 2026-06-06: 1h RSI 50-split filter was added in v1.1 then REVERTED.
 # Faithful (no-lookahead) 5-yr backtest showed filter HURTS
@@ -417,7 +434,8 @@ def main():
 
         # 2026-06-06 v1.1: TIME-BASED SL — force exit position after N bars.
         # Backtest 5y: 72 bars (6h) = sweet spot. v1 → v1.1: +21pp return, -1.5pp DD.
-        # Catches "stuck" positions that would otherwise bleed slowly to SL.
+        # 2026-06-06 v1.2: SMART variant — if SMART_TIME_SL=1, only fire when the
+        # position is in loss at the threshold. Winners keep running to TP.
         if exit_px is None and TIME_SL_BARS > 0:
             entry_time_str = pos.get("entry_time")
             if entry_time_str:
@@ -425,8 +443,19 @@ def main():
                     entry_dt = datetime.fromisoformat(entry_time_str)
                     bars_held = int((datetime.now(timezone.utc) - entry_dt).total_seconds() // 300)  # 5m bars
                     if bars_held >= TIME_SL_BARS:
-                        exit_reason, exit_px = "TIME_SL", live_px
-                        log.warning(f"  TIME-SL fired: position open {bars_held} bars ≥ {TIME_SL_BARS} threshold")
+                        fire = True
+                        if SMART_TIME_SL:
+                            # Compute unrealized P&L at live_px; only fire on loss
+                            qty_total = pos["qty_total"]
+                            gross = (live_px - avg_entry) * qty_total if side == "LONG" else (avg_entry - live_px) * qty_total
+                            fees = live_px * qty_total * COMMISSION_PCT
+                            net = gross - fees
+                            if net >= 0:
+                                fire = False
+                                log.info(f"  TIME-SL not fired (smart): {bars_held} bars but in profit ${net:+.2f} — let winner run")
+                        if fire:
+                            exit_reason, exit_px = "TIME_SL", live_px
+                            log.warning(f"  TIME-SL fired: position open {bars_held} bars ≥ {TIME_SL_BARS} threshold")
                 except (ValueError, KeyError):
                     pass
 

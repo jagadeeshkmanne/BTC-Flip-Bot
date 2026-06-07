@@ -106,6 +106,11 @@ class Cfg:
     # Direct answer to user's "what if RSI hits 70 right when trend is about to flip up" worry.
     TREND_GAP_MIN = 0.0    # e.g. 0.0015 = require 0.15% gap. 0 = off
     # Need 15m EMA arrays for this — added in main()
+    # 2026-06-06: USER IDEA — "peel" the L2 leg at a small profit and let L1 ride.
+    # When L2 has filled, sell ONLY the L2 portion once it runs L2_PEEL_TP above its
+    # own entry, halving exposure. Position reverts to single-leg L1 (no further DCA).
+    L2_PEEL = False
+    L2_PEEL_TP = 0.0025    # sell L2 leg at +0.25% above L2 entry (its own basis)
 
 
 def tp_pct_for(filled):
@@ -138,6 +143,10 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
         long_ok = e50 > e200; short_ok = e50 < e200
     elif filt == "trend15m":
         long_ok = df["trend_up"].values; short_ok = ~df["trend_up"].values
+    elif filt == "rsi1h":
+        # 2026-06-06: live v1's HTF gate — only fade WITH 1h momentum (RSI side of 50)
+        hr = df["rsi_1h"].values
+        long_ok = hr > 50; short_ok = hr < 50
     elif filt == "bb":
         long_ok = c < df["bb_low"].values; short_ok = c > df["bb_up"].values
     elif filt == "bb_or_rsi":
@@ -236,6 +245,34 @@ def run(df, cfg=Cfg, filt="none", adx_thresh=30.0, verbose=False):
                         pos["rsi_l2"] = rsi[i]
                         pos["l2_i"] = i
             avg = sum(p*q for p, q in pos["entries"]) / pos["qty"]
+            # --- 2026-06-06 USER IDEA: peel L2 at a small profit, keep L1 riding ---
+            # Sell only the L2 leg once it runs L2_PEEL_TP above its own entry. Reverts
+            # the position to single-leg L1. Pessimistic: never peel on the same bar L2
+            # filled (would assume a favorable intrabar wick order).
+            if (cfg.L2_PEEL and pos["filled"] >= 2 and not pos.get("peeled")
+                    and pos.get("l2_i") != i):
+                l2_px, l2_q = pos["entries"][1]
+                peel_tp = l2_px * (1 + cfg.L2_PEEL_TP) if side == "LONG" else l2_px * (1 - cfg.L2_PEEL_TP)
+                peel_hit = (side == "LONG" and h[i] >= peel_tp) or (side == "SHORT" and l[i] <= peel_tp)
+                if peel_hit:
+                    pgross = (peel_tp - l2_px) * l2_q if side == "LONG" else (l2_px - peel_tp) * l2_q
+                    pfees = peel_tp * l2_q * cfg.COMMISSION
+                    pnet = pgross - pfees
+                    balance += pnet
+                    trades.append({"side": side, "reason": "PEEL", "net": pnet,
+                                   "pnl_pct": pnet / balance * 100, "filled": 2,
+                                   "entry_i": pos["entry_i"], "exit_i": i,
+                                   "bars_held": i - pos["entry_i"], "rsi_entry": pos["rsi_entry"],
+                                   "mae_first": 0.0, "mae_avg": 0.0,
+                                   "rsi_l2": pos.get("rsi_l2"), "rsi_ext": pos.get("rsi_ext"),
+                                   "l2_i": pos.get("l2_i")})
+                    # revert to single-leg L1
+                    pos["entries"] = [pos["entries"][0]]
+                    pos["qty"] = pos["entries"][0][1]
+                    pos["worst"] = pos["entries"][0][0]
+                    pos["filled"] = 1
+                    pos["peeled"] = True
+                    avg = pos["entries"][0][0]
             # base catastrophic SL anchored to worst entry
             slp = pos["worst"] * (1 - cfg.SL) if side == "LONG" else pos["worst"] * (1 + cfg.SL)
             # --- breakeven: once price runs +BE_TRIG from avg, ratchet SL to avg (lock no-loss) ---
@@ -525,6 +562,10 @@ def main():
                     help="close trade if close beyond opposite 5m BB band")
     ap.add_argument("--trend-gap-min", type=float, default=0.0,
                     help="require |EMA20-EMA50|/EMA50 >= this fraction (e.g. 0.0015 = 0.15%)")
+    ap.add_argument("--l2-peel", action="store_true",
+                    help="USER IDEA: sell only the L2 leg at +l2-peel-tp, let L1 ride")
+    ap.add_argument("--l2-peel-tp", type=float, default=0.0025,
+                    help="L2 peel target above L2's own entry (default 0.0025 = 0.25%)")
     args = ap.parse_args()
 
     Cfg.RSI_PERIOD = args.rsi; Cfg.RSI_OVERSOLD = args.os; Cfg.RSI_OVERBOUGHT = args.ob
@@ -540,6 +581,8 @@ def main():
     Cfg.L2_GATE = args.l2_gate
     Cfg.BB_BREAK_EXIT = args.bb_break_exit
     Cfg.TREND_GAP_MIN = args.trend_gap_min
+    Cfg.L2_PEEL = args.l2_peel
+    Cfg.L2_PEEL_TP = args.l2_peel_tp
 
     df = pd.read_csv(os.path.join(CACHE, "BTCUSDT_5m.csv"))
     df["timestamp"] = pd.to_datetime(df["timestamp"])
