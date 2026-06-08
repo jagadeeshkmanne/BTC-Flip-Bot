@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import clsx from 'clsx';
 import { TrendingDown, TrendingUp, Check, X, Clock, Activity } from 'lucide-react';
-import type { BotStatus, StrategyId } from '@/types/bot';
+import type { BotStatus, BotState, StrategyId } from '@/types/bot';
 import { useTickerStore } from '@/hooks/useBtcStream';
 
 // Compute "time until bot resumes" given the blocked hours list (UTC).
@@ -40,17 +40,18 @@ function fmtCountdown(ms: number): string {
 
 interface Props {
   status?: BotStatus;
+  state?: BotState;
   strategy: StrategyId;
 }
 
-export function PositionPanel({ status, strategy }: Props) {
+export function PositionPanel({ status, state, strategy }: Props) {
   if (!status) {
     return <div class="card-elev py-12 text-center text-text-muted text-sm">Loading…</div>;
   }
   if (status.position) {
     return <ActivePosition status={status} />;
   }
-  return <WaitingForEntry status={status} strategy={strategy} />;
+  return <WaitingForEntry status={status} state={state} strategy={strategy} />;
 }
 
 /* ─────────────────────── ACTIVE POSITION ─────────────────────── */
@@ -282,7 +283,7 @@ function LiveMark({ pct, price, deltaPct }: { pct: number; price: number; deltaP
 
 /* ─────────────────────── WAITING FOR ENTRY (no position) ─────────────────────── */
 
-function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: StrategyId }) {
+function WaitingForEntry({ status, state, strategy }: { status: BotStatus; state?: BotState; strategy: StrategyId }) {
   const i = status.indicators;
   const rsi = i.rsi;
   const rsiOS = i.rsi_oversold ?? 30;
@@ -414,6 +415,22 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
           <HourBlockedBanner blockedHours={blockedHours} curHour={curHour ?? 0} />
         )}
 
+        {/* Post-loss cooldown banner */}
+        {state?.pause_until && <CooldownBanner pauseUntil={state.pause_until} />}
+
+        {/* Daily-loss stop banner */}
+        {state?.daily_loss != null && state.daily_loss <= -200 && (
+          <div class="rounded-lg border border-accent-red/30 bg-accent-red/5 p-3 text-sm">
+            <div class="flex items-center gap-2">
+              <X size={16} class="text-accent-red" />
+              <span class="font-semibold text-accent-red">Daily $200 stop hit</span>
+            </div>
+            <div class="text-xs text-text-muted mt-1 ml-6">
+              Today's loss: ${state.daily_loss.toFixed(2)} · resumes 00:00 UTC
+            </div>
+          </div>
+        )}
+
         {/* RSI gauge — clearly labeled as "RSI Indicator", not a position scale */}
         {rsi != null && huntingSide && (
           <div class="border-t border-bg-border pt-4">
@@ -516,6 +533,36 @@ function RsiGauge({ rsi, target, hunting }: { rsi: number; target: number; hunti
         <span>50</span>
         <span class="text-accent-red">70</span>
         <span>100</span>
+      </div>
+    </div>
+  );
+}
+
+/* Post-loss cooldown banner with live countdown. */
+function CooldownBanner({ pauseUntil }: { pauseUntil: string }) {
+  const targetMs = new Date(pauseUntil).getTime();
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const msLeft = targetMs - now;
+  if (msLeft <= 0) return null;  // expired
+
+  const totalSec = Math.ceil(msLeft / 1000);
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  const countdown = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  return (
+    <div class="rounded-lg border border-accent-orange/30 bg-accent-orange/5 p-3 text-sm">
+      <div class="flex items-center gap-2">
+        <Clock size={16} class="text-accent-orange" />
+        <span class="font-semibold text-accent-orange">Cooldown after loss</span>
+        <span class="ml-auto font-mono text-accent-orange">{countdown} left</span>
+      </div>
+      <div class="text-xs text-text-muted mt-1 ml-6">
+        Resumes at {new Date(targetMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
       </div>
     </div>
   );

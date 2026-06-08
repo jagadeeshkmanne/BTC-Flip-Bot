@@ -41,7 +41,7 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
       <BotStatsStrip status={status.data} state={state.data} />
 
       {/* Position panel — full width when in-trade (price-scale viz), waiting view when flat */}
-      <PositionPanel status={status.data} strategy={strategy} />
+      <PositionPanel status={status.data} state={state.data} strategy={strategy} />
 
       {/* Chart */}
       <PriceChart />

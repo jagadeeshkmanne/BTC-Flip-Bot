@@ -74,6 +74,10 @@ export interface BotState {
   peak_equity?: number;
   stats: { total: number; wins: number; pnl: number };
   trade_log: TradeRecord[];
+  closed_trades?: TradeRecord[];   // bot writes this field name
+  pause_until?: string | null;      // ISO time when post-loss cooldown ends
+  daily_loss?: number;              // negative if today's cumulative losses
+  daily_loss_date?: string;
 }
 
 export interface TradeRecord {
