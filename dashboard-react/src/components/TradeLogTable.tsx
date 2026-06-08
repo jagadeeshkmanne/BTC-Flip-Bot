@@ -125,27 +125,55 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
           const fees = computeFees(t);
           const gross = pnl + fees;
           const positive = pnl >= 0;
+          const entry = t.avg_entry ?? t.entry ?? t.first_entry;
+          const exit = t.exit;
           return (
-            <div key={i} class="px-4 py-2.5 border-b border-bg-border/40 flex items-center justify-between gap-3">
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2 mb-0.5">
+            <div key={i} class="px-3 py-3 border-b border-bg-border/40 space-y-2">
+              {/* Row 1: Side, Reason, Duration + Net P&L (right) */}
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-1.5 min-w-0">
                   <span class={clsx('pill text-[10px]', t.side === 'LONG' ? 'pill-green' : 'pill-red')}>{t.side}</span>
                   <span class={clsx('pill text-[10px]', t.reason === 'TP' ? 'pill-green' : t.reason === 'SL' ? 'pill-red' : 'pill-muted')}>{t.reason || '—'}</span>
-                  <span class="text-2xs text-text-dim">{dur(t.entry_time, t.exit_time)}</span>
+                  <span class="text-2xs text-text-dim">{(t.entries ?? 1)}leg · {dur(t.entry_time, t.exit_time)}</span>
                 </div>
-                <div class="text-2xs text-text-dim truncate">
-                  {fmtTime(t.entry_time)} · {(t.entries ?? 1)}× leg
-                </div>
-                <div class="text-2xs text-text-dim font-mono mt-0.5">
-                  Gross {gross >= 0 ? '+' : ''}${gross.toFixed(2)} − Fee ${fees.toFixed(2)}
+                <div class="text-right shrink-0">
+                  <div class={clsx('text-base font-bold font-mono tabular-nums leading-none', positive ? 'text-accent-green' : 'text-accent-red')}>
+                    {positive ? '+' : ''}${pnl.toFixed(2)}
+                  </div>
+                  <div class={clsx('text-2xs font-mono mt-0.5', positive ? 'text-accent-green' : 'text-accent-red')}>
+                    {positive ? '+' : ''}{pct.toFixed(2)}%
+                  </div>
                 </div>
               </div>
-              <div class="text-right shrink-0">
-                <div class={clsx('text-base font-bold font-mono tabular-nums', positive ? 'text-accent-green' : 'text-accent-red')}>
-                  {positive ? '+' : ''}${pnl.toFixed(2)}
+
+              {/* Row 2: Entry → Exit prices */}
+              <div class="flex items-center gap-3 text-xs font-mono">
+                <div>
+                  <span class="text-text-dim">In </span>
+                  <span class="text-text">${entry?.toFixed(2) ?? '—'}</span>
                 </div>
-                <div class={clsx('text-2xs font-mono', positive ? 'text-accent-green' : 'text-accent-red')}>
-                  {positive ? '+' : ''}{pct.toFixed(2)}%
+                <span class="text-text-dim">→</span>
+                <div>
+                  <span class="text-text-dim">Out </span>
+                  <span class="text-text">${exit?.toFixed(2) ?? '—'}</span>
+                </div>
+                <div class="ml-auto text-text-dim">{fmtTime(t.entry_time)}</div>
+              </div>
+
+              {/* Row 3: Gross | Fee | Net breakdown */}
+              <div class="flex items-center gap-3 text-2xs font-mono text-text-muted">
+                <div>
+                  Gross <span class={clsx(gross >= 0 ? 'text-accent-green/80' : 'text-accent-red/80')}>
+                    {gross >= 0 ? '+' : ''}${gross.toFixed(2)}
+                  </span>
+                </div>
+                <div>
+                  Fee <span class="text-text-dim">-${fees.toFixed(2)}</span>
+                </div>
+                <div>
+                  = Net <span class={clsx(positive ? 'text-accent-green' : 'text-accent-red')}>
+                    {positive ? '+' : ''}${pnl.toFixed(2)}
+                  </span>
                 </div>
               </div>
             </div>
