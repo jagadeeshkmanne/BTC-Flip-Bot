@@ -168,14 +168,19 @@ export function PriceChart() {
     // user's pan/zoom state alone — re-fetching klines every 30s should NOT
     // snap the viewport back.
     if (!didInitialFitRef.current) {
-      // Use LOGICAL range (bar indices) so rightOffset is respected — picks
-      // the last 200 bars and lets the chart add the rightOffset buffer of
-      // empty space after. setVisibleRange(time-based) ignores rightOffset
-      // and glues the last bar to the edge.
-      const lastIdx = candles.length - 1;
-      chartRef.current.timeScale().setVisibleLogicalRange({
-        from: Math.max(0, lastIdx - 200),
-        to: lastIdx,
+      // Two-step:
+      //   1) scrollToRealTime() — pins right edge to "now" with rightOffset
+      //      worth of empty buffer (so latest bar sits middle-right).
+      //   2) defer & shrink the visible range to ~120 bars so candles aren't
+      //      crammed into the left half. Doing this in a microtask lets the
+      //      scrollToRealTime() take effect first.
+      const ts = chartRef.current.timeScale();
+      ts.scrollToRealTime();
+      requestAnimationFrame(() => {
+        const cur = ts.getVisibleLogicalRange();
+        if (cur) {
+          ts.setVisibleLogicalRange({ from: cur.to - 120, to: cur.to });
+        }
       });
       didInitialFitRef.current = true;
     }
