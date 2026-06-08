@@ -17,6 +17,20 @@ const dur = (a?: string, b?: string) => {
 
 const ch = createColumnHelper<TradeRecord>();
 
+// Bybit USDT-M taker fee (used as fallback when bot doesn't store fee_usd).
+const FEE_RATE = 0.00055;
+
+function computeFees(t: TradeRecord): number {
+  // Prefer bot-saved value when available
+  if (t.fee_usd != null) return t.fee_usd;
+  // Fallback: compute round-trip fees from entry + exit notional
+  const entry = t.avg_entry ?? t.entry ?? t.first_entry;
+  const exit = t.exit;
+  const qty = t.qty;
+  if (entry == null || exit == null || qty == null) return 0;
+  return (entry + exit) * qty * FEE_RATE;
+}
+
 export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
   // Newest first
   const data = useMemo(() => [...trades].reverse(), [trades]);
@@ -38,18 +52,40 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
       cell: i => <span class="font-mono">{i.getValue()?.toFixed(2) ?? '—'}</span>,
     }),
     ch.accessor('exit', { header: 'Exit $', cell: i => <span class="font-mono">{i.getValue()?.toFixed(2) ?? '—'}</span> }),
-    ch.accessor('pnl_pct', { header: 'P&L %', cell: i => {
+    ch.display({
+      id: 'gross',
+      header: 'Gross $',
+      cell: ctx => {
+        const t = ctx.row.original;
+        const net = t.pnl_usd;
+        const fees = computeFees(t);
+        if (net == null) return '—';
+        const gross = net + fees;
+        return <span class={clsx('font-mono text-xs', gross >= 0 ? 'text-accent-green/70' : 'text-accent-red/70')}>
+          {gross >= 0 ? '+' : ''}${gross.toFixed(2)}
+        </span>;
+      },
+    }),
+    ch.display({
+      id: 'fee',
+      header: 'Fee $',
+      cell: ctx => {
+        const fees = computeFees(ctx.row.original);
+        return <span class="font-mono text-xs text-text-dim">-${fees.toFixed(2)}</span>;
+      },
+    }),
+    ch.accessor('pnl_usd', { header: 'Net $', cell: i => {
       const v = i.getValue();
       if (v == null) return '—';
       return <span class={clsx('font-mono font-semibold', v >= 0 ? 'text-accent-green' : 'text-accent-red')}>
-        {v >= 0 ? '+' : ''}{v.toFixed(2)}%
+        {v >= 0 ? '+' : ''}${v.toFixed(2)}
       </span>;
     } }),
-    ch.accessor('pnl_usd', { header: '$ P&L', cell: i => {
+    ch.accessor('pnl_pct', { header: 'Net %', cell: i => {
       const v = i.getValue();
       if (v == null) return '—';
       return <span class={clsx('font-mono', v >= 0 ? 'text-accent-green' : 'text-accent-red')}>
-        {v >= 0 ? '+' : ''}${v.toFixed(2)}
+        {v >= 0 ? '+' : ''}{v.toFixed(2)}%
       </span>;
     } }),
     ch.display({
@@ -86,6 +122,8 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
         {data.map((t, i) => {
           const pnl = t.pnl_usd ?? 0;
           const pct = t.pnl_pct ?? 0;
+          const fees = computeFees(t);
+          const gross = pnl + fees;
           const positive = pnl >= 0;
           return (
             <div key={i} class="px-4 py-2.5 border-b border-bg-border/40 flex items-center justify-between gap-3">
@@ -97,6 +135,9 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
                 </div>
                 <div class="text-2xs text-text-dim truncate">
                   {fmtTime(t.entry_time)} · {(t.entries ?? 1)}× leg
+                </div>
+                <div class="text-2xs text-text-dim font-mono mt-0.5">
+                  Gross {gross >= 0 ? '+' : ''}${gross.toFixed(2)} − Fee ${fees.toFixed(2)}
                 </div>
               </div>
               <div class="text-right shrink-0">
@@ -114,7 +155,7 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
 
       {/* ── DESKTOP: full 9-col virtualized table ── */}
       <div class="hidden md:block">
-        <div class="grid grid-cols-9 gap-3 px-4 py-2 text-[10px] uppercase tracking-wider text-text-dim border-b border-bg-border bg-bg/50">
+        <div class="grid grid-cols-11 gap-3 px-4 py-2 text-[10px] uppercase tracking-wider text-text-dim border-b border-bg-border bg-bg/50">
           {table.getHeaderGroups()[0].headers.map(h => (
             <div key={h.id} class={clsx(h.id === 'side' && 'col-span-1', 'truncate')}>
               {flexRender(h.column.columnDef.header, h.getContext())}
@@ -128,7 +169,7 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
               return (
                 <div
                   key={row.id}
-                  class="grid grid-cols-9 gap-3 px-4 py-2 text-sm border-b border-bg-border/40 hover:bg-bg-hover transition-colors items-center"
+                  class="grid grid-cols-11 gap-3 px-4 py-2 text-sm border-b border-bg-border/40 hover:bg-bg-hover transition-colors items-center"
                   style={{
                     position: 'absolute',
                     top: 0,

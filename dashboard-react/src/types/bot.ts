@@ -86,8 +86,9 @@ export interface TradeRecord {
   entry?: number;
   exit?: number;
   qty?: number;
-  pnl_usd?: number;
-  pnl_pct?: number;
+  pnl_usd?: number;      // NET P&L (price move - fees)
+  pnl_pct?: number;      // NET % (net / starting balance)
+  fee_usd?: number;      // round-trip fees in dollars
   entries?: number;
   // 2026-06-05: excursion stats — max favorable + max adverse during trade
   max_fav_pct?: number;
