@@ -16,6 +16,8 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
   const trendDown = s.trend_15m === 'DOWN';
   // Both active bots (v11/v3) have GAP filter.
   const hasGapFilter = true;
+  // v3 is COUNTER-TREND — fires regardless of 15m trend direction.
+  const isCounterTrend = strategy === 'rsiscalp_trend_v3';
 
   // Fleet-wide filters
   const hour = i.current_hour_utc;
@@ -28,24 +30,39 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
 
   const LONG: Cond[] = [
     { label: 'RSI ≤ oversold', value: `${rsi?.toFixed(1)} (need ≤ ${rsiOS})`, ok: rsi != null && rsi <= rsiOS },
-    { label: '15m trend UP', value: s.trend_15m ?? '—', ok: trendUp },
   ];
   const SHORT: Cond[] = [
     { label: 'RSI ≥ overbought', value: `${rsi?.toFixed(1)} (need ≥ ${rsiOB})`, ok: rsi != null && rsi >= rsiOB },
-    { label: '15m trend DOWN', value: s.trend_15m ?? '—', ok: trendDown },
   ];
 
+  // Only with-trend bot (v1) requires 15m trend direction match.
+  if (!isCounterTrend) {
+    LONG.push({ label: '15m trend UP', value: s.trend_15m ?? '—', ok: trendUp });
+    SHORT.push({ label: '15m trend DOWN', value: s.trend_15m ?? '—', ok: trendDown });
+  }
+
   if (hasGapFilter && gap != null) {
-    LONG.push({
-      label: '15m gap firm (UP)',
-      value: `${gap.toFixed(3)}% (need ≥ +${gapMin.toFixed(2)}%)`,
-      ok: gap >= gapMin,
-    });
-    SHORT.push({
-      label: '15m gap firm (DOWN)',
-      value: `${gap.toFixed(3)}% (need ≤ -${gapMin.toFixed(2)}%)`,
-      ok: gap <= -gapMin,
-    });
+    // Counter-trend (v2) only requires |gap| ≥ threshold, sign-agnostic.
+    if (isCounterTrend) {
+      const gapCond: Cond = {
+        label: '15m gap firm',
+        value: `|${gap.toFixed(3)}%| (need ≥ ${gapMin.toFixed(2)}%)`,
+        ok: Math.abs(gap) >= gapMin,
+      };
+      LONG.push(gapCond);
+      SHORT.push(gapCond);
+    } else {
+      LONG.push({
+        label: '15m gap firm (UP)',
+        value: `${gap.toFixed(3)}% (need ≥ +${gapMin.toFixed(2)}%)`,
+        ok: gap >= gapMin,
+      });
+      SHORT.push({
+        label: '15m gap firm (DOWN)',
+        value: `${gap.toFixed(3)}% (need ≤ -${gapMin.toFixed(2)}%)`,
+        ok: gap <= -gapMin,
+      });
+    }
   }
 
   // Hour-filter — only show if bot has blocked hours configured
