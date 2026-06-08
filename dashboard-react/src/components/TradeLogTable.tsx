@@ -26,7 +26,8 @@ function computeFees(t: TradeRecord): number {
   // Fallback: compute round-trip fees from entry + exit notional
   const entry = t.avg_entry ?? t.entry ?? t.first_entry;
   const exit = t.exit;
-  const qty = t.qty;
+  // Bot saves as `qty_total`; older code paths may use `qty`
+  const qty = t.qty_total ?? t.qty;
   if (entry == null || exit == null || qty == null) return 0;
   return (entry + exit) * qty * FEE_RATE;
 }

@@ -239,10 +239,15 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
         state["daily_loss"] = state.get("daily_loss", 0.0) + net
     price_move_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
     pnl_pct = (net / balance_before * 100) if balance_before > 0 else 0.0
+    # Total round-trip fees: entry-side fees were already debited from balance
+    # at open/DCA; exit-side `fees` here completes the round-trip.
+    entry_fees = avg_entry * qty_total * COMMISSION_PCT
+    total_fees = entry_fees + fees
     _record_trade(state, {
         "side": side, "first_entry": pos["first_entry"], "avg_entry": avg_entry, "exit": exit_px,
         "entries": len(pos.get("entries", [])), "qty_total": qty_total, "reason": reason,
         "pnl_usd": net, "pnl_pct": pnl_pct, "price_move_pct": price_move_pct,
+        "fee_usd": total_fees,  # round-trip fees for dashboard
         "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(),
         "rsi_at_entry": pos.get("rsi_at_entry"),
@@ -282,10 +287,13 @@ def partial_close(state, pos, exit_px: float, fraction: float) -> None:
     for e in pos.get("entries", []):
         e["qty"] *= (1 - fraction)
     pos["partial_taken"] = True
+    partial_entry_fees = avg_entry * sell_qty * COMMISSION_PCT
+    partial_total_fees = partial_entry_fees + fees
     _record_trade(state, {
         "side": side, "first_entry": pos["first_entry"], "avg_entry": avg_entry, "exit": exit_px,
         "entries": len(pos.get("entries", [])), "qty_total": sell_qty, "reason": "PARTIAL_TP",
         "pnl_usd": net, "pnl_pct": pnl_pct, "price_move_pct": price_move_pct,
+        "fee_usd": partial_total_fees,
         "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(), "rsi_at_entry": pos.get("rsi_at_entry"),
     }, is_win=net > 0)

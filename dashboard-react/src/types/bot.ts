@@ -86,6 +86,7 @@ export interface TradeRecord {
   entry?: number;
   exit?: number;
   qty?: number;
+  qty_total?: number;    // bot's actual field name (preferred over qty)
   pnl_usd?: number;      // NET P&L (price move - fees)
   pnl_pct?: number;      // NET % (net / starting balance)
   fee_usd?: number;      // round-trip fees in dollars
