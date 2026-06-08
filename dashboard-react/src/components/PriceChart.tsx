@@ -67,7 +67,7 @@ export function PriceChart() {
         borderColor: '#1f2937',
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 12,                 // visible space to the right of the last bar
+        rightOffset: 3,                  // tighter right margin (was 12 — too much empty space)
         barSpacing: 6,                   // tighter default bar spacing
         minBarSpacing: 0.5,              // allow strong zoom-out
         lockVisibleTimeRangeOnResize: false,
@@ -76,6 +76,7 @@ export function PriceChart() {
       rightPriceScale: {
         borderColor: '#1f2937',
         scaleMargins: { top: 0.08, bottom: 0.08 },
+        minimumWidth: 60,                // cap label-column width so chart isn't pushed left
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -160,13 +161,16 @@ export function PriceChart() {
   useEffect(() => {
     if (!chartRef.current || !klines15m?.length) return;
     if (!ema20Ref.current) {
+      // 2026-06-08: lastValueVisible=false on EMAs — labels were eating ~120px
+      // of right-side width on mobile, pushing the price action off-screen.
+      // The legend in the chart header already names these lines.
       ema20Ref.current = chartRef.current.addLineSeries({
-        color: '#fcd535', lineWidth: 3, priceLineVisible: false, lastValueVisible: true,
-        title: 'EMA20 (15m)',
+        color: '#fcd535', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+        title: 'EMA20',
       });
       ema50Ref.current = chartRef.current.addLineSeries({
-        color: '#e879f9', lineWidth: 3, priceLineVisible: false, lastValueVisible: true,
-        title: 'EMA50 (15m)',
+        color: '#e879f9', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+        title: 'EMA50',
       });
     }
     const closes15 = klines15m.map(k => +k[4]);
