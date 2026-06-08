@@ -177,7 +177,7 @@ export function PriceChart() {
   // When price crosses a TF boundary, a new bar is appended.
   const livePrice = useTickerStore(s => s.price);
   useEffect(() => {
-    if (!livePrice || !candleDataRef.current || !latestCandleRef.current) return;
+    if (!livePrice || !candleDataRef.current || !latestCandleRef.current || !chartRef.current) return;
     const tfSec = TF_SECONDS[tf] ?? 300;
     const nowSec = Math.floor(Date.now() / 1000);
     const currentBarTime = Math.floor(nowSec / tfSec) * tfSec;
@@ -187,6 +187,13 @@ export function PriceChart() {
       const newBar = { time: currentBarTime as any, open: livePrice, high: livePrice, low: livePrice, close: livePrice };
       candleDataRef.current.update(newBar);
       latestCandleRef.current = newBar;
+      // Auto-scroll to keep the latest bar visible — but only if user is
+      // currently watching near the right edge. If they're zoomed back in
+      // history, don't yank the viewport.
+      const range = chartRef.current.timeScale().getVisibleRange();
+      if (range && (Number(range.to) - Number(last.time)) < tfSec * 10) {
+        chartRef.current.timeScale().scrollToRealTime();
+      }
     } else {
       // Same bar — update high/low/close
       const updated = {
