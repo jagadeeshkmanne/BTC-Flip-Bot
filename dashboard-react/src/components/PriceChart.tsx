@@ -1,7 +1,11 @@
 import { useEffect, useState, useRef } from 'preact/hooks';
 import { createChart, ColorType, LineStyle, CrosshairMode, type IChartApi, type ISeriesApi } from 'lightweight-charts';
 import { useKlines } from '@/api/bots';
+import { useTickerStore } from '@/hooks/useBtcStream';
 import clsx from 'clsx';
+
+// Timeframe → seconds (so we know when a new bar starts)
+const TF_SECONDS: Record<string, number> = { '5m': 300, '15m': 900, '1h': 3600 };
 
 // Bollinger Bands (n, k) — same formula as bot's pandas .rolling(n).std(ddof=0).
 function bollinger(closes: number[], n = 20, k = 2.0) {
@@ -42,7 +46,15 @@ const TIMEFRAMES: TF[] = ['5m', '15m', '1h'];
 export function PriceChart() {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  // Refs used across multiple effects — must be declared up top.
+  const latestCandleRef = useRef<{ time: any; open: number; high: number; low: number; close: number } | null>(null);
+  const didInitialFitRef = useRef(false);
   const [tf, setTf] = useState<TF>('5m');
+
+  // Re-fit viewport when user changes timeframe (different bar count needed)
+  useEffect(() => {
+    didInitialFitRef.current = false;
+  }, [tf]);
 
   // Load more bars (1000) for proper scroll/zoom history
   const { data: klinesMain } = useKlines(tf, 1000);
@@ -147,12 +159,47 @@ export function PriceChart() {
     const tmap = candles.map(c => c.time);
     bbUpRef.current!.setData(tmap.map((t, i) => bb.up[i] != null ? { time: t, value: bb.up[i]! } : null).filter(Boolean) as any);
     bbLoRef.current!.setData(tmap.map((t, i) => bb.lo[i] != null ? { time: t, value: bb.lo[i]! } : null).filter(Boolean) as any);
-    // Show last 200 bars by default (user can scroll/zoom from there) instead
-    // of fitContent() which would cram all 1000 bars into the viewport.
-    const t0 = candles[Math.max(0, candles.length - 200)].time;
-    const t1 = candles[candles.length - 1].time;
-    chartRef.current.timeScale().setVisibleRange({ from: t0 as any, to: t1 as any });
+    // Stash the most recent candle so the live ticker can mutate it.
+    latestCandleRef.current = candles[candles.length - 1] ?? null;
+    // Only set the visible range on FIRST data load. After that, leave the
+    // user's pan/zoom state alone — re-fetching klines every 30s should NOT
+    // snap the viewport back.
+    if (!didInitialFitRef.current) {
+      const t0 = candles[Math.max(0, candles.length - 200)].time;
+      const t1 = candles[candles.length - 1].time;
+      chartRef.current.timeScale().setVisibleRange({ from: t0 as any, to: t1 as any });
+      didInitialFitRef.current = true;
+    }
   }, [klinesMain]);
+
+  // ─── LIVE TICKER → update the LAST candle in real-time (no full redraw) ───
+  // Subscribes to the BTC WebSocket store and patches just the current bar.
+  // When price crosses a TF boundary, a new bar is appended.
+  const livePrice = useTickerStore(s => s.price);
+  useEffect(() => {
+    if (!livePrice || !candleDataRef.current || !latestCandleRef.current) return;
+    const tfSec = TF_SECONDS[tf] ?? 300;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const currentBarTime = Math.floor(nowSec / tfSec) * tfSec;
+    const last = latestCandleRef.current;
+    if (currentBarTime > last.time) {
+      // New bar started — append it
+      const newBar = { time: currentBarTime as any, open: livePrice, high: livePrice, low: livePrice, close: livePrice };
+      candleDataRef.current.update(newBar);
+      latestCandleRef.current = newBar;
+    } else {
+      // Same bar — update high/low/close
+      const updated = {
+        time: last.time,
+        open: last.open,
+        high: Math.max(last.high, livePrice),
+        low: Math.min(last.low, livePrice),
+        close: livePrice,
+      };
+      candleDataRef.current.update(updated);
+      latestCandleRef.current = updated;
+    }
+  }, [livePrice, tf]);
 
   // 15m EMA20/EMA50 — THE bot's trend gate. Gold above magenta = UP, below = DOWN.
   const ema20Ref = useRef<ISeriesApi<'Line'> | null>(null);
