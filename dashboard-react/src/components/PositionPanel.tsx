@@ -122,18 +122,26 @@ function ActivePosition({ status }: { status: BotStatus }) {
             })}
           </div>
         )}
-        {(pos as any).time_sl_at && (
-          <div class="flex items-center gap-1.5 text-accent-orange font-mono">
-            <Clock size={11} />
-            <span class="uppercase tracking-wider">Time-SL</span>
-            <span>{(pos as any).time_sl_bars_remaining ?? 0} bars left</span>
-            <span class="text-text-dim">
-              ({new Date((pos as any).time_sl_at).toLocaleTimeString(undefined, {
-                hour: '2-digit', minute: '2-digit'
-              })})
-            </span>
-          </div>
-        )}
+        {(pos as any).time_sl_at && (() => {
+          const target = new Date((pos as any).time_sl_at).getTime();
+          const now = Date.now();
+          const msLeft = Math.max(0, target - now);
+          const totalMin = Math.floor(msLeft / 60_000);
+          const hours = Math.floor(totalMin / 60);
+          const mins = totalMin % 60;
+          const countdown = hours > 0 ? `${hours}h ${mins}m left` : `${mins}m left`;
+          const targetTime = new Date(target).toLocaleTimeString(undefined, {
+            hour: '2-digit', minute: '2-digit'
+          });
+          return (
+            <div class="flex items-center gap-1.5 text-accent-orange font-mono">
+              <Clock size={11} />
+              <span class="uppercase tracking-wider">Time-SL</span>
+              <span>{countdown}</span>
+              <span class="text-text-dim">(at {targetTime})</span>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

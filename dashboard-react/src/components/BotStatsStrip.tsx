@@ -34,10 +34,14 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
   const totalUsd = realizedUsd + unrealizedUsd;
   const totalPct = (totalUsd / INITIAL) * 100;
 
-  // Drawdown — current equity vs peak (includes unrealized for live DD view)
+  // Drawdown — current equity vs peak (includes unrealized for live DD view).
+  // If equity is at/above peak we're not in drawdown — clamp to 0 and update
+  // the displayed peak so the label doesn't show "+0.54% peak $5,028" while
+  // live equity is actually $5,055.
   const liveEquity = balance + unrealizedUsd;
-  const ddUsd = liveEquity - peak;  // negative when underwater
-  const ddPct = peak > 0 ? (ddUsd / peak) * 100 : 0;
+  const displayedPeak = Math.max(peak, liveEquity);
+  const ddUsd = Math.min(0, liveEquity - displayedPeak);
+  const ddPct = displayedPeak > 0 ? (ddUsd / displayedPeak) * 100 : 0;
 
   return (
     <div class="card-elev px-3 md:px-5 py-3">
@@ -69,9 +73,9 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
         <Divider />
         <Metric
           label="Drawdown"
-          value={`${fmtPct(ddPct)}`}
-          valueTone={ddPct >= 0 ? 0 : -1}
-          sub={`peak ${fmtUsd(peak)}`}
+          value={ddPct < 0 ? fmtPct(ddPct) : '0.00%'}
+          valueTone={ddPct < 0 ? -1 : 0}
+          sub={`peak ${fmtUsd(displayedPeak)}`}
         />
         <Divider />
         <Metric
