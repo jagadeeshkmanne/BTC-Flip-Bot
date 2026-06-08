@@ -43,6 +43,15 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
   const ddUsd = Math.min(0, liveEquity - displayedPeak);
   const ddPct = displayedPeak > 0 ? (ddUsd / displayedPeak) * 100 : 0;
 
+  // Days since first trade (or current day if no trades yet)
+  const trades = (state as any)?.closed_trades ?? state?.trade_log ?? [];
+  const firstTradeTime = trades.length > 0
+    ? new Date(trades[0].entry_time || trades[0].close_time || trades[0].exit_time).getTime()
+    : Date.now();
+  const daysSinceStart = Math.max(1, (Date.now() - firstTradeTime) / 86_400_000);
+  const avgDailyUsd = realizedUsd / daysSinceStart;
+  const avgDailyPct = (avgDailyUsd / INITIAL) * 100;
+
   return (
     <div class="card-elev px-3 md:px-5 py-3">
       {/* Mobile: 2-col grid. Desktop: horizontal flex with dividers. */}
@@ -69,6 +78,22 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
           label="Realized"
           value={fmtSign(realizedUsd)} valueTone={realizedUsd}
           sub={`${fmtPct(realizedPct)} · closed`}
+        />
+        <Divider />
+        <Metric
+          label="P&L %"
+          value={fmtPct(totalPct)}
+          valueTone={totalUsd}
+          sub={`${fmtSign(totalUsd)} total`}
+        />
+        <Divider />
+        <Metric
+          label="Avg Daily P&L"
+          value={trades.length > 0 ? fmtPct(avgDailyPct) : '—'}
+          valueTone={avgDailyUsd}
+          sub={trades.length > 0
+            ? `${fmtSign(avgDailyUsd)}/day · ${daysSinceStart.toFixed(1)}d`
+            : 'no trades yet'}
         />
         <Divider />
         <Metric
