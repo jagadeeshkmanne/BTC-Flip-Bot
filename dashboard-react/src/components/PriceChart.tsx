@@ -168,9 +168,15 @@ export function PriceChart() {
     // user's pan/zoom state alone — re-fetching klines every 30s should NOT
     // snap the viewport back.
     if (!didInitialFitRef.current) {
-      const t0 = candles[Math.max(0, candles.length - 200)].time;
-      const t1 = candles[candles.length - 1].time;
-      chartRef.current.timeScale().setVisibleRange({ from: t0 as any, to: t1 as any });
+      // Use LOGICAL range (bar indices) so rightOffset is respected — picks
+      // the last 200 bars and lets the chart add the rightOffset buffer of
+      // empty space after. setVisibleRange(time-based) ignores rightOffset
+      // and glues the last bar to the edge.
+      const lastIdx = candles.length - 1;
+      chartRef.current.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, lastIdx - 200),
+        to: lastIdx,
+      });
       didInitialFitRef.current = true;
     }
   }, [klinesMain]);
