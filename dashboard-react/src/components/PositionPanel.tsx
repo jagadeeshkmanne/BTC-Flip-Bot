@@ -283,12 +283,21 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
   const gapMin = i.trend_gap_min_pct ?? 0.25;
   const trendUp = status.trend_15m === 'UP';
   const trendDown = status.trend_15m === 'DOWN';
-  // v3 = counter-trend bot (formerly "v2" in UI)
-  const isV2orV3 = strategy === 'rsiscalp_trend_v3';
+  // v3 = counter-trend bot (UI label "v2"). Bypasses the 15m trend gate.
+  const isCounterTrend = strategy === 'rsiscalp_trend_v3';
 
-  // Which side is the bot hunting? Determined by 15m trend.
-  const huntingSide: 'LONG' | 'SHORT' | null =
-    trendUp ? 'LONG' : trendDown ? 'SHORT' : null;
+  // Which side is the bot hunting?
+  // - v1 (with-trend): determined by 15m trend direction
+  // - v2 (counter-trend): hunting BOTH sides until RSI hits an extreme
+  let huntingSide: 'LONG' | 'SHORT' | null;
+  if (isCounterTrend) {
+    // Hunt whichever side is closer to its RSI threshold
+    if (rsi == null) huntingSide = null;
+    else if (rsi <= 50) huntingSide = 'LONG';
+    else huntingSide = 'SHORT';
+  } else {
+    huntingSide = trendUp ? 'LONG' : trendDown ? 'SHORT' : null;
+  }
 
   type Cond = { label: string; value: string; ok: boolean };
   let conds: Cond[] = [];
@@ -296,34 +305,55 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
 
   if (huntingSide === 'LONG') {
     conds = [
-      { label: '15m trend UP',  value: status.trend_15m ?? '—', ok: trendUp },
       { label: `RSI ≤ ${rsiOS}`,
         value: `${rsi?.toFixed(1)}`,
         ok: rsi != null && rsi <= rsiOS },
     ];
-    if (isV2orV3 && gap != null) {
-      conds.push({
-        label: `15m gap firm`,
-        value: `${gap.toFixed(3)}% (need ≥ +${gapMin.toFixed(2)}%)`,
-        ok: gap >= gapMin,
-      });
+    // v1 requires trend match; v2 doesn't
+    if (!isCounterTrend) {
+      conds.push({ label: '15m trend UP', value: status.trend_15m ?? '—', ok: trendUp });
+    }
+    if (gap != null) {
+      if (isCounterTrend) {
+        conds.push({
+          label: '15m gap firm',
+          value: `|${gap.toFixed(3)}%| (need ≥ ${gapMin.toFixed(2)}%)`,
+          ok: Math.abs(gap) >= gapMin,
+        });
+      } else {
+        conds.push({
+          label: '15m gap firm',
+          value: `${gap.toFixed(3)}% (need ≥ +${gapMin.toFixed(2)}%)`,
+          ok: gap >= gapMin,
+        });
+      }
     }
     nextCondHint = rsi != null
       ? `RSI needs to drop ${(rsi - rsiOS).toFixed(1)} to enter`
       : '';
   } else if (huntingSide === 'SHORT') {
     conds = [
-      { label: '15m trend DOWN', value: status.trend_15m ?? '—', ok: trendDown },
       { label: `RSI ≥ ${rsiOB}`,
         value: `${rsi?.toFixed(1)}`,
         ok: rsi != null && rsi >= rsiOB },
     ];
-    if (isV2orV3 && gap != null) {
-      conds.push({
-        label: `15m gap firm`,
-        value: `${gap.toFixed(3)}% (need ≤ -${gapMin.toFixed(2)}%)`,
-        ok: gap <= -gapMin,
-      });
+    if (!isCounterTrend) {
+      conds.push({ label: '15m trend DOWN', value: status.trend_15m ?? '—', ok: trendDown });
+    }
+    if (gap != null) {
+      if (isCounterTrend) {
+        conds.push({
+          label: '15m gap firm',
+          value: `|${gap.toFixed(3)}%| (need ≥ ${gapMin.toFixed(2)}%)`,
+          ok: Math.abs(gap) >= gapMin,
+        });
+      } else {
+        conds.push({
+          label: '15m gap firm',
+          value: `${gap.toFixed(3)}% (need ≤ -${gapMin.toFixed(2)}%)`,
+          ok: gap <= -gapMin,
+        });
+      }
     }
     nextCondHint = rsi != null
       ? `RSI needs to rise ${(rsiOB - rsi).toFixed(1)} to enter`
