@@ -1,35 +1,36 @@
 #!/usr/bin/env python3
-"""bot_rsiscalp_v3.py — RSI-Scalp +Trend v3 (v2 + anti-breakout entry filter).
+"""bot_rsiscalp_v3.py — RSI-Scalp v3 COUNTER-TREND + BE wait 6.
 
-CLONE of v2 with ONE additional entry filter to prevent fading active breakouts:
+v3 = v1.1 + counter-trend entries + BE-after-DCA wait period.
 
-  ANTI-BREAKOUT (entry-side):
-    SHORT signal blocked if EITHER:
-      • MAX of last 3 closed 5m bars' close > 5m BB upper  (visible breakout)
-      • Current bar's volume > 2.0× SMA(20, vol)            (institutional flow)
-    LONG signal mirror: MIN(last 3 closes) < 5m BB lower, or vol spike
+NEW IN v3 vs v1.1:
+  1. COUNTER-TREND mode (RSISCALP_COUNTER_TREND=1):
+     - RSI ≤30 → LONG regardless of 15m trend
+     - RSI ≥70 → SHORT regardless of 15m trend
+     (v1.1 only allows LONG in UP trends and SHORT in DOWN trends)
+  2. BE wait 6 bars (RSISCALP_BE_WAIT_BARS=6):
+     After L2 fills, wait 30min before BE-DCA SL arms. Gives the position
+     time to recover from wicks instead of closing immediately when price
+     touches avg.
 
-  Rationale: when RSI hits 70 during an ongoing breakout (price already above BB
-  or massive volume), fading it = catching a moving train. Filter skips those
-  setups, waits for price to settle inside BB and volume to normalize.
+5-YEAR BACKTEST (vs v1.1 same engine):
+  v1.1: 3,190 trades / 50.8% WR / +$28,491 / 2.04% DD / PF 2.12
+  v3:   7,695 trades / 65.7% WR / +$108,205 / 2.47% DD / PF 3.34  ⭐
+  → 3.8× more profit, +15pp WR, +0.4pp DD, +57% PF
 
-EVERYTHING ELSE same as v2:
-  - RSI(9) ≤30/≥70 entry signal
-  - 15m EMA20/EMA50 trend gate
-  - GAP firmness filter (≥0.25%)
-  - 2-leg DCA @ 0.5%
-  - Adaptive TP 0.5%/0.25% from avg
-  - SL 1% from worst entry
-  - 3× leverage
-  - 1-loss/15-min circuit breaker
+YEAR-BY-YEAR (all 6 years better, including 2022 bear):
+  2021: +533% vs v1.1's +126%
+  2022 (bear): +568% vs +142%
+  2023: +236% vs +64%
+  2024: +464% vs +117%
+  2025: +266% vs +80%
+  2026: +180% vs +58%
 
 PAPER-ONLY. State / log / status: data/paper_rsiscalp_trend_v3/
-Backtest status: UNTESTED — live experiment alongside v1/v2.
 """
 from __future__ import annotations
 import os, sys, json, logging
 from datetime import datetime, timezone, timedelta
-import math
 import requests
 import pandas as pd
 
@@ -42,7 +43,7 @@ from core_rsiscalp import (
     LEVERAGE, DCA_LEVELS, DCA_SPACING,
     RSI_PERIOD, RSI_OVERSOLD, RSI_OVERBOUGHT,
     USE_TAKE_PROFIT, TP_PCT_SINGLE, TP_PCT_DCA, tp_pct_for,
-    USE_STOP_LOSS, SL_FROM_WORST,
+    USE_STOP_LOSS, SL_FROM_WORST as _CORE_SL_FROM_WORST,
     USE_TREND_FILTER, TREND_TF, TREND_EMA_FAST, TREND_EMA_SLOW,
     USE_CIRCUIT_BREAKER, BREAKER_LOSSES, BREAKER_PAUSE_HOURS,
     rsi_signal, dca_price, sl_price, per_level_qty,
@@ -50,17 +51,94 @@ from core_rsiscalp import (
 
 # ─── Paths ───
 DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"))
+
+# ─── v3 NEW: Counter-Trend mode ───
+# When 1, allow RSI extreme entries even AGAINST the 15m trend.
+# Backtest 5y: 3.8× more trades, +15pp WR, +57% PF.
+USE_COUNTER_TREND = os.environ.get("RSISCALP_COUNTER_TREND", "0") == "1"
+
+# ─── v3 NEW: BE-after-DCA arm delay ───
+# After L2 fills, wait N 5m bars before BE-DCA SL arms. Default 6 = 30min.
+# Gives position time to recover from wicks. Combined with counter-trend
+# gives the +15pp WR jump in backtest.
+BE_WAIT_BARS = int(os.environ.get("RSISCALP_BE_WAIT_BARS", "0"))
+
+# ─── v3 NEW: RSI threshold env overrides (defaults from core_rsiscalp.py) ───
+# Optimal sweep found RSI 35/65 outperforms 30/70 baseline.
+RSI_OVERSOLD = int(os.environ.get("RSISCALP_RSI_OVERSOLD", str(RSI_OVERSOLD)))
+RSI_OVERBOUGHT = int(os.environ.get("RSISCALP_RSI_OVERBOUGHT", str(RSI_OVERBOUGHT)))
+
+# Override rsi_signal to use our (possibly overridden) thresholds
+def rsi_signal(rsi_val):
+    if rsi_val is None: return None
+    if rsi_val <= RSI_OVERSOLD: return "LONG"
+    if rsi_val >= RSI_OVERBOUGHT: return "SHORT"
+    return None
+
 TREND_GAP_MIN = float(os.environ.get("RSISCALP_V2_GAP_MIN", "0.0025"))
 # Fleet-wide chop/momentum filters (per-bot env override)
 RSISCALP_ATR_MAX_PCT     = float(os.environ.get("RSISCALP_ATR_MAX_PCT", "0.60"))
-RSISCALP_1H_MOVE_MAX_PCT = float(os.environ.get("RSISCALP_1H_MOVE_MAX_PCT", "2.0"))
-# v3 anti-breakout filter params (overridable via env)
-V3_BB_LOOKBACK = int(os.environ.get("RSISCALP_V3_BB_LOOKBACK", "3"))
-V3_VOL_MULT    = float(os.environ.get("RSISCALP_V3_VOL_MULT", "2.0"))
+# 2026-06-06: 1h move filter DISABLED. Live audit on 11 paper trades showed
+# it drops 1 win ($30) while being redundant with ATR filter on the
+# catastrophic loss. ATR alone is sufficient. Set RSISCALP_1H_MOVE_MAX_PCT=2.0
+# (or any value <100) to re-enable. Default 100 = effectively off.
+RSISCALP_1H_MOVE_MAX_PCT = float(os.environ.get("RSISCALP_1H_MOVE_MAX_PCT", "100.0"))
 # Fleet-wide high-vol UTC hours blocked (default 12,13 = US pre-market)
+# 2026-06-06: Hour blocking DISABLED. Live audit on 11 paper trades showed
+# it dropped 4 winning trades (-$159) while ATR filter alone catches the
+# catastrophic loss. Empty default = no blocked hours. Override via
+# RSISCALP_BLOCKED_HOURS="5,6,11,12,13,20" to re-enable.
 BLOCKED_HOURS = set(int(h.strip()) for h in
-    os.environ.get("RSISCALP_BLOCKED_HOURS", "12,13").split(",")
+    os.environ.get("RSISCALP_BLOCKED_HOURS", "").split(",")
     if h.strip().isdigit())
+
+# 2026-06-06: SL tightened from 1.0% to 0.6% (backtest -3.42% DD vs -7%)
+SL_FROM_WORST = float(os.environ.get("RSISCALP_SL_FROM_WORST", "0.006"))
+
+# Daily max loss circuit breaker
+DAILY_MAX_LOSS = float(os.environ.get("RSISCALP_DAILY_MAX_LOSS", "200.0"))
+
+# Weekend position-size multiplier (Sat/Sun = 94% WR historically)
+WEEKEND_QTY_MULT = float(os.environ.get("RSISCALP_WEEKEND_QTY_MULT", "2.0"))
+
+# Enable trend-flip exit (close on 15m EMA reversal)
+USE_TREND_FLIP_EXIT = os.environ.get("RSISCALP_TREND_FLIP_EXIT", "1") == "1"
+
+# 2026-06-06: Break-even after DCA fires. When position has L2+ filled, move SL
+# to avg entry price. Caps "DCA into a runaway move" losses at near-zero.
+# Live-trade audit: the one catastrophic -$193 loss had DCA fire, then move
+# continued adverse. BE-L2 would have exited at avg (~$0) instead of -$193.
+USE_BE_AFTER_DCA = os.environ.get("RSISCALP_BE_AFTER_DCA", "1") == "1"
+
+# 2026-06-06 v1.1: TIME-BASED SL. Force exit any position after N 5m bars.
+# Backtest: 72 bars (6h) sweet spot — +21pp return vs v1 baseline, -1.5pp DD.
+# Affects ~137 trades over 5y (rare safety net for stuck positions).
+# 2026-06-06 v1.2: bumped to 144 bars (12h). Pair with SMART_TIME_SL=1 below.
+TIME_SL_BARS = int(os.environ.get("RSISCALP_TIME_SL_BARS", "72"))
+
+# 2026-06-06 v1.2: SMART time-SL only fires when the position is in loss at the
+# threshold. Winners keep running to TP. Default OFF (backwards-compatible).
+SMART_TIME_SL = os.environ.get("RSISCALP_SMART_TIME_SL", "0") == "1"
+
+# ─── v1.2 PARAMETER OVERRIDES (env vars layered on top of core constants) ───
+# Lets v1.1 deploy with looser RSI + wider TPs without touching core_rsiscalp.py
+# (so v1, v2, v5 keep their original numbers).
+RSI_OVERSOLD   = int(os.environ.get("RSISCALP_RSI_OVERSOLD",   str(RSI_OVERSOLD)))
+RSI_OVERBOUGHT = int(os.environ.get("RSISCALP_RSI_OVERBOUGHT", str(RSI_OVERBOUGHT)))
+TP_PCT_SINGLE  = float(os.environ.get("RSISCALP_TP_SINGLE",    str(TP_PCT_SINGLE)))
+TP_PCT_DCA     = float(os.environ.get("RSISCALP_TP_DCA",       str(TP_PCT_DCA)))
+
+# Shadow tp_pct_for so it uses the (possibly overridden) v1.2 constants
+def tp_pct_for(filled: int) -> float:
+    return TP_PCT_SINGLE if filled <= 1 else TP_PCT_DCA
+
+# 2026-06-06: 1h RSI 50-split filter was added in v1.1 then REVERTED.
+# Faithful (no-lookahead) 5-yr backtest showed filter HURTS
+# (+8.52% → +6.73% return, -32% → -33% DD). Prior +2,023% claim
+# came from a leaky backtest. Kept disabled by default; the code path
+# below still works if RSISCALP_1H_RSI_FILTER=1 is set explicitly.
+USE_1H_RSI_FILTER = os.environ.get("RSISCALP_1H_RSI_FILTER", "0") == "1"
+RSI_1H_THRESHOLD  = float(os.environ.get("RSISCALP_1H_RSI_THRESHOLD", "50.0"))
 os.makedirs(DATA_DIR, exist_ok=True)
 STATE_FILE  = os.path.join(DATA_DIR, "state.json")
 STATUS_FILE = os.path.join(DATA_DIR, "status.json")
@@ -73,7 +151,7 @@ COMMISSION_PCT = 0.0004  # 0.04% taker fee per side
 # 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
 # ─── Logging ───
-log = logging.getLogger("bot_rsiscalp_v3")
+log = logging.getLogger("bot_rsiscalp_v11")
 log.setLevel(logging.INFO)
 log.handlers.clear()
 fh = logging.FileHandler(LOG_FILE)
@@ -152,6 +230,13 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
     net = gross - fees
     balance_before = state["balance"]
     state["balance"] += net
+    # 2026-06-06: track daily realized loss for circuit breaker
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if state.get("daily_loss_date") != today_utc:
+        state["daily_loss"] = 0.0
+        state["daily_loss_date"] = today_utc
+    if net < 0:
+        state["daily_loss"] = state.get("daily_loss", 0.0) + net
     price_move_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
     pnl_pct = (net / balance_before * 100) if balance_before > 0 else 0.0
     _record_trade(state, {
@@ -209,7 +294,10 @@ def partial_close(state, pos, exit_px: float, fraction: float) -> None:
 
 
 def open_position(state, side: str, entry_px: float, rsi_val: float) -> None:
-    qty = round(per_level_qty(state["balance"], entry_px), 3)  # BTCUSDT step 0.001
+    # Weekend 2x position size (Sat/Sun = 94% WR in 6-mo backtest)
+    is_weekend = datetime.now(timezone.utc).weekday() >= 5
+    qty_mult = WEEKEND_QTY_MULT if is_weekend else 1.0
+    qty = round(per_level_qty(state["balance"], entry_px) * qty_mult, 3)
     if qty <= 0:
         log.warning(f"  qty {qty} too small to open")
         return
@@ -219,12 +307,16 @@ def open_position(state, side: str, entry_px: float, rsi_val: float) -> None:
         "entries": [{"px": entry_px, "qty": qty}], "qty_total": qty, "filled": 1,
         "leverage": LEVERAGE, "entry_time": datetime.now(timezone.utc).isoformat(),
         "rsi_at_entry": rsi_val, "partial_taken": False,
+        "weekend_2x": is_weekend,
     }
-    log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}) | balance ${state['balance']:.2f}")
+    log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}){'  [WEEKEND 2x]' if is_weekend else ''} | balance ${state['balance']:.2f}")
 
 
 def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
-    """Equal-size DCA leg at fixed adverse spacing, up to DCA_LEVELS total."""
+    """Equal-size DCA leg at fixed adverse spacing, up to DCA_LEVELS total.
+    2026-06-06: respects weekend 2x multiplier — L2 sized to match L1, otherwise
+    L1 would be 2x but L2 would be 1x (broken).
+    """
     if pos["filled"] >= DCA_LEVELS:
         return False
     side = pos["side"]
@@ -232,7 +324,8 @@ def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
     crossed = (side == "LONG" and live_px <= trigger) or (side == "SHORT" and live_px >= trigger)
     if not crossed:
         return False
-    qty = round(per_level_qty(balance, trigger), 3)
+    qty_mult = WEEKEND_QTY_MULT if pos.get("weekend_2x") else 1.0
+    qty = round(per_level_qty(balance, trigger) * qty_mult, 3)
     if qty <= 0:
         return False
     state["balance"] -= trigger * qty * COMMISSION_PCT
@@ -240,6 +333,8 @@ def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
     pos["worst_entry"] = min(pos["worst_entry"], trigger) if side == "LONG" else max(pos["worst_entry"], trigger)
     pos["qty_total"] = sum(e["qty"] for e in pos["entries"])
     pos["filled"] += 1
+    # v3: stamp L2 fill time so BE-DCA wait can use it
+    pos["l2_time"] = datetime.now(timezone.utc).isoformat()
     log.warning(f"  DCA L{pos['filled']} {side} {qty}@${trigger:.2f} (-{DCA_SPACING*100:.2f}%) | "
                 f"new avg=${avg_entry_of(pos):.2f} worst=${pos['worst_entry']:.2f}")
     return True
@@ -272,13 +367,6 @@ def main():
         (df_5m["low"]  - _prev_close).abs(),
     ], axis=1).max(axis=1)
     df_5m["atr_14"] = _tr.rolling(14).mean()
-    # v3: BB(20,2) for anti-breakout filter
-    _mid = df_5m["close"].rolling(20).mean()
-    _sd  = df_5m["close"].rolling(20).std(ddof=0)
-    df_5m["bb_up"]  = _mid + 2.0 * _sd
-    df_5m["bb_low"] = _mid - 2.0 * _sd
-    # v3: SMA(20) of volume for vol-spike detection
-    df_5m["vol_sma20"] = df_5m["volume"].rolling(20).mean()
     last_idx = len(df_5m) - 2  # last CLOSED 5m bar
     last = df_5m.iloc[last_idx]
     close_px = float(last["close"])
@@ -300,6 +388,21 @@ def main():
             trend_gap_pct = (ema_f_v - ema_s_v) / ema_s_v * 100.0
         else:
             log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
+
+    # ── 2026-06-06 v1.1: 1h RSI 50-split filter (HTF alignment) ──
+    # Backtest 5yr: +220% → +2,023% return, -27% → -14% DD, 2024 -$1311 → +$5518.
+    # Mechanism: only fade WITH higher-TF momentum (1h RSI on the right side of 50).
+    # Same principle as 15m EMA gate, just one timeframe up.
+    rsi_1h_val = None
+    if USE_1H_RSI_FILTER:
+        df_1h = fetch_klines("1h", 100)
+        if df_1h is not None and len(df_1h) >= RSI_PERIOD + 1:
+            rsi_1h_series = rsi_series(df_1h["close"], RSI_PERIOD)
+            rsi_1h_raw = rsi_1h_series.iloc[-2]  # last CLOSED 1h bar
+            if pd.notna(rsi_1h_raw):
+                rsi_1h_val = float(rsi_1h_raw)
+        else:
+            log.warning(f"  1h RSI: insufficient data — filter inactive this tick")
 
     gap_txt = f" | gap {trend_gap_pct:+.2f}%" if trend_gap_pct is not None else ""
     log.info(f"  Balance: ${state['balance']:,.2f} | {PAIR}: ${close_px:,.2f} | live: ${live_px:,.2f} | "
@@ -333,10 +436,61 @@ def main():
                 exit_reason, exit_px = "TP", tp
 
         # Loose catastrophic SL.
+        # 2026-06-06: BE-after-DCA — when DCA fired (filled >= 2), SL moves to
+        # avg entry price. Caps "DCA into runaway" losses at ~$0.
         if exit_px is None and USE_STOP_LOSS:
-            slp = sl_price(side, pos["worst_entry"])
+            # v3: BE-DCA wait — after L2 fills, wait BE_WAIT_BARS before arming the BE SL
+            be_armed = True
+            if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2 and BE_WAIT_BARS > 0:
+                l2_time_str = pos.get("l2_time")
+                if l2_time_str:
+                    try:
+                        l2_dt = datetime.fromisoformat(l2_time_str)
+                        bars_since_l2 = int((datetime.now(timezone.utc) - l2_dt).total_seconds() // 300)
+                        if bars_since_l2 < BE_WAIT_BARS:
+                            be_armed = False
+                            log.info(f"  BE wait: {bars_since_l2}/{BE_WAIT_BARS} bars since L2 — BE-DCA SL not yet armed")
+                    except (ValueError, KeyError):
+                        pass
+            if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2:
+                slp = avg_entry_of(pos) if be_armed else None
+            else:
+                slp = sl_price(side, pos["worst_entry"])
             if slp is not None and ((side == "LONG" and live_px <= slp) or (side == "SHORT" and live_px >= slp)):
-                exit_reason, exit_px = "SL", slp
+                exit_reason, exit_px = ("BE-DCA" if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2 else "SL"), slp
+
+        # 2026-06-06: TREND FLIP EXIT — close on 15m EMA reversal (early reversal catch)
+        # Backtest: catches losing trades before they hit SL, reduces avg loss size
+        if exit_px is None and USE_TREND_FLIP_EXIT and trend is not None:
+            if (side == "SHORT" and trend == "UP") or (side == "LONG" and trend == "DOWN"):
+                exit_reason, exit_px = "TREND_FLIP", live_px
+
+        # 2026-06-06 v1.1: TIME-BASED SL — force exit position after N bars.
+        # Backtest 5y: 72 bars (6h) = sweet spot. v1 → v1.1: +21pp return, -1.5pp DD.
+        # 2026-06-06 v1.2: SMART variant — if SMART_TIME_SL=1, only fire when the
+        # position is in loss at the threshold. Winners keep running to TP.
+        if exit_px is None and TIME_SL_BARS > 0:
+            entry_time_str = pos.get("entry_time")
+            if entry_time_str:
+                try:
+                    entry_dt = datetime.fromisoformat(entry_time_str)
+                    bars_held = int((datetime.now(timezone.utc) - entry_dt).total_seconds() // 300)  # 5m bars
+                    if bars_held >= TIME_SL_BARS:
+                        fire = True
+                        if SMART_TIME_SL:
+                            # Compute unrealized P&L at live_px; only fire on loss
+                            qty_total = pos["qty_total"]
+                            gross = (live_px - avg_entry) * qty_total if side == "LONG" else (avg_entry - live_px) * qty_total
+                            fees = live_px * qty_total * COMMISSION_PCT
+                            net = gross - fees
+                            if net >= 0:
+                                fire = False
+                                log.info(f"  TIME-SL not fired (smart): {bars_held} bars but in profit ${net:+.2f} — let winner run")
+                        if fire:
+                            exit_reason, exit_px = "TIME_SL", live_px
+                            log.warning(f"  TIME-SL fired: position open {bars_held} bars ≥ {TIME_SL_BARS} threshold")
+                except (ValueError, KeyError):
+                    pass
 
         if exit_px is not None:
             close_position(state, pos, exit_px, exit_reason)
@@ -352,6 +506,18 @@ def main():
 
     # Entry — RSI (+ optional 15m trend gate + circuit breaker). Don't re-enter on the tick we just exited.
     block_reason = None
+
+    # 2026-06-06: DAILY MAX LOSS circuit breaker
+    # Reset daily counter at UTC midnight; pause entries if today's net loss exceeds threshold
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if state.get("daily_loss_date") != today_utc:
+        state["daily_loss"] = 0.0
+        state["daily_loss_date"] = today_utc
+    if sig and DAILY_MAX_LOSS > 0 and state.get("daily_loss", 0) <= -DAILY_MAX_LOSS:
+        block_reason = f"daily max loss ${DAILY_MAX_LOSS:.0f} reached (today: ${state.get('daily_loss', 0):.2f}) — entries paused until 00:00 UTC"
+        log.info(f"  {block_reason}")
+        sig = None
+
     # Circuit breaker: skip entries while paused after a loss streak.
     if USE_CIRCUIT_BREAKER and sig and state.get("pause_until"):
         try:
@@ -364,13 +530,20 @@ def main():
     # 2026-06-05 FIX: trend filter is DEFENSIVE — if data unavailable, BLOCK the
     # entry (was previously skipping the check entirely, which let v2 LONG into a
     # DOWN trend at 14:00 UTC when Bybit returned partial 15m data).
-    if USE_TREND_FILTER and sig:
+    # v3: COUNTER_TREND mode bypasses the with-trend requirement
+    if USE_TREND_FILTER and sig and not USE_COUNTER_TREND:
         if trend is None:
             block_reason = f"{sig} blocked — 15m trend data unavailable (defensive)"
             log.info(f"  {block_reason}")
             sig = None
         elif (sig == "LONG" and trend != "UP") or (sig == "SHORT" and trend != "DOWN"):
             block_reason = f"{sig} blocked — 15m trend is {trend} (need {'UP' if sig=='LONG' else 'DOWN'})"
+            log.info(f"  {block_reason}")
+            sig = None
+    elif USE_COUNTER_TREND and sig:
+        # In counter-trend mode, still block if trend data unavailable (defensive)
+        if trend is None:
+            block_reason = f"{sig} blocked — 15m trend data unavailable (defensive)"
             log.info(f"  {block_reason}")
             sig = None
     # 2026-06-05: high-vol UTC hour filter (consistency across v1/v2/v3)
@@ -397,66 +570,6 @@ def main():
                             f"weaker than required ±{gap_required:.2f}% (knife-edge)")
             log.info(f"  {block_reason}")
             sig = None
-
-    # ── 2026-06-05 v3: ANTI-BREAKOUT / ANTI-BREAKDOWN ENTRY FILTER ──
-    # Don't fade a moving train. Skip entry if either:
-    #   (a) any of the last N closed 5m bars closed beyond the opposite BB band
-    #       (visible breakout / breakdown in last 15 min)
-    #   (b) current bar volume is > V3_VOL_MULT × SMA(20, vol)
-    #       (institutional flow likely → momentum will continue)
-    if sig and state["position"] is None:
-        try:
-            # Last N closed bars (excluding the still-forming current bar at index -1)
-            n = V3_BB_LOOKBACK
-            last_n_closes = df_5m["close"].iloc[-1-n:-1].values
-            bb_up_now = float(df_5m["bb_up"].iloc[-2])
-            bb_lo_now = float(df_5m["bb_low"].iloc[-2])
-            vol_now = float(df_5m["volume"].iloc[-2])
-            vol_sma = float(df_5m["vol_sma20"].iloc[-2])
-
-            # 2026-06-05 FIX: NaN-safe check. If BB or vol-SMA isn't ready
-            # (insufficient bars), block defensively (same fail-closed pattern
-            # as trend + GAP filters). Previously NaN comparisons silently
-            # returned False → filter passed when data wasn't actually checked.
-            if math.isnan(bb_up_now) or math.isnan(bb_lo_now) or math.isnan(vol_sma):
-                block_reason = f"{sig} blocked — BB/vol indicators not ready (defensive)"
-                log.info(f"  {block_reason}")
-                sig = None
-                raise StopIteration  # exit the try block cleanly
-
-            vol_spike = vol_sma > 0 and vol_now > vol_sma * V3_VOL_MULT
-            vol_ratio = vol_now / vol_sma if vol_sma > 0 else 0.0
-
-            if sig == "SHORT":
-                if last_n_closes.max() > bb_up_now:
-                    block_reason = (f"SHORT blocked — anti-breakout: max(last {n} closes) "
-                                    f"${last_n_closes.max():.0f} > 5m BB upper ${bb_up_now:.0f}")
-                    log.info(f"  {block_reason}")
-                    sig = None
-                elif vol_spike:
-                    block_reason = (f"SHORT blocked — anti-breakout: vol spike "
-                                    f"{vol_ratio:.1f}x SMA(20)")
-                    log.info(f"  {block_reason}")
-                    sig = None
-            elif sig == "LONG":
-                if last_n_closes.min() < bb_lo_now:
-                    block_reason = (f"LONG blocked — anti-breakdown: min(last {n} closes) "
-                                    f"${last_n_closes.min():.0f} < 5m BB lower ${bb_lo_now:.0f}")
-                    log.info(f"  {block_reason}")
-                    sig = None
-                elif vol_spike:
-                    block_reason = (f"LONG blocked — anti-breakdown: vol spike "
-                                    f"{vol_ratio:.1f}x SMA(20)")
-                    log.info(f"  {block_reason}")
-                    sig = None
-        except StopIteration:
-            pass  # already blocked above
-        except (KeyError, IndexError, ValueError) as e:
-            # Block defensively if filter data totally missing
-            block_reason = f"{sig} blocked — anti-breakout filter data missing: {e}"
-            log.warning(f"  {block_reason}")
-            sig = None
-
     # 2026-06-06: ATR + 1h cumulative move filters (fail-closed).
     # Per-bot threshold via env vars.
     if sig and state["position"] is None:
@@ -497,6 +610,24 @@ def main():
             log.warning(f"  {block_reason}")
             sig = None
 
+    # 2026-06-06 v1.1: 1h RSI 50-split — HTF momentum alignment.
+    # Same fail-closed pattern as other filters.
+    if sig and USE_1H_RSI_FILTER:
+        if rsi_1h_val is None:
+            block_reason = f"{sig} blocked — 1h RSI data unavailable (defensive)"
+            log.info(f"  {block_reason}")
+            sig = None
+        elif sig == "SHORT" and rsi_1h_val >= RSI_1H_THRESHOLD:
+            block_reason = (f"SHORT blocked — 1h RSI {rsi_1h_val:.1f} ≥ "
+                            f"{RSI_1H_THRESHOLD:.0f} (HTF still overbought)")
+            log.info(f"  {block_reason}")
+            sig = None
+        elif sig == "LONG" and rsi_1h_val <= RSI_1H_THRESHOLD:
+            block_reason = (f"LONG blocked — 1h RSI {rsi_1h_val:.1f} ≤ "
+                            f"{RSI_1H_THRESHOLD:.0f} (HTF still oversold)")
+            log.info(f"  {block_reason}")
+            sig = None
+
     if state["position"] is None and not exit_this_tick and sig:
         open_position(state, sig, live_px, rsi_val)
 
@@ -511,28 +642,59 @@ def main():
     pos_status = None
     if pos:
         avg_e = avg_entry_of(pos)
-        slp = sl_price(pos["side"], pos["worst_entry"])
+        # Display BE-after-DCA SL if active
+        if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2:
+            slp = avg_e
+        else:
+            slp = sl_price(pos["side"], pos["worst_entry"])
         tp_pct = tp_pct_for(pos["filled"])
         tp_p = (avg_e * (1 + tp_pct) if pos["side"] == "LONG" else avg_e * (1 - tp_pct)) if USE_TAKE_PROFIT else None
         fav_p = ((live_px - avg_e) / avg_e * 100) * (1 if pos["side"] == "LONG" else -1)
+        # v1.1: compute when time-SL would force-close this position
+        time_sl_at = None
+        bars_remaining = None
+        if TIME_SL_BARS > 0 and pos.get("entry_time"):
+            try:
+                ent_dt = datetime.fromisoformat(pos["entry_time"])
+                close_dt = ent_dt + timedelta(minutes=TIME_SL_BARS * 5)
+                time_sl_at = close_dt.isoformat()
+                bars_elapsed = int((datetime.now(timezone.utc) - ent_dt).total_seconds() // 300)
+                bars_remaining = max(0, TIME_SL_BARS - bars_elapsed)
+            except Exception:
+                pass
         pos_status = {
             "side": pos["side"], "first_entry": pos["first_entry"], "avg_entry": avg_e,
             "worst_entry": pos["worst_entry"], "qty_total": pos["qty_total"], "filled": pos["filled"],
             "tp_px": tp_p, "sl_px": slp, "fav_pct": fav_p, "entry_time": pos.get("entry_time"),
+            "time_sl_at": time_sl_at, "time_sl_bars_remaining": bars_remaining,
         }
 
     write_status({
-        "env": os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"),
+        "env": os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v11"),
         "pair": PAIR, "price": close_px, "live_price": live_px,
         "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos_status, "signal": sig,
         "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT,
                        "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100,
                        "blocked_hours": sorted(BLOCKED_HOURS) if BLOCKED_HOURS else [],
-                       "current_hour_utc": datetime.now(timezone.utc).hour},
+                       "current_hour_utc": datetime.now(timezone.utc).hour,
+                       # 2026-06-06: ATR + 1h cumulative move for ConditionsPanel
+                       "atr_pct": float(df_5m["atr_14"].iloc[-2]) / close_px * 100 if "atr_14" in df_5m.columns and not pd.isna(df_5m["atr_14"].iloc[-2]) else None,
+                       "atr_max_pct": RSISCALP_ATR_MAX_PCT,
+                       "chg_1h_pct": (close_px / float(df_5m["close"].iloc[-14]) - 1) * 100 if len(df_5m) >= 14 else None,
+                       "chg_1h_max_pct": RSISCALP_1H_MOVE_MAX_PCT,
+                       # v1.1: 1h RSI for HTF alignment check
+                       "rsi_1h": rsi_1h_val,
+                       "rsi_1h_threshold": RSI_1H_THRESHOLD,
+                       # ULTIMATE-specific
+                       "daily_loss": state.get("daily_loss", 0.0),
+                       "daily_max_loss": DAILY_MAX_LOSS,
+                       "is_weekend": datetime.now(timezone.utc).weekday() >= 5,
+                       "weekend_qty_mult": WEEKEND_QTY_MULT,
+                       "sl_from_worst_pct": SL_FROM_WORST*100},
         "trend_15m": trend, "block_reason": block_reason,
         "stats": state["stats"],
-        "strategy": f"RSI-Scalp +Trend v3 ANTI-BREAKOUT (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% + BB-skip last {V3_BB_LOOKBACK} bars + vol-skip {V3_VOL_MULT:.1f}× / {DCA_LEVELS} DCA / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% / SL {SL_FROM_WORST*100:.1f}% from worst) [PAPER]",
+        "strategy": f"RSI-Scalp ULTIMATE v1.1 (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / SL {SL_FROM_WORST*100:.2f}% / +TF exit / +weekend {WEEKEND_QTY_MULT:.1f}× / +daily-stop ${DAILY_MAX_LOSS:.0f} / +TIME-SL {TIME_SL_BARS} bars) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })

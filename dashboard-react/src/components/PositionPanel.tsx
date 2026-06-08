@@ -283,7 +283,8 @@ function WaitingForEntry({ status, strategy }: { status: BotStatus; strategy: St
   const gapMin = i.trend_gap_min_pct ?? 0.25;
   const trendUp = status.trend_15m === 'UP';
   const trendDown = status.trend_15m === 'DOWN';
-  const isV2orV3 = strategy === 'rsiscalp_trend_v2' || strategy === 'rsiscalp_trend_v3';
+  // v3 = counter-trend bot (formerly "v2" in UI)
+  const isV2orV3 = strategy === 'rsiscalp_trend_v3';
 
   // Which side is the bot hunting? Determined by 15m trend.
   const huntingSide: 'LONG' | 'SHORT' | null =

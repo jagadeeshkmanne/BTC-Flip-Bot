@@ -14,9 +14,8 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
 
   const trendUp = s.trend_15m === 'UP';
   const trendDown = s.trend_15m === 'DOWN';
-  // All bots except v1-legacy have GAP filter. v1 is now Ultimate (has GAP too).
-  const hasGapFilter = ['rsiscalp_trend', 'rsiscalp_trend_v2',
-                        'rsiscalp_trend_v4', 'rsiscalp_trend_v5'].includes(strategy);
+  // Both active bots (v11/v3) have GAP filter.
+  const hasGapFilter = true;
 
   // Fleet-wide filters
   const hour = i.current_hour_utc;

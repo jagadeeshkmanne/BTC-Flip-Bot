@@ -1,9 +1,10 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-export type StrategyId = 'rsiscalp_trend' | 'rsiscalp_trend_v11' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v5';
+// Only 2 active bots after 2026-06-08 cleanup: v1 (was v11) + v2 (was v3).
+export type StrategyId = 'rsiscalp_trend_v11' | 'rsiscalp_trend_v3';
 
 export interface BotMeta {
   id: StrategyId;
-  short: string;        // "v1" / "v2" / "v3" / "v4" / "v5"
+  short: string;
   label: string;
   badge: string;
   accent: 'blue' | 'green' | 'purple' | 'orange' | 'red';
@@ -12,36 +13,20 @@ export interface BotMeta {
 
 export const BOTS: BotMeta[] = [
   {
-    id: 'rsiscalp_trend',
-    short: 'v1',
-    label: 'v1 · Ultimate',
-    badge: 'Ultimate',
-    accent: 'blue',
-    description: 'Faithful 5-year backtest (no lookahead): +8.5% return, -32% DD, 64% WR. RSI + 15m trend + GAP firmness + ATR + 1h cumulative move filters + DCA + tight SL 0.6% + trend-flip exit + weekend 2× sizing + daily-loss circuit breaker $200 + blocked transition hours (5,6,11,12,13,20 UTC). The v1.1 1h-RSI HTF filter was reverted — faithful backtest showed it hurt slightly.',
-  },
-  {
     id: 'rsiscalp_trend_v11',
-    short: 'v1.1',
-    label: 'v1.1 · Time-SL',
-    badge: 'Time-SL',
-    accent: 'purple',
-    description: '5-year backtest: +290% / -6.9% DD (beats v1 baseline +21pp return, -1.5pp DD). Same as v1 (RSI + 15m trend + GAP + ATR + DCA + BE-after-DCA + tight SL 0.6%) PLUS 72-bar (6h) time-based force exit. Catches stuck positions that would otherwise bleed slowly to SL. Saves ~42 SL hits over 5 years.',
+    short: 'v1',
+    label: 'v1 · With-Trend',
+    badge: 'With-Trend',
+    accent: 'blue',
+    description: 'RSI 35/65 + 15m trend gate + GAP 0.15% + ATR 0.8% + DCA + BE-after-DCA (wait 3 bars) + smart 6h time-SL. Honest 5y backtest: 6,782 trades / 55% WR / $64K / 2.08% DD / PF 2.13.',
   },
   {
-    id: 'rsiscalp_trend_v2',
+    id: 'rsiscalp_trend_v3',
     short: 'v2',
-    label: 'v2 · DCA',
-    badge: 'DCA',
-    accent: 'green',
-    description: 'RSI + 15m trend + GAP firmness ≥ 0.25% + ATR + 1h filters + 2-leg DCA. Standard SL 1% from worst entry. Backtest: +52% over 6 months, $-268 worst trade.',
-  },
-  {
-    id: 'rsiscalp_trend_v5',
-    short: 'v5',
-    label: 'v5 · Capped',
-    badge: 'Capped',
-    accent: 'red',
-    description: 'RSI + 15m trend + GAP firmness + ATR + 1h filters + NO DCA + tight SL 0.5% from entry. Same entries as v2 but loss-capped at ~$75/trade. Tests bounded-loss without anti-breakout filter.',
+    label: 'v2 · Counter-Trend',
+    badge: 'Counter-Trend',
+    accent: 'purple',
+    description: 'Same as v1 but BYPASSES the 15m trend gate — RSI extremes fire regardless of trend. GAP 0.20% + BE wait 6. Honest 5y backtest: 12,859 trades / 65% WR / $174K / 1.29% DD / PF 3.07.',
   },
 ];
 

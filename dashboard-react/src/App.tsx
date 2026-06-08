@@ -6,13 +6,13 @@ import { BOTS, type StrategyId } from '@/types/bot';
 // short ("v1") → strategy id ("rsiscalp_trend")
 const SHORT_TO_ID = Object.fromEntries(BOTS.map(b => [b.short, b.id])) as Record<string, StrategyId>;
 
-// Backward-compat aliases — for prior-version URLs / removed bots only.
-// v1.1 is NOT here — it's a real bot now (Time-SL variant).
+// Backward-compat aliases — old URLs redirect to the renamed bots.
+// 2026-06-08: consolidated to 2 bots, renamed v1.1→v1 (with-trend) and v3→v2 (counter-trend).
 const ALIAS: Record<string, string> = {
-  'v2.0': 'v2',
-  'v5.0': 'v5',
-  'v3':   'v1',   // removed bot → winner
-  'v4':   'v1',   // removed bot → winner
+  'v1.1': 'v1',
+  'v3':   'v2',
+  'v4':   'v1',   // removed bot
+  'v5':   'v1',   // removed bot
 };
 
 export function App() {

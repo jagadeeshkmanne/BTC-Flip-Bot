@@ -114,24 +114,21 @@ export function Layout({ active, children }: Props) {
                 <button
                   key={b.id}
                   class={clsx(
-                    'w-full text-left p-3 rounded-lg transition-colors flex items-start justify-between gap-3',
+                    'w-full text-left p-3 rounded-lg transition-colors flex items-center justify-between gap-3',
                     b.id === active ? 'bg-bg-hover ring-1 ring-accent-blue/30' : 'hover:bg-bg-hover'
                   )}
                   onClick={() => navigate(`/bots/${b.short}`)}
                 >
-                  <div class="min-w-0 flex-1">
-                    <div class="flex items-center gap-2 mb-0.5">
-                      <span class="font-semibold">{b.label}</span>
-                      <span class={clsx(
-                        'pill text-[10px]',
-                        b.accent === 'green' && 'pill-green',
-                        b.accent === 'purple' && 'pill bg-accent-purple/15 text-accent-purple',
-                        b.accent === 'blue' && 'pill-blue',
-                      )}>{b.badge}</span>
-                    </div>
-                    <p class="text-xs text-text-muted leading-relaxed">{b.description}</p>
+                  <div class="flex items-center gap-2 min-w-0 flex-1">
+                    <span class="font-semibold">{b.label}</span>
+                    <span class={clsx(
+                      'pill text-[10px]',
+                      b.accent === 'green' && 'pill-green',
+                      b.accent === 'purple' && 'pill bg-accent-purple/15 text-accent-purple',
+                      b.accent === 'blue' && 'pill-blue',
+                    )}>{b.badge}</span>
                   </div>
-                  <ChevronRight size={16} class="text-text-dim mt-1 shrink-0" />
+                  <ChevronRight size={16} class="text-text-dim shrink-0" />
                 </button>
               ))}
             </nav>
