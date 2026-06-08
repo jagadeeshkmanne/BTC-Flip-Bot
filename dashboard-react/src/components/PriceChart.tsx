@@ -79,11 +79,14 @@ export function PriceChart() {
         borderColor: '#1f2937',
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 3,                  // tighter right margin (was 12 — too much empty space)
-        barSpacing: 6,                   // tighter default bar spacing
-        minBarSpacing: 0.5,              // allow strong zoom-out
+        // Binance-style: latest bar sits in middle-right with buffer space
+        // after it (so future bars have room to appear and you can see the
+        // current bar forming without it being glued to the right edge).
+        rightOffset: 20,
+        barSpacing: 6,
+        minBarSpacing: 0.5,
         lockVisibleTimeRangeOnResize: false,
-        rightBarStaysOnScroll: true,    // keep latest bar visible while panning
+        rightBarStaysOnScroll: true,
       },
       rightPriceScale: {
         borderColor: '#1f2937',
