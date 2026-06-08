@@ -302,14 +302,20 @@ def open_position(state, side: str, entry_px: float, rsi_val: float) -> None:
         log.warning(f"  qty {qty} too small to open")
         return
     state["balance"] -= entry_px * qty * COMMISSION_PCT
+    # v3 fix 2026-06-08: snapshot 15m trend at entry so trend-flip exit
+    # compares against ENTRY trend (not current side). Without this, v2
+    # (counter-trend) exits immediately on every entry when its bet against
+    # trend looks like a "flip" to the simple side-vs-trend check.
+    entry_trend_snapshot = state.get("_last_trend")  # set in main() each tick
     state["position"] = {
         "side": side, "first_entry": entry_px, "worst_entry": entry_px,
         "entries": [{"px": entry_px, "qty": qty}], "qty_total": qty, "filled": 1,
         "leverage": LEVERAGE, "entry_time": datetime.now(timezone.utc).isoformat(),
         "rsi_at_entry": rsi_val, "partial_taken": False,
         "weekend_2x": is_weekend,
+        "entry_trend": entry_trend_snapshot,
     }
-    log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}){'  [WEEKEND 2x]' if is_weekend else ''} | balance ${state['balance']:.2f}")
+    log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}){'  [WEEKEND 2x]' if is_weekend else ''} | entry_trend={entry_trend_snapshot} | balance ${state['balance']:.2f}")
 
 
 def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
@@ -386,6 +392,8 @@ def main():
             ema_s_v = float(ema_s.iloc[-2])
             trend = "UP" if ema_f_v > ema_s_v else "DOWN"
             trend_gap_pct = (ema_f_v - ema_s_v) / ema_s_v * 100.0
+            # v3 fix 2026-06-08: stash trend for open_position() snapshot.
+            state["_last_trend"] = trend
         else:
             log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
 
@@ -460,9 +468,13 @@ def main():
                 exit_reason, exit_px = ("BE-DCA" if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2 else "SL"), slp
 
         # 2026-06-06: TREND FLIP EXIT — close on 15m EMA reversal (early reversal catch)
-        # Backtest: catches losing trades before they hit SL, reduces avg loss size
+        # 2026-06-08 FIX: compare current trend to ENTRY trend (not side). For v2
+        # counter-trend, the position is intentionally against current trend, so
+        # the old side-vs-trend check fired immediately on every entry.
+        # New rule: only fire if trend has CHANGED since entry.
         if exit_px is None and USE_TREND_FLIP_EXIT and trend is not None:
-            if (side == "SHORT" and trend == "UP") or (side == "LONG" and trend == "DOWN"):
+            entry_trend = pos.get("entry_trend")
+            if entry_trend and trend != entry_trend:
                 exit_reason, exit_px = "TREND_FLIP", live_px
 
         # 2026-06-06 v1.1: TIME-BASED SL — force exit position after N bars.
