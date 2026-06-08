@@ -33,7 +33,7 @@ TP_DCA        = 0.0025   # 0.25%
 SL_L1         = 0.006    # 0.6% from worst entry
 # SL after DCA = avg entry (BE)
 
-FEE_RATE      = 0.0004   # 0.04% taker per side
+FEE_RATE = 0.00055   # 0.04% taker per side
 SLIPPAGE      = 0.0002   # 0.02% slippage per side
 
 COOLDOWN_MIN  = 15

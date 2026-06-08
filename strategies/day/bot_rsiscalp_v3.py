@@ -147,7 +147,7 @@ LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
 # ─── Config ───
 PAIR = "BTCUSDT"
 INITIAL_BALANCE = 5000.0
-COMMISSION_PCT = 0.0004  # 0.04% taker fee per side
+COMMISSION_PCT = 0.00055  # 0.055% Bybit USDT-M taker fee per side (verified 2026-06-08)
 # 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
 # ─── Logging ───
