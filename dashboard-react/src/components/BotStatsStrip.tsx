@@ -125,13 +125,13 @@ function Metric({ label, value, sub, valueTone, big }: {
     : valueTone >= 0 ? 'text-accent-green' : 'text-accent-red';
   return (
     <div class="flex flex-col leading-tight min-w-0">
-      <span class="text-2xs uppercase tracking-wider text-text-dim font-medium truncate">{label}</span>
+      <span class="text-2xs uppercase tracking-wider text-text-muted font-semibold truncate">{label}</span>
       <span class={clsx(
         big ? 'text-base md:text-xl lg:text-2xl' : 'text-sm md:text-lg lg:text-xl',
         'font-bold font-mono tabular-nums tracking-tight truncate',
         toneCls,
       )}>{value}</span>
-      {sub && <span class="text-2xs text-text-dim font-mono mt-0.5 truncate">{sub}</span>}
+      {sub && <span class="text-2xs text-text-muted font-mono mt-0.5 truncate">{sub}</span>}
     </div>
   );
 }
