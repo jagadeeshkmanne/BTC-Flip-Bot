@@ -17,20 +17,9 @@ const dur = (a?: string, b?: string) => {
 
 const ch = createColumnHelper<TradeRecord>();
 
-// Bybit USDT-M taker fee (used as fallback when bot doesn't store fee_usd).
-const FEE_RATE = 0.00055;
-
-function computeFees(t: TradeRecord): number {
-  // Prefer bot-saved value when available
-  if (t.fee_usd != null) return t.fee_usd;
-  // Fallback: compute round-trip fees from entry + exit notional
-  const entry = t.avg_entry ?? t.entry ?? t.first_entry;
-  const exit = t.exit;
-  // Bot saves as `qty_total`; older code paths may use `qty`
-  const qty = t.qty_total ?? t.qty;
-  if (entry == null || exit == null || qty == null) return 0;
-  return (entry + exit) * qty * FEE_RATE;
-}
+// 2026-06-10: paper trading runs fee-free for clean math. When deploying to
+// real Bybit, the bot uses 0.00055 (taker fee) — the dashboard simply
+// displays whatever pnl_usd the bot records.
 
 export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
   // Newest first
@@ -53,36 +42,14 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
       cell: i => <span class="font-mono">{i.getValue()?.toFixed(2) ?? '—'}</span>,
     }),
     ch.accessor('exit', { header: 'Exit $', cell: i => <span class="font-mono">{i.getValue()?.toFixed(2) ?? '—'}</span> }),
-    ch.display({
-      id: 'gross',
-      header: 'Gross $',
-      cell: ctx => {
-        const t = ctx.row.original;
-        const net = t.pnl_usd;
-        const fees = computeFees(t);
-        if (net == null) return '—';
-        const gross = net + fees;
-        return <span class={clsx('font-mono text-xs', gross >= 0 ? 'text-accent-green/70' : 'text-accent-red/70')}>
-          {gross >= 0 ? '+' : ''}${gross.toFixed(2)}
-        </span>;
-      },
-    }),
-    ch.display({
-      id: 'fee',
-      header: 'Fee $',
-      cell: ctx => {
-        const fees = computeFees(ctx.row.original);
-        return <span class="font-mono text-xs text-text-dim">-${fees.toFixed(2)}</span>;
-      },
-    }),
-    ch.accessor('pnl_usd', { header: 'Net $', cell: i => {
+    ch.accessor('pnl_usd', { header: 'P&L $', cell: i => {
       const v = i.getValue();
       if (v == null) return '—';
       return <span class={clsx('font-mono font-semibold', v >= 0 ? 'text-accent-green' : 'text-accent-red')}>
         {v >= 0 ? '+' : ''}${v.toFixed(2)}
       </span>;
     } }),
-    ch.accessor('pnl_pct', { header: 'Net %', cell: i => {
+    ch.accessor('pnl_pct', { header: 'P&L %', cell: i => {
       const v = i.getValue();
       if (v == null) return '—';
       return <span class={clsx('font-mono', v >= 0 ? 'text-accent-green' : 'text-accent-red')}>
@@ -123,14 +90,12 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
         {data.map((t, i) => {
           const pnl = t.pnl_usd ?? 0;
           const pct = t.pnl_pct ?? 0;
-          const fees = computeFees(t);
-          const gross = pnl + fees;
           const positive = pnl >= 0;
           const entry = t.avg_entry ?? t.entry ?? t.first_entry;
           const exit = t.exit;
           return (
             <div key={i} class="px-3 py-3 border-b border-bg-border/40 space-y-2">
-              {/* Row 1: Side, Reason, Duration + Net P&L (right) */}
+              {/* Row 1: Side, Reason, Duration + P&L (right) */}
               <div class="flex items-center justify-between gap-2">
                 <div class="flex items-center gap-1.5 min-w-0">
                   <span class={clsx('pill text-[10px]', t.side === 'LONG' ? 'pill-green' : 'pill-red')}>{t.side}</span>
@@ -147,7 +112,7 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
                 </div>
               </div>
 
-              {/* Row 2: Entry → Exit prices */}
+              {/* Row 2: Entry → Exit prices + timestamp */}
               <div class="flex items-center gap-3 text-xs font-mono">
                 <div>
                   <span class="text-text-dim">In </span>
@@ -160,23 +125,6 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
                 </div>
                 <div class="ml-auto text-text-dim">{fmtTime(t.entry_time)}</div>
               </div>
-
-              {/* Row 3: Gross | Fee | Net breakdown */}
-              <div class="flex items-center gap-3 text-2xs font-mono text-text-muted">
-                <div>
-                  Gross <span class={clsx(gross >= 0 ? 'text-accent-green/80' : 'text-accent-red/80')}>
-                    {gross >= 0 ? '+' : ''}${gross.toFixed(2)}
-                  </span>
-                </div>
-                <div>
-                  Fee <span class="text-text-dim">-${fees.toFixed(2)}</span>
-                </div>
-                <div>
-                  = Net <span class={clsx(positive ? 'text-accent-green' : 'text-accent-red')}>
-                    {positive ? '+' : ''}${pnl.toFixed(2)}
-                  </span>
-                </div>
-              </div>
             </div>
           );
         })}
@@ -184,7 +132,7 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
 
       {/* ── DESKTOP: full 9-col virtualized table ── */}
       <div class="hidden md:block">
-        <div class="grid grid-cols-11 gap-3 px-4 py-2 text-[10px] uppercase tracking-wider text-text-dim border-b border-bg-border bg-bg/50">
+        <div class="grid grid-cols-9 gap-3 px-4 py-2 text-[10px] uppercase tracking-wider text-text-dim border-b border-bg-border bg-bg/50">
           {table.getHeaderGroups()[0].headers.map(h => (
             <div key={h.id} class={clsx(h.id === 'side' && 'col-span-1', 'truncate')}>
               {flexRender(h.column.columnDef.header, h.getContext())}
@@ -198,7 +146,7 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
               return (
                 <div
                   key={row.id}
-                  class="grid grid-cols-11 gap-3 px-4 py-2 text-sm border-b border-bg-border/40 hover:bg-bg-hover transition-colors items-center"
+                  class="grid grid-cols-9 gap-3 px-4 py-2 text-sm border-b border-bg-border/40 hover:bg-bg-hover transition-colors items-center"
                   style={{
                     position: 'absolute',
                     top: 0,

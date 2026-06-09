@@ -91,9 +91,8 @@ export interface TradeRecord {
   exit?: number;
   qty?: number;
   qty_total?: number;    // bot's actual field name (preferred over qty)
-  pnl_usd?: number;      // NET P&L (price move - fees)
-  pnl_pct?: number;      // NET % (net / starting balance)
-  fee_usd?: number;      // round-trip fees in dollars
+  pnl_usd?: number;      // P&L $ (paper trading is fee-free)
+  pnl_pct?: number;      // P&L % (pnl_usd / starting balance)
   entries?: number;
   // 2026-06-05: excursion stats — max favorable + max adverse during trade
   max_fav_pct?: number;

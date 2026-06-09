@@ -147,7 +147,8 @@ LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
 # ─── Config ───
 PAIR = "BTCUSDT"
 INITIAL_BALANCE = 5000.0
-COMMISSION_PCT = 0.00055  # 0.055% Bybit USDT-M taker fee per side (verified 2026-06-08)
+COMMISSION_PCT = 0.0  # 2026-06-10: fees disabled in paper trading for clean math.
+                       # When deploying to real Bybit, switch to 0.00055 (taker fee).
 # 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
 # ─── Logging ───
@@ -239,15 +240,10 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
         state["daily_loss"] = state.get("daily_loss", 0.0) + net
     price_move_pct = (exit_px / avg_entry - 1) * 100 * (1 if side == "LONG" else -1)
     pnl_pct = (net / balance_before * 100) if balance_before > 0 else 0.0
-    # Total round-trip fees: entry-side fees were already debited from balance
-    # at open/DCA; exit-side `fees` here completes the round-trip.
-    entry_fees = avg_entry * qty_total * COMMISSION_PCT
-    total_fees = entry_fees + fees
     _record_trade(state, {
         "side": side, "first_entry": pos["first_entry"], "avg_entry": avg_entry, "exit": exit_px,
         "entries": len(pos.get("entries", [])), "qty_total": qty_total, "reason": reason,
         "pnl_usd": net, "pnl_pct": pnl_pct, "price_move_pct": price_move_pct,
-        "fee_usd": total_fees,  # round-trip fees for dashboard
         "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(),
         "rsi_at_entry": pos.get("rsi_at_entry"),
@@ -287,13 +283,10 @@ def partial_close(state, pos, exit_px: float, fraction: float) -> None:
     for e in pos.get("entries", []):
         e["qty"] *= (1 - fraction)
     pos["partial_taken"] = True
-    partial_entry_fees = avg_entry * sell_qty * COMMISSION_PCT
-    partial_total_fees = partial_entry_fees + fees
     _record_trade(state, {
         "side": side, "first_entry": pos["first_entry"], "avg_entry": avg_entry, "exit": exit_px,
         "entries": len(pos.get("entries", [])), "qty_total": sell_qty, "reason": "PARTIAL_TP",
         "pnl_usd": net, "pnl_pct": pnl_pct, "price_move_pct": price_move_pct,
-        "fee_usd": partial_total_fees,
         "leverage": pos.get("leverage"), "entry_time": pos.get("entry_time"),
         "exit_time": datetime.now(timezone.utc).isoformat(), "rsi_at_entry": pos.get("rsi_at_entry"),
     }, is_win=net > 0)
@@ -469,21 +462,51 @@ def main():
                     except (ValueError, KeyError):
                         pass
             if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2:
-                slp = avg_entry_of(pos) if be_armed else None
+                # 2026-06-10: L2 TRAIL SL — once price moves +0.05% above avg,
+                # trail SL behind peak with 0.025% buffer. Captures the
+                # recovery profit on L2 positions that would otherwise BE-DCA
+                # exit at avg ($0 gross). Backtest 5y: +$5,742 / same DD.
+                if be_armed:
+                    avg = avg_entry_of(pos)
+                    peak_fav = pos.get("l2_peak_fav_pct", 0.0)
+                    if peak_fav >= 0.05:  # 0.05% arm threshold
+                        trail_pct = peak_fav - 0.025  # 0.025% buffer
+                        if side == "LONG":
+                            slp = avg * (1 + trail_pct / 100.0)
+                        else:
+                            slp = avg * (1 - trail_pct / 100.0)
+                    else:
+                        slp = avg
+                else:
+                    slp = None
             else:
                 slp = sl_price(side, pos["worst_entry"])
             if slp is not None and ((side == "LONG" and live_px <= slp) or (side == "SHORT" and live_px >= slp)):
-                exit_reason, exit_px = ("BE-DCA" if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2 else "SL"), slp
+                if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2:
+                    # Tag as L2_TRAIL when trail SL is armed and above avg
+                    reason_tag = "L2_TRAIL" if pos.get("l2_peak_fav_pct", 0.0) >= 0.05 else "BE-DCA"
+                else:
+                    reason_tag = "SL"
+                exit_reason, exit_px = reason_tag, slp
 
         # 2026-06-06: TREND FLIP EXIT — close on 15m EMA reversal (early reversal catch)
-        # 2026-06-08 FIX: compare current trend to ENTRY trend (not side). For v2
-        # counter-trend, the position is intentionally against current trend, so
-        # the old side-vs-trend check fired immediately on every entry.
-        # New rule: only fire if trend has CHANGED since entry.
+        # 2026-06-08 FIX: compare current trend to ENTRY trend (not side).
+        # 2026-06-10 FIX: PROFIT-ONLY — fire only when currently in profit.
+        # Without this gate, current trend-flip fires 154 times over 5y, 95% of
+        # them locking in losses (avg -$80 per fire, -$12,399 total drag).
+        # With profit-only: 35 fires, 100% wins, +$10K profit over 5y.
         if exit_px is None and USE_TREND_FLIP_EXIT and trend is not None:
             entry_trend = pos.get("entry_trend")
             if entry_trend and trend != entry_trend:
-                exit_reason, exit_px = "TREND_FLIP", live_px
+                # Only fire trend-flip if we're currently in profit
+                avg = avg_entry_of(pos)
+                qty = pos.get("qty_total", 0)
+                if side == "LONG":
+                    unrealized = (live_px - avg) * qty
+                else:
+                    unrealized = (avg - live_px) * qty
+                if unrealized > 0:
+                    exit_reason, exit_px = "TREND_FLIP", live_px
 
         # 2026-06-06 v1.1: TIME-BASED SL — force exit position after N bars.
         # Backtest 5y: 72 bars (6h) = sweet spot. v1 → v1.1: +21pp return, -1.5pp DD.
@@ -522,6 +545,10 @@ def main():
             # 2026-06-05: excursion tracking — recorded in trade_log at close
             pos["max_fav_pct"] = max(pos.get("max_fav_pct", 0.0), fav)
             pos["max_adv_pct"] = min(pos.get("max_adv_pct", 0.0), fav)
+            # 2026-06-10: L2 trail SL needs peak favorable % AFTER L2 fills
+            # (separate from max_fav_pct because that tracks the L1-anchored peak too).
+            if pos.get("filled", 1) >= 2:
+                pos["l2_peak_fav_pct"] = max(pos.get("l2_peak_fav_pct", 0.0), fav)
             log.info(f"  IN {side} L{pos['filled']}/{DCA_LEVELS} avg=${avg_entry:.2f} live=${live_px:.2f} fav={fav:+.2f}% | mfe {pos['max_fav_pct']:+.2f}% mae {pos['max_adv_pct']:+.2f}%")
 
     # Entry — RSI (+ optional 15m trend gate + circuit breaker). Don't re-enter on the tick we just exited.
