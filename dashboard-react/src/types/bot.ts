@@ -1,6 +1,6 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-// Only 2 active bots after 2026-06-08 cleanup: v1 (was v11) + v2 (was v3).
-export type StrategyId = 'rsiscalp_trend_v11' | 'rsiscalp_trend_v3';
+// 2026-06-10: 3 bots — v1 (with-trend), v2 (counter-trend 3×), v2.1 (counter-trend 5×).
+export type StrategyId = 'rsiscalp_trend_v11' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3';
 
 export interface BotMeta {
   id: StrategyId;
@@ -18,15 +18,23 @@ export const BOTS: BotMeta[] = [
     label: 'v1 · With-Trend',
     badge: 'With-Trend',
     accent: 'blue',
-    description: 'RSI 35/65 + 15m trend gate + GAP 0.15% + ATR 0.8% + DCA + BE-after-DCA (wait 3 bars) + smart 6h time-SL. Honest 5y backtest: 6,782 trades / 55% WR / $64K / 2.08% DD / PF 2.13.',
+    description: 'RSI 35/65 + 15m trend gate + GAP 0.15% + ATR 0.8% + DCA + BE-after-DCA (wait 3 bars) + smart 6h time-SL. 3× leverage, weekend 2×.',
+  },
+  {
+    id: 'rsiscalp_trend_v2',
+    short: 'v2',
+    label: 'v2 · Counter-Trend (3× lev)',
+    badge: 'Counter-Trend',
+    accent: 'green',
+    description: 'Counter-trend RSI 35/65 + GAP 0.20% + BE wait 6 + ATR 0.8%. 3× leverage + weekend 2× boost. 13mo linear backtest (fee-free): 1,844 tr / 66.3% WR / +$36,264 / 13/13 months profitable.',
   },
   {
     id: 'rsiscalp_trend_v3',
     short: 'v2.1',
     label: 'v2.1 · Counter-Trend (5× lev)',
-    badge: 'Counter-Trend',
+    badge: 'Counter-Trend 5×',
     accent: 'purple',
-    description: 'v2 counter-trend (RSI 35/65, GAP 0.20%, BE wait 6) + 5× leverage + NO weekend boost (consistent sizing). Honest 5y backtest (fee-free, margin enforced): 13,501 trades / 70.7% WR / $481,785 / 1.26% DD.',
+    description: 'Same as v2 but 5× leverage + NO weekend boost (consistent sizing). 13mo linear backtest (fee-free): 2,139 tr / 65.7% WR / +$69,064 / 13/13 months profitable. ~90% more profit than v2.',
   },
 ];
 
