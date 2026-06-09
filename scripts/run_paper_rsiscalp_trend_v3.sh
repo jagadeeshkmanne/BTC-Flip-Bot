@@ -1,18 +1,25 @@
 #!/bin/bash
-# v3 COUNTER-TREND OPTIMAL (2026-06-08):
-#   RSI 35/65 + GAP 0.20% + BE wait 6 + ATR 0.8% + COUNTER-TREND
-# 5y backtest (honest, no lookahead):
-#   12,859 trades / 65.0% WR / +$173,910 / 1.29% DD / PF 3.07
-#   vs current v1.1: +303% trades, +14pp WR, +510% profit, LOWER DD
+# v2.1 COUNTER-TREND (2026-06-10):
+#   v2 (counter-trend RSI 35/65 + GAP 0.20% + BE wait 6 + ATR 0.8%)
+#   + 5× leverage (up from 3×) → L1+L2 each = $11,875 (was $7,125)
+#   + Weekend boost DISABLED (was 2×) → consistent sizing every day
+#   + Profit-only trend-flip exit + L2 trail SL (deployed 2026-06-10)
+#   + Zero fees in paper (deployed 2026-06-10)
 #
-# KEY: counter-trend bypasses the 15m trend gate so RSI extremes fire
-# regardless of trend. BE-after-DCA + 6-bar wait + smart 6h time-SL
-# keep risk tight despite higher trade count.
+# 5y backtest (margin enforced, fee-free):
+#   13,501 trades / 70.7% WR / +$481,785 / 1.26% DD
+#   vs current 3× lev with weekend 2× (margin enforced): $324K / 0.76% DD
+#   v2.1 trade-off: +0.50% more DD for +$157K more profit (no rejections)
+#
+# At 5× lev, liquidation distance ~20% (vs ~33% at 3×). Still well past the
+# 0.6% SL — no realistic liquidation risk for our scalping strategy.
 #
 # Schedule via crontab:
 #   * * * * * /home/jags/BTC-Flip-Bot/scripts/run_paper_rsiscalp_trend_v3.sh >> /home/jags/BTC-Flip-Bot/data/paper_rsiscalp_trend_v3/cron.log 2>&1
 cd /home/jags/BTC-Flip-Bot
 RSISCALP_DATA_DIR=paper_rsiscalp_trend_v3 \
+RSISCALP_LEVERAGE=5.0 \
+RSISCALP_WEEKEND_QTY_MULT=1.0 \
 RSISCALP_TREND=1 \
 RSISCALP_SMART_TIME_SL=1 \
 RSISCALP_RSI_OVERSOLD=35 \

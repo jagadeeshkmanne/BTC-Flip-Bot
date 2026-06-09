@@ -22,10 +22,15 @@ import os
 from typing import Optional, Literal
 
 # ═════ Market / sizing ═════
-LEVERAGE = 3.0     # 2026-06-01 (user): 3x. Safe here ONLY because the 1% stop
-                   # fires far before the ~33% liquidation line (0 liqs in 2.9y
-                   # backtest). NEVER run 3x without the stop — a no-SL 3x long
-                   # in a crash liquidates before the bounce. Expect ~50% max DD.
+import os as _os
+LEVERAGE = float(_os.environ.get("RSISCALP_LEVERAGE", "3.0"))
+# 2026-06-01 (user): default 3x. Safe here ONLY because the 1% stop
+# fires far before the ~33% liquidation line (0 liqs in 2.9y backtest).
+# NEVER run 3x without the stop — a no-SL 3x long in a crash liquidates
+# before the bounce. Expect ~50% max DD.
+# 2026-06-10: env-var aware so v2.1 can run 5× while v1 stays at 3×.
+# At 5× leverage, sizing becomes equity × 0.95 × 5 / 2 = $11,875 per leg
+# (vs $7,125 at 3×). Liquidation line at ~20% vs ~33%, still well past SL.
 RISK_PCT = 0.06    # informational; sizing uses LEVERAGE × 0.95 of equity.
 
 # ═════ RSI signal (the ONLY entry logic) ═════

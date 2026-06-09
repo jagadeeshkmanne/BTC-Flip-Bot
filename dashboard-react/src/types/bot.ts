@@ -22,11 +22,11 @@ export const BOTS: BotMeta[] = [
   },
   {
     id: 'rsiscalp_trend_v3',
-    short: 'v2',
-    label: 'v2 · Counter-Trend',
+    short: 'v2.1',
+    label: 'v2.1 · Counter-Trend (5× lev)',
     badge: 'Counter-Trend',
     accent: 'purple',
-    description: 'Same as v1 but BYPASSES the 15m trend gate — RSI extremes fire regardless of trend. GAP 0.20% + BE wait 6. Honest 5y backtest: 12,859 trades / 65% WR / $174K / 1.29% DD / PF 3.07.',
+    description: 'v2 counter-trend (RSI 35/65, GAP 0.20%, BE wait 6) + 5× leverage + NO weekend boost (consistent sizing). Honest 5y backtest (fee-free, margin enforced): 13,501 trades / 70.7% WR / $481,785 / 1.26% DD.',
   },
 ];
 

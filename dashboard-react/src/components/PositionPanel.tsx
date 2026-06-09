@@ -434,7 +434,8 @@ function WaitingForEntry({ status, state, strategy }: { status: BotStatus; state
         {/* RSI gauge — clearly labeled as "RSI Indicator", not a position scale */}
         {rsi != null && huntingSide && (
           <div class="border-t border-bg-border pt-4">
-            <RsiGauge rsi={rsi} target={huntingSide === 'LONG' ? rsiOS : rsiOB} hunting={huntingSide} />
+            <RsiGauge rsi={rsi} target={huntingSide === 'LONG' ? rsiOS : rsiOB}
+                      rsiOS={rsiOS} rsiOB={rsiOB} hunting={huntingSide} />
           </div>
         )}
 
@@ -480,10 +481,10 @@ function WaitingForEntry({ status, state, strategy }: { status: BotStatus; state
 }
 
 /* RSI gauge — visual scale from 0-100 with marker at current RSI + target threshold. */
-function RsiGauge({ rsi, target, hunting }: { rsi: number; target: number; hunting: 'LONG' | 'SHORT' }) {
+function RsiGauge({ rsi, target, rsiOS, rsiOB, hunting }:
+  { rsi: number; target: number; rsiOS: number; rsiOB: number; hunting: 'LONG' | 'SHORT' }) {
   const isLong = hunting === 'LONG';
-  // For LONG: need RSI ≤ 30 → bar from 0 (left) goes UP, target on left, current marker shows distance from target
-  // For SHORT: need RSI ≥ 70 → target on right, current marker shows distance from target
+  // For LONG: need RSI ≤ rsiOS. For SHORT: need RSI ≥ rsiOB.
   const distance = isLong ? rsi - target : target - rsi;     // > 0 means not there yet
   const isMet = distance <= 0;
   const colorCls = isMet ? 'text-accent-green' : isLong ? 'text-accent-blue' : 'text-accent-orange';
@@ -510,14 +511,16 @@ function RsiGauge({ rsi, target, hunting }: { rsi: number; target: number; hunti
           </div>
         </div>
       </div>
-      {/* 0-100 bar with markers */}
+      {/* 0-100 bar with markers — thresholds now driven by ACTUAL bot config (rsiOS/rsiOB) */}
       <div class="relative h-2 rounded-full bg-bg-subtle overflow-visible">
-        {/* Oversold zone (0-30) and overbought zone (70-100) tinted */}
-        <div class="absolute inset-y-0 left-0 w-[30%] bg-accent-green/15 rounded-l-full" />
-        <div class="absolute inset-y-0 right-0 w-[30%] bg-accent-red/15 rounded-r-full" />
-        {/* Threshold markers (always visible) */}
-        <div class="absolute top-0 bottom-0 w-px bg-accent-green/60" style={{ left: '30%' }} />
-        <div class="absolute top-0 bottom-0 w-px bg-accent-red/60" style={{ left: '70%' }} />
+        {/* Oversold zone (0-rsiOS) and overbought zone (rsiOB-100) tinted */}
+        <div class="absolute inset-y-0 left-0 bg-accent-green/15 rounded-l-full"
+             style={{ width: `${rsiOS}%` }} />
+        <div class="absolute inset-y-0 right-0 bg-accent-red/15 rounded-r-full"
+             style={{ width: `${100 - rsiOB}%` }} />
+        {/* Threshold markers (use real values, not hardcoded 30/70) */}
+        <div class="absolute top-0 bottom-0 w-px bg-accent-green/60" style={{ left: `${rsiOS}%` }} />
+        <div class="absolute top-0 bottom-0 w-px bg-accent-red/60" style={{ left: `${rsiOB}%` }} />
         {/* Current RSI marker */}
         <div
           class="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 z-10"
@@ -527,12 +530,12 @@ function RsiGauge({ rsi, target, hunting }: { rsi: number; target: number; hunti
             isMet ? 'bg-accent-green' : isLong ? 'bg-accent-blue' : 'bg-accent-orange')} />
         </div>
       </div>
-      <div class="flex justify-between text-2xs text-text-dim mt-1 px-0">
-        <span>0</span>
-        <span class="text-accent-green">30</span>
-        <span>50</span>
-        <span class="text-accent-red">70</span>
-        <span>100</span>
+      <div class="relative h-4 mt-1 text-2xs text-text-dim">
+        <span class="absolute left-0">0</span>
+        <span class="absolute text-accent-green -translate-x-1/2" style={{ left: `${rsiOS}%` }}>{rsiOS}</span>
+        <span class="absolute -translate-x-1/2" style={{ left: '50%' }}>50</span>
+        <span class="absolute text-accent-red -translate-x-1/2" style={{ left: `${rsiOB}%` }}>{rsiOB}</span>
+        <span class="absolute right-0">100</span>
       </div>
     </div>
   );
