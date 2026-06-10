@@ -17,9 +17,15 @@ import urllib.request
 import urllib.parse
 from urllib.parse import parse_qs, urlparse
 
-BOT_DIR = os.path.dirname(os.path.abspath(__file__))
+BOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(BOT_DIR)
-ENV_PATH = os.path.join(BOT_DIR, ".env")
+# 2026-06-10: .env relocated to bybit/.env (kept as the reference location
+# for Bybit live credentials). Falls back to root .env if bybit/.env missing.
+ENV_PATH = (
+    os.path.join(BOT_DIR, "bybit", ".env")
+    if os.path.exists(os.path.join(BOT_DIR, "bybit", ".env"))
+    else os.path.join(BOT_DIR, ".env")
+)
 
 # 2026-06-05: in-memory caches for Bybit-proxy endpoints. Prevents thread
 # starvation when 6+ concurrent dashboard requests all proxy Bybit
@@ -415,7 +421,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # the server EVERY time → server hammered → timeouts under load.
         # Everything else (HTML, API, state.json): no-cache.
         p = getattr(self, 'path', '') or ''
-        if '/static/bots/assets/' in p or '/bots/assets/' in p:
+        if '/build/bots/assets/' in p or '/bots/assets/' in p:
             self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
         else:
             self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
@@ -472,11 +478,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             pw_set = bool(get_dashboard_password())
             return self._json_response({"password_set": pw_set})
 
-        # 2026-06-05: root + classic dashboard both redirect to the new Preact dashboard.
-        # (Classic dashboard.html still on disk for reference but no longer served.)
+        # 2026-06-10: dashboard.html removed. Root redirects straight to v2.1.
         if path == '/' or path == '/dashboard.html':
             self.send_response(302)
-            self.send_header('Location', '/bots/v1')
+            self.send_header('Location', '/bots/v2.1')
             self.end_headers()
             return
 
@@ -569,8 +574,8 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             # 2026-06-10: 2 counter-trend 5× variants — v2.1 (TP 0.25/6h) vs v2.2 (TP 1.0/12h)
             ids = ['rsiscalp_trend_v3', 'rsiscalp_trend_v22']
             id_to_dir = {
-                'rsiscalp_trend_v3':  'paper_rsiscalp_trend_v3',
-                'rsiscalp_trend_v22': 'paper_rsiscalp_trend_v22',
+                'rsiscalp_trend_v3':  'v2.1',
+                'rsiscalp_trend_v22': 'v2.2',
             }
             out = {}
             for sid in ids:
@@ -599,23 +604,23 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         env_q = (qs.get('env', ['']) or [''])[0]
 
         if strategy_q == 'rsiscalp_trend_v2':
-            env_dir = 'paper_rsiscalp_trend_v2'
+            env_dir = 'v2'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
         elif strategy_q == 'rsiscalp_trend_v3':
-            env_dir = 'paper_rsiscalp_trend_v3'
+            env_dir = 'v2.1'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
         elif strategy_q == 'rsiscalp_trend_v22':
-            env_dir = 'paper_rsiscalp_trend_v22'
+            env_dir = 'v2.2'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
         else:
             # Default to active v2.1 bot when no strategy specified
-            env_dir = 'paper_rsiscalp_trend_v3'
+            env_dir = 'v2.1'
             state_filename = 'state_paper.json'
             status_filename = 'status_paper.json'
             log_filename = 'bot_paper.log'
@@ -646,7 +651,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # Live Binance position — for paper mode, return synthetic position
         # built from state_paper.json + mainnet ticker.
         if path == '/api/bot/day/binance':
-            if env_dir in ('paper_rsiscalp_trend_v2', 'paper_rsiscalp_trend_v3', 'paper_rsiscalp_trend_v22'):
+            if env_dir in ('v2', 'v2.1', 'v2.2'):
                 return self._json_response(_query_paper_position(
                     state_subdir=env_dir,
                     state_filename='state.json',
@@ -663,7 +668,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if path.startswith('/bots/'):
-            static_root = os.path.join(BOT_DIR, 'static', 'bots')
+            static_root = os.path.join(BOT_DIR, 'dashboard', 'build', 'bots')
             rel = path[len('/bots/'):]  # e.g. "v2" or "assets/index-abc.js"
             candidate = os.path.normpath(os.path.join(static_root, rel))
             if not candidate.startswith(static_root):
@@ -687,7 +692,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                         return
                     except OSError:
                         pass  # fall through to uncompressed
-                self.path = '/static/bots/' + rel
+                self.path = '/build/bots/' + rel
                 return super().do_GET()
             index = os.path.join(static_root, 'index.html')
             if os.path.isfile(index):
@@ -707,7 +712,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                         return
                     except OSError:
                         pass
-                self.path = '/static/bots/index.html'
+                self.path = '/build/bots/index.html'
                 return super().do_GET()
             return self._json_response({"error": "dashboard not built yet"}, code=503)
 

@@ -16,7 +16,7 @@
 # Schedule via crontab:
 #   * * * * * /home/jags/BTC-Flip-Bot/scripts/run_paper_rsiscalp_trend_v22.sh >> /home/jags/BTC-Flip-Bot/data/paper_rsiscalp_trend_v22/cron.log 2>&1
 cd /home/jags/BTC-Flip-Bot
-RSISCALP_DATA_DIR=paper_rsiscalp_trend_v22 \
+RSISCALP_DATA_DIR=v2.2 \
 RSISCALP_LEVERAGE=5.0 \
 RSISCALP_WEEKEND_QTY_MULT=1.0 \
 RSISCALP_TREND=1 \
@@ -29,5 +29,5 @@ RSISCALP_BE_WAIT_BARS=6 \
 RSISCALP_COUNTER_TREND=1 \
 RSISCALP_TP_DCA=0.01 \
 RSISCALP_TIME_SL_BARS=144 \
-  /usr/bin/flock -n /tmp/rsiscalpv22.lock \
-  /usr/bin/python3 strategies/day/bot_rsiscalp_v3.py 2>&1 || exit 0
+  /usr/bin/flock -n /tmp/v2.2.lock \
+  /usr/bin/python3 bot/bot_rsiscalp_v3.py 2>&1 || exit 0

@@ -1,7 +1,7 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
 // 2026-06-10: 2 counter-trend 5× variants for clean A/B comparison.
 // v2 (3× lev) removed — same strategy as v2.1 but lower leverage = less profit.
-export type StrategyId = 'rsiscalp_trend_v3' | 'rsiscalp_trend_v22';
+export type StrategyId = 'v2.1' | 'v2.2';
 
 export interface BotMeta {
   id: StrategyId;
@@ -14,7 +14,7 @@ export interface BotMeta {
 
 export const BOTS: BotMeta[] = [
   {
-    id: 'rsiscalp_trend_v3',
+    id: 'v2.1',
     short: 'v2.1',
     label: 'v2.1 · Counter-Trend (5× lev)',
     badge: 'Counter-Trend 5×',
@@ -22,7 +22,7 @@ export const BOTS: BotMeta[] = [
     description: '5× leverage + NO weekend boost. TP for L2 = 0.25%, smart time-SL = 6h. 6.8y backtest: 19,869 trades / 71.9% WR / $726K / 1.29% DD.',
   },
   {
-    id: 'rsiscalp_trend_v22',
+    id: 'v2.2',
     short: 'v2.2',
     label: 'v2.2 · Optimized L2 exits (5× lev)',
     badge: 'Counter-Trend 5× v2.2',

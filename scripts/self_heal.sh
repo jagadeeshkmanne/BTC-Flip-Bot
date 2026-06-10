@@ -37,7 +37,7 @@ if [ "$SERVER_OK" -ne 1 ]; then
     # If port still bound, kill any stale process matching exact path
     if sudo ss -tlnp 2>/dev/null | grep -q ":8888"; then
         log "Port 8888 still bound — killing zombie processes"
-        sudo pkill -9 -f "/home/jags/BTC-Flip-Bot/server.py" 2>/dev/null
+        sudo pkill -9 -f "/home/jags/BTC-Flip-Bot/dashboard/server.py" 2>/dev/null
         sleep 2
     fi
     # Start fresh via systemctl (consistent with how it was deployed)

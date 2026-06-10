@@ -50,7 +50,7 @@ from core_rsiscalp import (
 )
 
 # ─── Paths ───
-DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v3"))
+DATA_DIR = os.path.join(BOT_DIR, "data", os.environ.get("RSISCALP_DATA_DIR", "v2.1"))
 
 # ─── v3 NEW: Counter-Trend mode ───
 # When 1, allow RSI extreme entries even AGAINST the 15m trend.
@@ -172,7 +172,7 @@ log.addHandler(sh)
 
 
 # ─── Bybit public fetchers (V5 USDT-M perp, BTCUSDT) ───
-from data_bybit import fetch_klines as _bb_klines, fetch_live_price as _bb_price
+from bybit_data import fetch_klines as _bb_klines, fetch_live_price as _bb_price
 
 def fetch_klines(interval: str, limit: int = 500) -> pd.DataFrame | None:
     return _bb_klines(interval, limit, PAIR, log)
@@ -753,7 +753,7 @@ def main():
         }
 
     write_status({
-        "env": os.environ.get("RSISCALP_DATA_DIR", "paper_rsiscalp_trend_v11"),
+        "env": os.environ.get("RSISCALP_DATA_DIR", "v2.1"),
         "pair": PAIR, "price": close_px, "live_price": live_px,
         "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
         "position": pos_status, "signal": sig,
