@@ -16,18 +16,18 @@ export const BOTS: BotMeta[] = [
   {
     id: 'v2.1',
     short: 'v2.1',
-    label: 'v2.1 · Counter-Trend (5× lev)',
-    badge: 'Counter-Trend 5×',
+    label: 'v2.1 · Counter-Trend',
+    badge: 'Counter-Trend',
     accent: 'purple',
-    description: '5× leverage + NO weekend boost. TP for L2 = 0.25%, smart time-SL = 6h. 6.8y backtest: 19,869 trades / 71.9% WR / $726K / 1.29% DD.',
+    description: 'RSI 35/65 · 5× lev · 2-leg DCA at 0.5% · TP_L1 0.5% · TP_L2 0.25% · time-SL 6h. 6.8y backtest: 19,869 trades / 71.9% WR / $726K profit / 1.29% max DD.',
   },
   {
     id: 'v2.2',
     short: 'v2.2',
-    label: 'v2.2 · Optimized L2 exits (5× lev)',
-    badge: 'Counter-Trend 5× v2.2',
+    label: 'v2.2 · Optimized L2 exits',
+    badge: 'Counter-Trend',
     accent: 'orange',
-    description: 'v2.1 + wider TP for L2 (1.00% vs 0.25%) + longer smart time-SL (12h vs 6h). 6.8y backtest: 19,140 trades / 72.1% WR / $884K / 0.64% DD. +$158K profit (+22%), DD halved (-50%).',
+    description: 'Same as v2.1 with wider L2 TP (1.00%) and longer time-SL (12h). 6.8y backtest: 19,140 trades / 72.1% WR / $884K profit / 0.64% max DD. +22% vs v2.1, DD halved.',
   },
 ];
 
