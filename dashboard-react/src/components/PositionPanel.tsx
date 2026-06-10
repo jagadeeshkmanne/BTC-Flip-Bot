@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { TrendingDown, TrendingUp, Check, X, Clock, Activity } from 'lucide-react';
 import type { BotStatus, BotState, StrategyId } from '@/types/bot';
 import { useTickerStore } from '@/hooks/useBtcStream';
+import { fmtTradeTime, fmtClockIST, fmtHourMinIST, utcHourToISTLabel } from '@/utils/time';
 
 // Compute "time until bot resumes" given the blocked hours list (UTC).
 // Returns null if not currently blocked. Otherwise returns ms until the
@@ -118,9 +119,7 @@ function ActivePosition({ status }: { status: BotStatus }) {
         {pos.entry_time && (
           <div class="flex items-center gap-1.5">
             <Clock size={11} />
-            opened {new Date(pos.entry_time).toLocaleString(undefined, {
-              month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit'
-            })}
+            opened {fmtTradeTime(pos.entry_time)} IST
           </div>
         )}
         {(pos as any).time_sl_at && (() => {
@@ -131,9 +130,7 @@ function ActivePosition({ status }: { status: BotStatus }) {
           const hours = Math.floor(totalMin / 60);
           const mins = totalMin % 60;
           const countdown = hours > 0 ? `${hours}h ${mins}m left` : `${mins}m left`;
-          const targetTime = new Date(target).toLocaleTimeString(undefined, {
-            hour: '2-digit', minute: '2-digit'
-          });
+          const targetTime = fmtHourMinIST(target);
           return (
             <div class="flex items-center gap-1.5 text-accent-orange font-mono">
               <Clock size={11} />
@@ -421,7 +418,7 @@ function WaitingForEntry({ status, state, strategy }: { status: BotStatus; state
         <div class="text-center py-2">
           <div class="text-text-muted text-sm mb-1">No active position</div>
           <div class="text-text-dim text-2xs">
-            Bot is monitoring · last tick {(status.updated_at || '').slice(11, 19)} UTC
+            Bot is monitoring · last tick {fmtClockIST(status.updated_at)} IST
           </div>
         </div>
 
@@ -441,7 +438,7 @@ function WaitingForEntry({ status, state, strategy }: { status: BotStatus; state
               <span class="font-semibold text-accent-red">Daily $200 stop hit</span>
             </div>
             <div class="text-xs text-text-muted mt-1 ml-6">
-              Today's loss: ${state.daily_loss.toFixed(2)} · resumes 00:00 UTC
+              Today's loss: ${state.daily_loss.toFixed(2)} · resumes 05:30 IST (midnight UTC)
             </div>
           </div>
         )}
@@ -580,7 +577,7 @@ function CooldownBanner({ pauseUntil }: { pauseUntil: string }) {
         <span class="ml-auto font-mono text-accent-orange">{countdown} left</span>
       </div>
       <div class="text-xs text-text-muted mt-1 ml-6">
-        Resumes at {new Date(targetMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        Resumes at {fmtClockIST(new Date(targetMs).toISOString())} IST
       </div>
     </div>
   );
@@ -605,7 +602,7 @@ function HourBlockedBanner({ blockedHours, curHour }:
     nextOpen = (nextOpen + 1) % 24;
     if (!blockedHours.includes(nextOpen)) break;
   }
-  const resumeAtUtc = `${nextOpen.toString().padStart(2,'0')}:00 UTC`;
+  const resumeAtIst = utcHourToISTLabel(nextOpen);
 
   return (
     <div class="p-3 rounded-md bg-accent-orange/15 border border-accent-orange/40 flex items-center gap-3">
@@ -620,10 +617,10 @@ function HourBlockedBanner({ blockedHours, curHour }:
           </span>
         </div>
         <div class="text-2xs text-text-muted mt-1">
-          {curHour.toString().padStart(2,'0')}:00 UTC is in blocked window
-          ({blockedHours.map(h => `${h.toString().padStart(2,'0')}:00`).join(', ')})
+          {utcHourToISTLabel(curHour)} is in blocked window
+          ({blockedHours.map(h => utcHourToISTLabel(h)).join(', ')})
           {' · '}
-          resumes at <span class="text-text font-semibold">{resumeAtUtc}</span>
+          resumes at <span class="text-text font-semibold">{resumeAtIst}</span>
         </div>
       </div>
     </div>

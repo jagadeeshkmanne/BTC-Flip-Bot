@@ -1,6 +1,7 @@
 import { Check, X } from 'lucide-react';
 import clsx from 'clsx';
 import type { BotStatus, StrategyId } from '@/types/bot';
+import { utcHourToISTLabel } from '@/utils/time';
 
 interface Cond { label: string; value: string; ok: boolean; }
 

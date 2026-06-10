@@ -3,12 +3,9 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import clsx from 'clsx';
 import type { TradeRecord } from '@/types/bot';
+import { fmtTradeTime } from '@/utils/time';
 
-const fmtTime = (iso?: string) => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-};
+const fmtTime = (iso?: string) => fmtTradeTime(iso);
 const dur = (a?: string, b?: string) => {
   if (!a || !b) return '—';
   const m = Math.round((new Date(b).getTime() - new Date(a).getTime()) / 60_000);
