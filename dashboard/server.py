@@ -681,7 +681,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                         return
                     except OSError:
                         pass  # fall through to uncompressed
-                self.path = '/build/bots/' + rel
+                self.path = '/dashboard/build/bots/' + rel
                 return super().do_GET()
             index = os.path.join(static_root, 'index.html')
             if os.path.isfile(index):
@@ -701,7 +701,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                         return
                     except OSError:
                         pass
-                self.path = '/build/bots/index.html'
+                self.path = '/dashboard/build/bots/index.html'
                 return super().do_GET()
             return self._json_response({"error": "dashboard not built yet"}, code=503)
 
