@@ -218,8 +218,16 @@ def _record_trade(state, trade_record, is_win: bool):
     state["trade_log"] = state["trade_log"][-200:]
     state["stats"]["total"] += 1
     state["stats"]["pnl"] += trade_record["pnl_pct"]
-    if is_win:
+    # 2026-06-10: BE-DCA exits at $0 are NEUTRAL — not wins, not losses.
+    # Track them separately so win rate isn't unfairly dragged down by mean-
+    # reversion exits that didn't actually lose money.
+    pnl = trade_record.get("pnl_usd", 0)
+    if pnl > 0:
         state["stats"]["wins"] += 1
+    elif pnl < 0:
+        state["stats"]["losses"] = state["stats"].get("losses", 0) + 1
+    else:
+        state["stats"]["neutrals"] = state["stats"].get("neutrals", 0) + 1
 
 
 def close_position(state, pos, exit_px: float, reason: str) -> None:
