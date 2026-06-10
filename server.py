@@ -589,45 +589,16 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                 out[sid] = entry
             return self._json_response(out)
 
-        # ── Bot API (public, no auth). Active strategies: ──
-        # Routes by ?strategy= (preferred) or legacy ?env=:
-        #   ?strategy=sr_dca       → V2.2 S/R paper bot (data/paper/state_paper.json)
-        #   ?strategy=divflip      → Divergence-flip v1 paper bot (data/paper_divflip/state.json)
-        #   ?strategy=divflip_v2   → Divflip v2 paper bot, 1h trend filter (data/paper_divflip_v2/state.json)
-        #   ?strategy=divflip_sharp  → Divflip v1b paper bot, L3 disabled (data/paper_divflip_sharp/state.json)
-        #   ?strategy=divflip_pro    → Divflip Pro paper bot, EMA200+ATR filters (data/paper_divflip_pro/state.json)
-        #   ?env=testnet           → legacy testnet bot data (mostly empty after paper migration)
+        # ── Bot API (public, no auth). Active strategies (counter-trend 5×): ──
+        #   ?strategy=rsiscalp_trend_v3   → v2.1 (TP_L2 0.25%, time-SL 6h)
+        #   ?strategy=rsiscalp_trend_v22  → v2.2 (TP_L2 1.00%, time-SL 12h)
+        #   ?strategy=rsiscalp_trend_v2   → v2 history (kept for trade log access)
         from urllib.parse import parse_qs
         qs = parse_qs(parsed.query)
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
         env_q = (qs.get('env', ['']) or [''])[0]
 
-        if strategy_q == 'divflip':
-            env_dir = 'paper_divflip'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'divflip_v2':
-            env_dir = 'paper_divflip_v2'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'divflip_sharp':
-            env_dir = 'paper_divflip_sharp'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'divflip_pro':
-            env_dir = 'paper_divflip_pro'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'rsiscalp_trend':
-            env_dir = 'paper_rsiscalp_trend'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'rsiscalp_trend_v2':
+        if strategy_q == 'rsiscalp_trend_v2':
             env_dir = 'paper_rsiscalp_trend_v2'
             state_filename = 'state.json'
             status_filename = 'status.json'
@@ -642,23 +613,9 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
-        elif strategy_q == 'rsiscalp_trend_v4':
-            env_dir = 'paper_rsiscalp_trend_v4'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'rsiscalp_trend_v5':
-            env_dir = 'paper_rsiscalp_trend_v5'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif env_q == 'testnet':
-            env_dir = 'testnet'
-            state_filename = 'state_day.json'
-            status_filename = 'status_day.json'
-            log_filename = 'bot_day.log'
         else:
-            env_dir = 'paper'
+            # Default to active v2.1 bot when no strategy specified
+            env_dir = 'paper_rsiscalp_trend_v3'
             state_filename = 'state_paper.json'
             status_filename = 'status_paper.json'
             log_filename = 'bot_paper.log'
@@ -687,62 +644,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             return self._json_response({"lines": [l.strip() for l in lines]})
 
         # Live Binance position — for paper mode, return synthetic position
-        # built from state_paper.json + mainnet ticker. For testnet, query the
-        # real testnet account (as before, requires API keys).
+        # built from state_paper.json + mainnet ticker.
         if path == '/api/bot/day/binance':
-            if env_dir == 'paper':
-                return self._json_response(_query_paper_position())
-            if env_dir == 'paper_divflip':
+            if env_dir in ('paper_rsiscalp_trend_v2', 'paper_rsiscalp_trend_v3', 'paper_rsiscalp_trend_v22'):
                 return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_divflip_v2':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip_v2',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_divflip_sharp':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip_sharp',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_divflip_pro':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_divflip_pro',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_rsiscalp_trend':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_rsiscalp_trend',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_rsiscalp_trend_v2':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_rsiscalp_trend_v2',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_rsiscalp_trend_v3':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_rsiscalp_trend_v3',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_rsiscalp_trend_v4':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_rsiscalp_trend_v4',
-                    state_filename='state.json',
-                    balance_key='balance',
-                ))
-            if env_dir == 'paper_rsiscalp_trend_v5':
-                return self._json_response(_query_paper_position(
-                    state_subdir='paper_rsiscalp_trend_v5',
+                    state_subdir=env_dir,
                     state_filename='state.json',
                     balance_key='balance',
                 ))
