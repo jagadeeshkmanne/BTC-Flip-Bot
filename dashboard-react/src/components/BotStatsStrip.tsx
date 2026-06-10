@@ -21,7 +21,15 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
   const realizedUsd = balance - INITIAL;
   const realizedPct = (realizedUsd / INITIAL) * 100;
   const stats = state?.stats ?? status?.stats ?? { total: 0, wins: 0, pnl: 0 };
-  const wr = stats.total > 0 ? (stats.wins / stats.total) * 100 : 0;
+  // 2026-06-10: count BE-DCA exits as NEUTRAL ($0 net), not losses.
+  // For old states that don't track neutrals/losses yet, derive them from trade_log.
+  const trades = (state as any)?.trade_log ?? state?.trade_log ?? [];
+  const losses = (stats as any).losses ?? trades.filter((t: any) => (t.pnl_usd ?? 0) < 0).length;
+  const neutrals = (stats as any).neutrals ?? trades.filter((t: any) => (t.pnl_usd ?? 0) === 0).length;
+  const realWins = (stats as any).wins ?? trades.filter((t: any) => (t.pnl_usd ?? 0) > 0).length;
+  const winLossBase = realWins + losses;
+  // True WR excludes neutrals from denominator
+  const wr = winLossBase > 0 ? (realWins / winLossBase) * 100 : 0;
 
   const pos = status?.position;
   const live = tickerPrice || status?.live_price || 0;
@@ -106,7 +114,9 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
         <Metric
           label="Win Rate"
           value={`${wr.toFixed(0)}%`}
-          sub={`${stats.wins} / ${stats.total} trades`}
+          sub={neutrals > 0
+            ? `${realWins}W / ${losses}L / ${neutrals}N`
+            : `${realWins} / ${stats.total} trades`}
         />
       </div>
     </div>
