@@ -2,7 +2,7 @@
 
 > Counter-trend RSI mean-reversion bot for Bybit BTCUSDT perpetual futures. 5-minute bars, 5× leverage, 2-leg DCA. Paper-tested 2019-2026.
 
-**Project rename suggestion:** this repo is currently named `BTC-Flip-Bot` from a much earlier strategy. A more accurate name would be `btc-rsi-scalper` or `btc-counter-trend-bot`. Renaming the GitHub repo is optional and a separate step (Settings → Rename).
+> Repo renamed from `BTC-Flip-Bot` → `btc-rsi-scalper` on 2026-06-10 to match the actual strategy. GitHub auto-redirects the old URL for ~12 months.
 
 ---
 
@@ -102,8 +102,8 @@ Cron runs each launcher every minute. The bot reads state from `data/paper_<bot>
 ## Quick start (local paper test)
 
 ```bash
-git clone https://github.com/jagadeeshkmanne/BTC-Flip-Bot.git
-cd BTC-Flip-Bot
+git clone https://github.com/jagadeeshkmanne/btc-rsi-scalper.git
+cd btc-rsi-scalper
 pip3 install numpy pandas requests reportlab
 
 # Run v2.1 once (single tick)
