@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'preact/hooks';
+import { useMemo, useRef, useState } from 'preact/hooks';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import clsx from 'clsx';
@@ -19,8 +19,26 @@ const ch = createColumnHelper<TradeRecord>();
 // displays whatever pnl_usd the bot records.
 
 export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
-  // Newest first
-  const data = useMemo(() => [...trades].reverse(), [trades]);
+  // 2026-06-10: count wins/losses/neutrals, default-hide neutrals (BE-DCA $0)
+  // since they clutter the table without adding info beyond the summary chips.
+  const [showNeutrals, setShowNeutrals] = useState(false);
+
+  const counts = useMemo(() => {
+    let wins = 0, losses = 0, neutrals = 0;
+    for (const t of trades) {
+      const p = t.pnl_usd ?? 0;
+      if (p > 0) wins++;
+      else if (p < 0) losses++;
+      else neutrals++;
+    }
+    return { wins, losses, neutrals };
+  }, [trades]);
+
+  // Newest first, optionally filtered to non-neutral
+  const data = useMemo(() => {
+    const arr = showNeutrals ? trades : trades.filter(t => (t.pnl_usd ?? 0) !== 0);
+    return [...arr].reverse();
+  }, [trades, showNeutrals]);
 
   const columns = useMemo(() => [
     ch.accessor('entry_time', { header: 'Time', cell: i => <span class="text-text-muted">{fmtTime(i.getValue())}</span> }),
@@ -77,9 +95,40 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
 
   return (
     <div class="card p-0 overflow-hidden">
-      <div class="px-4 py-3 border-b border-bg-border flex items-center justify-between">
-        <span class="text-sm font-semibold uppercase tracking-wide text-text-muted">Trade History</span>
-        <span class="text-xs text-text-dim">{trades.length} trades</span>
+      <div class="px-4 py-3 border-b border-bg-border space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-semibold uppercase tracking-wide text-text-muted">Trade History</span>
+          <span class="text-xs text-text-dim">{trades.length} total · showing {data.length}</span>
+        </div>
+        {/* Summary chips: profit / loss / neutral counts */}
+        <div class="flex items-center gap-2 flex-wrap">
+          <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-accent-green/10 border border-accent-green/30 text-xs">
+            <span class="size-1.5 rounded-full bg-accent-green" />
+            <span class="text-accent-green font-semibold">{counts.wins}</span>
+            <span class="text-text-dim">profit</span>
+          </div>
+          <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-accent-red/10 border border-accent-red/30 text-xs">
+            <span class="size-1.5 rounded-full bg-accent-red" />
+            <span class="text-accent-red font-semibold">{counts.losses}</span>
+            <span class="text-text-dim">loss</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowNeutrals(v => !v)}
+            class={clsx(
+              'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition-colors cursor-pointer',
+              showNeutrals
+                ? 'bg-accent-orange/15 border-accent-orange/40 text-accent-orange'
+                : 'bg-bg-hover border-bg-border text-text-dim hover:border-bg-border-hover'
+            )}
+            title={showNeutrals ? 'Hide BE-DCA neutrals from table' : 'Show BE-DCA neutrals in table'}
+          >
+            <span class={clsx('size-1.5 rounded-full', showNeutrals ? 'bg-accent-orange' : 'bg-text-dim')} />
+            <span class="font-semibold">{counts.neutrals}</span>
+            <span>neutral</span>
+            <span class="ml-1 text-[10px] uppercase opacity-70">{showNeutrals ? 'shown' : 'hidden'}</span>
+          </button>
+        </div>
       </div>
 
       {/* ── MOBILE: condensed card list (essentials only) ── */}
