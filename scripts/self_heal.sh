@@ -6,10 +6,9 @@
 set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
-# 2026-06-06: monitors 3-bot fleet — v1.1 (Ultimate), v2.0 (DCA), v5.0 (Capped).
-RSI_V1_DIR="$BOT_DIR/data/paper_rsiscalp_trend"
-RSI_V2_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v2"
-RSI_V5_DIR="$BOT_DIR/data/paper_rsiscalp_trend_v5"
+# 2026-06-10: fleet is v2.1 + v2.2 (counter-trend 5×). With-trend + 3× bots removed.
+V21_DIR="$BOT_DIR/data/v2.1"
+V22_DIR="$BOT_DIR/data/v2.2"
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -84,8 +83,7 @@ check_bot() {
 }
 
 # ── Check 2/3/4: RSI-Scalp +Trend fleet (v1.1, v2.0, v5.0) ─────────────
-check_bot "RSI-Scalp v1.1" "$RSI_V1_DIR/bot.log" "$RSI_V1_DIR/state.json"
-check_bot "RSI-Scalp v2.0" "$RSI_V2_DIR/bot.log" "$RSI_V2_DIR/state.json"
-check_bot "RSI-Scalp v5.0" "$RSI_V5_DIR/bot.log" "$RSI_V5_DIR/state.json"
+check_bot "v2.1" "$V21_DIR/bot.log" "$V21_DIR/state.json"
+check_bot "v2.2" "$V22_DIR/bot.log" "$V22_DIR/state.json"
 
 exit 0
