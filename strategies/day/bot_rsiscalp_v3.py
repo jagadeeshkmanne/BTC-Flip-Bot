@@ -477,6 +477,11 @@ def main():
                 # trail SL behind peak with 0.025% buffer. Captures the
                 # recovery profit on L2 positions that would otherwise BE-DCA
                 # exit at avg ($0 gross). Backtest 5y: +$5,742 / same DD.
+                #
+                # 2026-06-10: TESTED letting trail arm during 6-bar BE wait —
+                # backtest showed -$22K (v2.1) and -$146K (v2.2). The wait gives
+                # positions room to develop into TPs; early trail kills the
+                # 1% TP target by exiting on tiny spikes. Keep the gate.
                 if be_armed:
                     avg = avg_entry_of(pos)
                     peak_fav = pos.get("l2_peak_fav_pct", 0.0)
