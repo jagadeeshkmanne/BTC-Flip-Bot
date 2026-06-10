@@ -1,6 +1,6 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-// 2026-06-10: 3 bots — v1 (with-trend), v2 (counter-trend 3×), v2.1 (counter-trend 5×).
-export type StrategyId = 'rsiscalp_trend_v11' | 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3';
+// 2026-06-10: 3 counter-trend variants for A/B comparison.
+export type StrategyId = 'rsiscalp_trend_v2' | 'rsiscalp_trend_v3' | 'rsiscalp_trend_v22';
 
 export interface BotMeta {
   id: StrategyId;
@@ -13,20 +13,12 @@ export interface BotMeta {
 
 export const BOTS: BotMeta[] = [
   {
-    id: 'rsiscalp_trend_v11',
-    short: 'v1',
-    label: 'v1 · With-Trend',
-    badge: 'With-Trend',
-    accent: 'blue',
-    description: 'RSI 35/65 + 15m trend gate + GAP 0.15% + ATR 0.8% + DCA + BE-after-DCA (wait 3 bars) + smart 6h time-SL. 3× leverage, weekend 2×.',
-  },
-  {
     id: 'rsiscalp_trend_v2',
     short: 'v2',
     label: 'v2 · Counter-Trend (3× lev)',
     badge: 'Counter-Trend',
     accent: 'green',
-    description: 'Counter-trend RSI 35/65 + GAP 0.20% + BE wait 6 + ATR 0.8%. 3× leverage + weekend 2× boost. 13mo linear backtest (fee-free): 1,844 tr / 66.3% WR / +$36,264 / 13/13 months profitable.',
+    description: 'Counter-trend RSI 35/65 + GAP 0.20% + BE wait 6 + ATR 0.8%. 3× leverage + weekend 2× boost. Baseline conservative config.',
   },
   {
     id: 'rsiscalp_trend_v3',
@@ -34,7 +26,15 @@ export const BOTS: BotMeta[] = [
     label: 'v2.1 · Counter-Trend (5× lev)',
     badge: 'Counter-Trend 5×',
     accent: 'purple',
-    description: 'Same as v2 but 5× leverage + NO weekend boost (consistent sizing). 13mo linear backtest (fee-free): 2,139 tr / 65.7% WR / +$69,064 / 13/13 months profitable. ~90% more profit than v2.',
+    description: '5× leverage + NO weekend boost. TP for L2 = 0.25%, smart time-SL = 6h. 6.8y backtest: 19,889 trades / 71.9% WR / $727K / 1.27% DD.',
+  },
+  {
+    id: 'rsiscalp_trend_v22',
+    short: 'v2.2',
+    label: 'v2.2 · Optimized L2 exits (5× lev)',
+    badge: 'Counter-Trend 5× v2.2',
+    accent: 'orange',
+    description: 'v2.1 + wider TP for L2 (1.00% vs 0.25%) + longer smart time-SL (12h vs 6h). 6.8y backtest: 19,140 trades / 72.1% WR / $884K / 0.64% DD. +$157K profit (+22%), DD halved (-49%).',
   },
 ];
 

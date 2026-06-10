@@ -566,12 +566,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # 6 connections every 5s) down to 1 connection. Big perf win for the
         # toy http.server.
         if path == '/api/bots/all':
-            # 2026-06-10: 3 bots — v1 (with-trend), v2 (counter-trend 3×), v2.1 (counter-trend 5×).
-            ids = ['rsiscalp_trend_v11', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3']
+            # 2026-06-10: 3 counter-trend variants — v2 (3× lev), v2.1 (5× lev), v2.2 (5× lev + optimized L2 exits)
+            ids = ['rsiscalp_trend_v2', 'rsiscalp_trend_v3', 'rsiscalp_trend_v22']
             id_to_dir = {
-                'rsiscalp_trend_v11': 'paper_rsiscalp_trend_v11',
                 'rsiscalp_trend_v2':  'paper_rsiscalp_trend_v2',
                 'rsiscalp_trend_v3':  'paper_rsiscalp_trend_v3',
+                'rsiscalp_trend_v22': 'paper_rsiscalp_trend_v22',
             }
             out = {}
             for sid in ids:
@@ -635,6 +635,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             log_filename = 'bot.log'
         elif strategy_q == 'rsiscalp_trend_v3':
             env_dir = 'paper_rsiscalp_trend_v3'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
+        elif strategy_q == 'rsiscalp_trend_v22':
+            env_dir = 'paper_rsiscalp_trend_v22'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
