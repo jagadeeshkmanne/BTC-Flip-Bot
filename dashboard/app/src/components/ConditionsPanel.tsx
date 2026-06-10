@@ -17,9 +17,9 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
   const trendDown = s.trend_15m === 'DOWN';
   // Both active bots (v11/v3) have GAP filter.
   const hasGapFilter = true;
-  // v2 (rsiscalp_trend_v2) and v2.1 (rsiscalp_trend_v3) are both COUNTER-TREND
-  // — fire regardless of 15m trend direction. Only v1 uses the trend gate.
-  const isCounterTrend = strategy === 'rsiscalp_trend_v3' || strategy === 'rsiscalp_trend_v2';
+  // 2026-06-10: fleet is v2.1 + v2.2, both COUNTER-TREND. With-trend bots removed.
+  // Always counter-trend — no trend-gate row in conditions.
+  const isCounterTrend = strategy === 'v2.1' || strategy === 'v2.2';
 
   // Fleet-wide filters
   const hour = i.current_hour_utc;

@@ -572,10 +572,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # toy http.server.
         if path == '/api/bots/all':
             # 2026-06-10: 2 counter-trend 5× variants — v2.1 (TP 0.25/6h) vs v2.2 (TP 1.0/12h)
-            ids = ['rsiscalp_trend_v3', 'rsiscalp_trend_v22']
+            ids = ['v2.1', 'v2.2']
             id_to_dir = {
-                'rsiscalp_trend_v3':  'v2.1',
-                'rsiscalp_trend_v22': 'v2.2',
+                'v2.1': 'v2.1',
+                'v2.2': 'v2.2',
             }
             out = {}
             for sid in ids:
@@ -595,26 +595,15 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             return self._json_response(out)
 
         # ── Bot API (public, no auth). Active strategies (counter-trend 5×): ──
-        #   ?strategy=rsiscalp_trend_v3   → v2.1 (TP_L2 0.25%, time-SL 6h)
-        #   ?strategy=rsiscalp_trend_v22  → v2.2 (TP_L2 1.00%, time-SL 12h)
-        #   ?strategy=rsiscalp_trend_v2   → v2 history (kept for trade log access)
+        #   ?strategy=v2.1   → TP_L2 0.25%, time-SL 6h
+        #   ?strategy=v2.2   → TP_L2 1.00%, time-SL 12h
         from urllib.parse import parse_qs
         qs = parse_qs(parsed.query)
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
         env_q = (qs.get('env', ['']) or [''])[0]
 
-        if strategy_q == 'rsiscalp_trend_v2':
-            env_dir = 'v2'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'rsiscalp_trend_v3':
-            env_dir = 'v2.1'
-            state_filename = 'state.json'
-            status_filename = 'status.json'
-            log_filename = 'bot.log'
-        elif strategy_q == 'rsiscalp_trend_v22':
-            env_dir = 'v2.2'
+        if strategy_q in ('v2.1', 'v2.2'):
+            env_dir = strategy_q
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
