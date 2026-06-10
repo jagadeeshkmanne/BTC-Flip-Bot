@@ -128,14 +128,19 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
             </button>
           </div>
           {/* Win rate — wins / (wins + losses), excludes neutrals */}
-          {(counts.wins + counts.losses) > 0 && (
-            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-bg-hover border border-bg-border text-sm">
-              <span class="text-text-dim text-xs uppercase tracking-wide">Win Rate</span>
-              <span class="text-text font-bold text-base leading-none tabular-nums">
-                {((counts.wins / (counts.wins + counts.losses)) * 100).toFixed(1)}%
-              </span>
-            </div>
-          )}
+          {(counts.wins + counts.losses) > 0 && (() => {
+            const wrPct = (counts.wins / (counts.wins + counts.losses)) * 100;
+            const tone =
+              wrPct >= 60 ? 'bg-accent-green/20 border-accent-green/50 text-accent-green' :
+              wrPct >= 40 ? 'bg-accent-orange/20 border-accent-orange/50 text-accent-orange' :
+                            'bg-accent-red/20 border-accent-red/50 text-accent-red';
+            return (
+              <div class={clsx('inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm', tone)}>
+                <span class="font-bold text-base leading-none tabular-nums">{wrPct.toFixed(1)}%</span>
+                <span class="font-medium">Win Rate</span>
+              </div>
+            );
+          })()}
         </div>
       </div>
 
