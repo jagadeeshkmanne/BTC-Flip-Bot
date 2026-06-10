@@ -254,8 +254,11 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
                 f"net ${net:+.2f} (price {price_move_pct:+.2f}%) | balance ${state['balance']:.2f} "
                 f"| MFE {pos.get('max_fav_pct',0):+.2f}% MAE {pos.get('max_adv_pct',0):+.2f}%")
     # ── Circuit breaker: count consecutive losses; pause after BREAKER_LOSSES ──
+    # 2026-06-10: BE-DCA exits at $0 gross — NOT a real loss, don't trigger cooldown.
+    # Backtest 6.8y: +$54K profit / same DD. Skipping prevents wasted 15-min waits
+    # when the mean-reversion edge could fire on the next signal immediately.
     if USE_CIRCUIT_BREAKER:
-        if net <= 0:
+        if net < 0 and reason != "BE-DCA":
             state["consec_losses"] = state.get("consec_losses", 0) + 1
             if state["consec_losses"] >= BREAKER_LOSSES:
                 until = datetime.now(timezone.utc) + timedelta(hours=BREAKER_PAUSE_HOURS)
