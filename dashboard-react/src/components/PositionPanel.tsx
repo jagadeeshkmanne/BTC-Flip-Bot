@@ -159,12 +159,15 @@ function PriceScale({
   // Scale endpoints: low → high
   // For SHORT: TP (low, profit) ... SL (high, loss)
   // For LONG:  SL (low, loss)   ... TP (high, profit)
-  const allKeys = [tp, entry, sl, ...(l2 ? [l2] : [])];
+  // 2026-06-10: include LIVE price so when SL==ENTRY (BE-DCA mode) and price
+  // is currently below avg, the live marker stays on-screen instead of being
+  // pinned to the left edge.
+  const allKeys = [tp, entry, sl, live, ...(l2 ? [l2] : [])];
   const minPx = Math.min(...allKeys);
   const maxPx = Math.max(...allKeys);
   const range = Math.max(maxPx - minPx, 1);
-  // 5% padding either side for visual breathing room
-  const pad = range * 0.05;
+  // 8% padding either side (was 5%) so the live marker isn't right at the edge
+  const pad = range * 0.08;
   const scaleLo = minPx - pad;
   const scaleHi = maxPx + pad;
   const scaleSpan = scaleHi - scaleLo;
