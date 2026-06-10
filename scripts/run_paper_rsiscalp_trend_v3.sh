@@ -28,5 +28,7 @@ RSISCALP_V2_GAP_MIN=0.0020 \
 RSISCALP_ATR_MAX_PCT=0.80 \
 RSISCALP_BE_WAIT_BARS=6 \
 RSISCALP_COUNTER_TREND=1 \
+RSISCALP_TP_DCA=0.01 \
+RSISCALP_TIME_SL_BARS=144 \
   /usr/bin/flock -n /tmp/rsiscalpv3.lock \
   /usr/bin/python3 strategies/day/bot_rsiscalp_v3.py 2>&1 || exit 0
