@@ -430,18 +430,24 @@ function WaitingForEntry({ status, state, strategy }: { status: BotStatus; state
         {/* Post-loss cooldown banner */}
         {state?.pause_until && <CooldownBanner pauseUntil={state.pause_until} />}
 
-        {/* Daily-loss stop banner */}
-        {state?.daily_loss != null && state.daily_loss <= -200 && (
-          <div class="rounded-lg border border-accent-red/30 bg-accent-red/5 p-3 text-sm">
-            <div class="flex items-center gap-2">
-              <X size={16} class="text-accent-red" />
-              <span class="font-semibold text-accent-red">Daily $200 stop hit</span>
+        {/* Daily-loss stop banner — cap is now % of balance (default 4%) */}
+        {(() => {
+          const cap = (status?.indicators as any)?.daily_max_loss ?? 0;
+          const capPct = (status?.indicators as any)?.daily_max_loss_pct ?? 0;
+          if (!state?.daily_loss || cap <= 0 || state.daily_loss > -cap) return null;
+          const pctLabel = capPct > 0 ? `${(capPct * 100).toFixed(1)}% of balance` : `$${cap.toFixed(0)} fixed`;
+          return (
+            <div class="rounded-lg border border-accent-red/30 bg-accent-red/5 p-3 text-sm">
+              <div class="flex items-center gap-2">
+                <X size={16} class="text-accent-red" />
+                <span class="font-semibold text-accent-red">Daily ${cap.toFixed(0)} stop hit ({pctLabel})</span>
+              </div>
+              <div class="text-xs text-text-muted mt-1 ml-6">
+                Today's loss: ${state.daily_loss.toFixed(2)} · resumes 05:30 IST (midnight UTC)
+              </div>
             </div>
-            <div class="text-xs text-text-muted mt-1 ml-6">
-              Today's loss: ${state.daily_loss.toFixed(2)} · resumes 05:30 IST (midnight UTC)
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* RSI gauge — clearly labeled as "RSI Indicator", not a position scale */}
         {rsi != null && huntingSide && (

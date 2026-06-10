@@ -95,8 +95,16 @@ BLOCKED_HOURS = set(int(h.strip()) for h in
 # 2026-06-06: SL tightened from 1.0% to 0.6% (backtest -3.42% DD vs -7%)
 SL_FROM_WORST = float(os.environ.get("RSISCALP_SL_FROM_WORST", "0.006"))
 
-# Daily max loss circuit breaker
-DAILY_MAX_LOSS = float(os.environ.get("RSISCALP_DAILY_MAX_LOSS", "200.0"))
+# Daily max loss circuit breaker.
+# 2026-06-10: % of balance (default 4%) — auto-scales from $500 to $50K+ capital.
+#   - At $500 balance:  cap = $20/day  (4%)
+#   - At $1,000:        cap = $40/day
+#   - At $5,000:        cap = $200/day (matches old fixed default)
+#   - At $50,000:       cap = $2,000/day
+# To override with a FIXED dollar amount, set RSISCALP_DAILY_MAX_LOSS=NN
+# (legacy behavior). Setting both: the PCT takes precedence when > 0.
+DAILY_MAX_LOSS_PCT = float(os.environ.get("RSISCALP_DAILY_MAX_LOSS_PCT", "0.04"))
+DAILY_MAX_LOSS = float(os.environ.get("RSISCALP_DAILY_MAX_LOSS", "0.0"))
 
 # Weekend position-size multiplier (Sat/Sun = 94% WR historically)
 WEEKEND_QTY_MULT = float(os.environ.get("RSISCALP_WEEKEND_QTY_MULT", "2.0"))
@@ -571,13 +579,25 @@ def main():
     block_reason = None
 
     # 2026-06-06: DAILY MAX LOSS circuit breaker
-    # Reset daily counter at UTC midnight; pause entries if today's net loss exceeds threshold
+    # 2026-06-10: PCT-based — auto-scales with balance ($500 → $20/day, $5K → $200/day, etc).
+    # Fixed-dollar mode is still supported via DAILY_MAX_LOSS env var.
     today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if state.get("daily_loss_date") != today_utc:
         state["daily_loss"] = 0.0
         state["daily_loss_date"] = today_utc
-    if sig and DAILY_MAX_LOSS > 0 and state.get("daily_loss", 0) <= -DAILY_MAX_LOSS:
-        block_reason = f"daily max loss ${DAILY_MAX_LOSS:.0f} reached (today: ${state.get('daily_loss', 0):.2f}) — entries paused until 00:00 UTC"
+    # Compute effective cap: PCT takes precedence when > 0, otherwise fall back to fixed dollar.
+    cur_bal = float(state.get("balance", 0.0))
+    if DAILY_MAX_LOSS_PCT > 0 and cur_bal > 0:
+        eff_cap = cur_bal * DAILY_MAX_LOSS_PCT
+        cap_label = f"{DAILY_MAX_LOSS_PCT*100:.1f}% of ${cur_bal:.0f}"
+    elif DAILY_MAX_LOSS > 0:
+        eff_cap = DAILY_MAX_LOSS
+        cap_label = f"${DAILY_MAX_LOSS:.0f} fixed"
+    else:
+        eff_cap = 0  # disabled
+        cap_label = "disabled"
+    if sig and eff_cap > 0 and state.get("daily_loss", 0) <= -eff_cap:
+        block_reason = f"daily max loss ${eff_cap:.2f} reached ({cap_label}, today: ${state.get('daily_loss', 0):.2f}) — entries paused until 00:00 UTC"
         log.info(f"  {block_reason}")
         sig = None
 
@@ -751,7 +771,13 @@ def main():
                        "rsi_1h_threshold": RSI_1H_THRESHOLD,
                        # ULTIMATE-specific
                        "daily_loss": state.get("daily_loss", 0.0),
-                       "daily_max_loss": DAILY_MAX_LOSS,
+                       # 2026-06-10: report the effective cap (PCT or fixed) for the dashboard
+                       "daily_max_loss": (
+                           float(state.get("balance", 0.0)) * DAILY_MAX_LOSS_PCT
+                           if DAILY_MAX_LOSS_PCT > 0 and state.get("balance", 0.0) > 0
+                           else DAILY_MAX_LOSS
+                       ),
+                       "daily_max_loss_pct": DAILY_MAX_LOSS_PCT,
                        "is_weekend": datetime.now(timezone.utc).weekday() >= 5,
                        "weekend_qty_mult": WEEKEND_QTY_MULT,
                        "sl_from_worst_pct": SL_FROM_WORST*100},
