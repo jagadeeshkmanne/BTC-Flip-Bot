@@ -179,16 +179,27 @@ function PriceScale({
   const pctFromEntry = (px: number) => ((px - entry) / entry) * 100;
   const liveFromEntry = pctFromEntry(live);
 
+  // 2026-06-10: when SL ≈ ENTRY (BE-DCA mode after L2 fills + wait expires),
+  // the two markers stack and the SL becomes invisible. Detect and show
+  // a combined "ENTRY · BE-SL" marker instead.
+  const slEqualsEntry = Math.abs(sl - entry) / entry < 0.001;  // within 0.1%
+
   return (
     <div class="relative">
-      {/* Top labels — TP / Entry / L2 / SL */}
+      {/* Top labels — TP / Entry / L2 / SL (or combined ENTRY·BE-SL) */}
       <div class="relative h-12 mb-2">
         <Marker pct={tpPct} color="green"  label="TP"    price={tp}    deltaPct={pctFromEntry(tp)} align="bottom" />
-        <Marker pct={entryPct} color="white" label="ENTRY" price={entry} deltaPct={0} align="bottom" />
+        {slEqualsEntry ? (
+          <Marker pct={entryPct} color="orange" label="ENTRY · BE-SL" price={entry} deltaPct={0} align="bottom" />
+        ) : (
+          <>
+            <Marker pct={entryPct} color="white" label="ENTRY" price={entry} deltaPct={0} align="bottom" />
+            <Marker pct={slPct} color="red"   label="SL"    price={sl}    deltaPct={pctFromEntry(sl)} align="bottom" />
+          </>
+        )}
         {l2Pct != null && (
           <Marker pct={l2Pct} color="orange" label="L2"  price={l2!}   deltaPct={pctFromEntry(l2!)} align="bottom" />
         )}
-        <Marker pct={slPct} color="red"   label="SL"    price={sl}    deltaPct={pctFromEntry(sl)} align="bottom" />
       </div>
 
       {/* The bar itself */}
@@ -204,9 +215,9 @@ function PriceScale({
         />
         {/* Tick marks for TP / ENTRY / L2 / SL */}
         <Tick pct={tpPct}    color="green"  />
-        <Tick pct={entryPct} color="white"  />
+        <Tick pct={entryPct} color={slEqualsEntry ? 'orange' : 'white'}  />
         {l2Pct != null && <Tick pct={l2Pct} color="orange" />}
-        <Tick pct={slPct}    color="red"    />
+        {!slEqualsEntry && <Tick pct={slPct}    color="red"    />}
         {/* Current price marker */}
         <LiveMark pct={livePct} price={live} deltaPct={liveFromEntry} />
       </div>
