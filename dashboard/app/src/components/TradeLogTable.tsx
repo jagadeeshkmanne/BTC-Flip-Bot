@@ -100,31 +100,42 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
           <span class="text-sm font-semibold uppercase tracking-wide text-text-muted">Trade History</span>
           <span class="text-xs text-text-dim">{trades.length} total · showing {data.length}</span>
         </div>
-        {/* Summary chips: profit / loss / neutral counts */}
-        <div class="flex items-center gap-2 flex-wrap">
-          <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent-green/20 border border-accent-green/50 text-sm">
-            <span class="text-accent-green font-bold text-base leading-none">{counts.wins}</span>
-            <span class="text-accent-green/90 font-medium">Profit</span>
+        {/* Summary chips: profit / loss / neutral + win rate (right) */}
+        <div class="flex items-center gap-2 flex-wrap justify-between">
+          <div class="flex items-center gap-2 flex-wrap">
+            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent-green/20 border border-accent-green/50 text-sm">
+              <span class="text-accent-green font-bold text-base leading-none">{counts.wins}</span>
+              <span class="text-accent-green/90 font-medium">Profit</span>
+            </div>
+            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent-red/20 border border-accent-red/50 text-sm">
+              <span class="text-accent-red font-bold text-base leading-none">{counts.losses}</span>
+              <span class="text-accent-red/90 font-medium">Loss</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowNeutrals(v => !v)}
+              class={clsx(
+                'inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm transition-colors cursor-pointer',
+                showNeutrals
+                  ? 'bg-accent-orange/25 border-accent-orange/60 text-accent-orange'
+                  : 'bg-accent-orange/10 border-accent-orange/30 text-accent-orange/80 hover:bg-accent-orange/20'
+              )}
+              title={showNeutrals ? 'Click to hide BE-DCA neutrals' : 'Click to show BE-DCA neutrals'}
+            >
+              <span class="font-bold text-base leading-none">{counts.neutrals}</span>
+              <span class="font-medium">Neutral</span>
+              <span class="text-[10px] uppercase opacity-75 ml-0.5">{showNeutrals ? 'shown' : 'hidden'}</span>
+            </button>
           </div>
-          <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent-red/20 border border-accent-red/50 text-sm">
-            <span class="text-accent-red font-bold text-base leading-none">{counts.losses}</span>
-            <span class="text-accent-red/90 font-medium">Loss</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowNeutrals(v => !v)}
-            class={clsx(
-              'inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm transition-colors cursor-pointer',
-              showNeutrals
-                ? 'bg-accent-orange/25 border-accent-orange/60 text-accent-orange'
-                : 'bg-accent-orange/10 border-accent-orange/30 text-accent-orange/80 hover:bg-accent-orange/20'
-            )}
-            title={showNeutrals ? 'Click to hide BE-DCA neutrals' : 'Click to show BE-DCA neutrals'}
-          >
-            <span class="font-bold text-base leading-none">{counts.neutrals}</span>
-            <span class="font-medium">Neutral</span>
-            <span class="text-[10px] uppercase opacity-75 ml-0.5">{showNeutrals ? 'shown' : 'hidden'}</span>
-          </button>
+          {/* Win rate — wins / (wins + losses), excludes neutrals */}
+          {(counts.wins + counts.losses) > 0 && (
+            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-bg-hover border border-bg-border text-sm">
+              <span class="text-text-dim text-xs uppercase tracking-wide">Win Rate</span>
+              <span class="text-text font-bold text-base leading-none tabular-nums">
+                {((counts.wins / (counts.wins + counts.losses)) * 100).toFixed(1)}%
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
