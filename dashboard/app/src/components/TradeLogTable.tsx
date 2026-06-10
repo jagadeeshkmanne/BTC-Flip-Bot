@@ -102,31 +102,28 @@ export function TradeLogTable({ trades }: { trades: TradeRecord[] }) {
         </div>
         {/* Summary chips: profit / loss / neutral counts */}
         <div class="flex items-center gap-2 flex-wrap">
-          <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-accent-green/10 border border-accent-green/30 text-xs">
-            <span class="size-1.5 rounded-full bg-accent-green" />
-            <span class="text-accent-green font-semibold">{counts.wins}</span>
-            <span class="text-text-dim">profit</span>
+          <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent-green/20 border border-accent-green/50 text-sm">
+            <span class="text-accent-green font-bold text-base leading-none">{counts.wins}</span>
+            <span class="text-accent-green/90 font-medium">Profit</span>
           </div>
-          <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-accent-red/10 border border-accent-red/30 text-xs">
-            <span class="size-1.5 rounded-full bg-accent-red" />
-            <span class="text-accent-red font-semibold">{counts.losses}</span>
-            <span class="text-text-dim">loss</span>
+          <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent-red/20 border border-accent-red/50 text-sm">
+            <span class="text-accent-red font-bold text-base leading-none">{counts.losses}</span>
+            <span class="text-accent-red/90 font-medium">Loss</span>
           </div>
           <button
             type="button"
             onClick={() => setShowNeutrals(v => !v)}
             class={clsx(
-              'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition-colors cursor-pointer',
+              'inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm transition-colors cursor-pointer',
               showNeutrals
-                ? 'bg-accent-orange/15 border-accent-orange/40 text-accent-orange'
-                : 'bg-bg-hover border-bg-border text-text-dim hover:border-bg-border-hover'
+                ? 'bg-accent-orange/25 border-accent-orange/60 text-accent-orange'
+                : 'bg-accent-orange/10 border-accent-orange/30 text-accent-orange/80 hover:bg-accent-orange/20'
             )}
-            title={showNeutrals ? 'Hide BE-DCA neutrals from table' : 'Show BE-DCA neutrals in table'}
+            title={showNeutrals ? 'Click to hide BE-DCA neutrals' : 'Click to show BE-DCA neutrals'}
           >
-            <span class={clsx('size-1.5 rounded-full', showNeutrals ? 'bg-accent-orange' : 'bg-text-dim')} />
-            <span class="font-semibold">{counts.neutrals}</span>
-            <span>neutral</span>
-            <span class="ml-1 text-[10px] uppercase opacity-70">{showNeutrals ? 'shown' : 'hidden'}</span>
+            <span class="font-bold text-base leading-none">{counts.neutrals}</span>
+            <span class="font-medium">Neutral</span>
+            <span class="text-[10px] uppercase opacity-75 ml-0.5">{showNeutrals ? 'shown' : 'hidden'}</span>
           </button>
         </div>
       </div>
