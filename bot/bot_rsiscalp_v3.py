@@ -35,7 +35,10 @@ import requests
 import pandas as pd
 
 STRATEGY_DIR = os.path.dirname(os.path.abspath(__file__))
-BOT_DIR = os.path.dirname(os.path.dirname(STRATEGY_DIR))
+# 2026-06-10: was os.path.dirname(os.path.dirname(STRATEGY_DIR)) — that worked
+# when the bot was nested under strategies/day/. After the bot moved to bot/,
+# one fewer dirname is needed so BOT_DIR resolves to the repo root, not /home/jags.
+BOT_DIR = os.path.dirname(STRATEGY_DIR)
 sys.path.insert(0, STRATEGY_DIR)
 
 from core import rsi_series
