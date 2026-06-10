@@ -213,9 +213,8 @@
     <span class="brand-tag" id="brandTag">Paper · Mainnet · S/R DCA</span>
   </div>
   <select id="strategySelector" style="background:#1a1f2e;color:#e1e4ed;border:1px solid #2a3142;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;margin-left:auto;margin-right:12px;">
-    <option value="rsiscalp_trend">RSI Scalp +Trend (v1)</option>
-    <option value="rsiscalp_trend_v2">RSI Scalp +Trend v2 (GAP firmness)</option>
-    <option value="rsiscalp_trend_v3">RSI Scalp +Trend v3 (risk-based, no DCA)</option>
+    <option value="rsiscalp_trend_v3" selected>v2.1 · Counter-Trend 5× (TP 0.25%, time-SL 6h)</option>
+    <option value="rsiscalp_trend_v22">v2.2 · Optimized L2 (TP 1.0%, time-SL 12h)</option>
   </select>
   <span class="live" id="liveBadge"><span id="liveText">connecting</span></span>
 </header>
@@ -368,8 +367,8 @@ const URL_ENV = 'mainnet';
 // Default = sr_dca (currently the active, working paper bot).
 const STRATEGY = (() => {
   const s = new URLSearchParams(location.search).get('strategy');
-  const allowed = ['rsiscalp_trend', 'rsiscalp_trend_v2', 'rsiscalp_trend_v3'];
-  return allowed.includes(s) ? s : 'rsiscalp_trend';
+  const allowed = ['rsiscalp_trend_v3', 'rsiscalp_trend_v22'];
+  return allowed.includes(s) ? s : 'rsiscalp_trend_v3';   // 2026-06-10: default = v2.1
 })();
 const DIVFLIP_V3 = false;   // v3 retired 2026-05-24
 const DIVFLIP_V2 = STRATEGY === 'divflip_v2';
@@ -382,8 +381,8 @@ const DIVFLIP_ANY = STRATEGY === 'divflip' || DIVFLIP_V2 || DIVFLIP_SHARP || DIV
 // position / stats / live indicator) with their own subtitle.
 // 2026-06-05: Gemini bots removed (didn't work as expected). Fleet is RSI-only.
 const NEWBOT = false;  // kept as constant so downstream `if (NEWBOT)` branches dead-code naturally
-const RSISCALP = STRATEGY === 'rsiscalp' || STRATEGY === 'rsiscalp_trend' || STRATEGY === 'rsiscalp_trend_v2' || STRATEGY === 'rsiscalp_trend_v3';
-const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend' || STRATEGY === 'rsiscalp_trend_v2' || STRATEGY === 'rsiscalp_trend_v3';
+const RSISCALP = STRATEGY === 'rsiscalp_trend_v3' || STRATEGY === 'rsiscalp_trend_v22';
+const RSISCALP_TREND = STRATEGY === 'rsiscalp_trend_v3' || STRATEGY === 'rsiscalp_trend_v22';
 const DCA_LEVELS_CFG = 2;   // 2026-05-28: DCA re-enabled — 2-leg (L1+L2 @ 0.35%).
 
 // Trend-filter labels — vary by strategy. v1 uses 15m EMA20/50, v2 uses 1h EMA50/200.
