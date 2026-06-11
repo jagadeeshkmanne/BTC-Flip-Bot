@@ -415,7 +415,11 @@ def main():
     # ── Optional 15m trend gate (entry only) ──
     trend = None  # "UP" / "DOWN" / None
     trend_gap_pct = None  # signed gap %: (EMA20 - EMA50) / EMA50 × 100
-    if USE_TREND_FILTER:
+    # 2026-06-12 FIX (latent): counter-trend mode also needs trend data — its
+    # defensive gate blocks entries when trend is None, so TREND=0 +
+    # COUNTER_TREND=1 froze entries forever. Not hit in production (both run
+    # scripts set RSISCALP_TREND=1), fixed for config safety.
+    if USE_TREND_FILTER or USE_COUNTER_TREND:
         df_tf = fetch_klines(TREND_TF, 300)
         if df_tf is not None and len(df_tf) >= TREND_EMA_SLOW:
             ema_f = df_tf["close"].ewm(span=TREND_EMA_FAST, adjust=False).mean()
