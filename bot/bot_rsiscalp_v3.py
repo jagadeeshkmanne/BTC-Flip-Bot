@@ -97,6 +97,11 @@ BLOCKED_HOURS = set(int(h.strip()) for h in
 
 # 2026-06-06: SL tightened from 1.0% to 0.6% (backtest -3.42% DD vs -7%)
 SL_FROM_WORST = float(os.environ.get("RSISCALP_SL_FROM_WORST", "0.006"))
+# 2026-06-12 FIX: sl_price() lives in core_rsiscalp and reads that module's
+# SL_FROM_WORST (1.0%) — the env override above never reached it, so the live
+# 1-leg SL fired at 1.0% while the dashboard displayed 0.6%. Propagate it.
+import core_rsiscalp as _core_rsiscalp
+_core_rsiscalp.SL_FROM_WORST = SL_FROM_WORST
 
 # Daily max loss circuit breaker.
 # 2026-06-10: % of balance (default 4%) — auto-scales from $500 to $50K+ capital.
@@ -158,8 +163,11 @@ LOG_FILE    = os.path.join(DATA_DIR, "bot.log")
 # ─── Config ───
 PAIR = "BTCUSDT"
 INITIAL_BALANCE = 5000.0
-COMMISSION_PCT = 0.0  # 2026-06-10: fees disabled in paper trading for clean math.
-                       # When deploying to real Bybit, switch to 0.00055 (taker fee).
+# 2026-06-12: fees RE-ENABLED in paper (was 0.0 since 2026-06-10 "for clean
+# math" — that made paper P&L systematically unreal; the strategy's honest
+# zero-fee PF is ~1.0, so fee-free paper showed phantom profit). The bot
+# market-exits everything via polling, so taker applies to every fill.
+COMMISSION_PCT = float(os.environ.get("RSISCALP_COMMISSION_PCT", "0.00055"))
 # 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
 # ─── Logging ───
@@ -273,11 +281,12 @@ def close_position(state, pos, exit_px: float, reason: str) -> None:
                 f"net ${net:+.2f} (price {price_move_pct:+.2f}%) | balance ${state['balance']:.2f} "
                 f"| MFE {pos.get('max_fav_pct',0):+.2f}% MAE {pos.get('max_adv_pct',0):+.2f}%")
     # ── Circuit breaker: count consecutive losses; pause after BREAKER_LOSSES ──
-    # 2026-06-10: BE-DCA exits at $0 gross — NOT a real loss, don't trigger cooldown.
-    # Backtest 6.8y: +$54K profit / same DD. Skipping prevents wasted 15-min waits
-    # when the mean-reversion edge could fire on the next signal immediately.
+    # 2026-06-12: BE-DCA cooldown exemption REMOVED. The 2026-06-10 rationale
+    # ("$0 gross isn't a real loss") was an artifact of booking stop exits at
+    # the stop price; with honest booking BE-DCA exits are real losses and
+    # must count like any other loss.
     if USE_CIRCUIT_BREAKER:
-        if net < 0 and reason != "BE-DCA":
+        if net < 0:
             state["consec_losses"] = state.get("consec_losses", 0) + 1
             if state["consec_losses"] >= BREAKER_LOSSES:
                 until = datetime.now(timezone.utc) + timedelta(hours=BREAKER_PAUSE_HOURS)
@@ -514,7 +523,14 @@ def main():
                     reason_tag = "L2_TRAIL" if pos.get("l2_peak_fav_pct", 0.0) >= 0.05 else "BE-DCA"
                 else:
                     reason_tag = "SL"
-                exit_reason, exit_px = reason_tag, slp
+                # 2026-06-12 FIX (stop-fill artifact): book the exit at the
+                # price the market actually offers (live_px), NOT the stop
+                # level. This branch only fires when live_px is already at or
+                # beyond slp — a market exit cannot fill at slp. Booking slp
+                # recorded BE-DCA losses as $0 "neutrals" and understated SL
+                # losses; that fiction was the entire backtest edge
+                # (see backtest/live_faithful.py legacy-vs-open).
+                exit_reason, exit_px = reason_tag, live_px
 
         # 2026-06-06: TREND FLIP EXIT — close on 15m EMA reversal (early reversal catch)
         # 2026-06-08 FIX: compare current trend to ENTRY trend (not side).

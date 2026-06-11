@@ -572,10 +572,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # toy http.server.
         if path == '/api/bots/all':
             # 2026-06-10: 2 counter-trend 5× variants — v2.1 (TP 0.25/6h) vs v2.2 (TP 1.0/12h)
-            ids = ['v2.1', 'v2.2']
+            # 2026-06-11: + momo_v1 (daily trend-momentum long/flat spot, honest fees)
+            ids = ['v2.1', 'v2.2', 'momo_v1']
             id_to_dir = {
                 'v2.1': 'v2.1',
                 'v2.2': 'v2.2',
+                'momo_v1': 'momo_v1',
             }
             out = {}
             for sid in ids:
@@ -602,7 +604,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
         env_q = (qs.get('env', ['']) or [''])[0]
 
-        if strategy_q in ('v2.1', 'v2.2'):
+        if strategy_q in ('v2.1', 'v2.2', 'momo_v1'):
             env_dir = strategy_q
             state_filename = 'state.json'
             status_filename = 'status.json'
