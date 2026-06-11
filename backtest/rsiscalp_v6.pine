@@ -1,0 +1,234 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// RSI-Scalp v2.1 / v2.2 — faithful Pine v6 port of bot_rsiscalp_v3.py
+// (spec source: backtest/live_faithful.py)
+//
+// PURPOSE: independent third-engine verification of the stop-fill artifact.
+// The "Fill mode" input is the whole experiment:
+//
+//   LEGACY  — stop-family exits (SL / BE-DCA / L2 trail) are resting stop
+//             orders. TradingView books them AT the stop price when the bar
+//             trades through it — the same fiction the live paper bot and the
+//             old Python backtests use. BE-DCA exits book $0 gross.
+//   HONEST  — stops are evaluated on bar CLOSE and exited with a MARKET
+//             order (fills next bar open) — what a polling bot's market exit
+//             actually gets. This mode is still slightly GENEROUS: a wick
+//             through the stop that recovers by close doesn't exit.
+//
+// If LEGACY is profitable and HONEST is not, with identical entries/signals,
+// you've reproduced the artifact in a third independent engine.
+//
+// CHART: Bybit BTCUSDT.P (or BTCUSDT), 5-minute timeframe.
+// FEES:  defaults to 0 (PAPER parity). For REAL economics open
+//        Properties → set Commission = 0.055 % per order and Slippage ≈ 2
+//        ticks. Use "Deep Backtesting" (Premium) to extend the 5m history.
+//
+// Known fidelity limits vs the Python sim (all minor, all documented):
+//  - same-bar L2-fill exit deferral can't be enforced (TV decides intrabar
+//    order by its own price-path assumption)
+//  - L2 limit is placed on the bar AFTER L1 fills, so an L2 fill on the very
+//    entry bar is missed (needs a 0.5% adverse move inside one 5m bar)
+//  - entry gates (gap/cooldown/daily-loss) are checked at signal time, not
+//    fill time (one 5m bar earlier)
+//  - trend-flip / time-SL market exits fill next-bar open, not signal-bar
+//    close
+// ═══════════════════════════════════════════════════════════════════════════
+strategy("RSI-Scalp v2.x port (legacy vs honest fills)",
+     overlay = true,
+     initial_capital = 5000,
+     pyramiding = 2,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.0,
+     slippage = 0,
+     margin_long = 20,
+     margin_short = 20,
+     calc_on_order_fills = false,
+     process_orders_on_close = false)
+
+// ───────────────────────────── inputs ─────────────────────────────
+preset    = input.string("v2.2", "Config preset", options = ["v2.1", "v2.2"])
+fillMode  = input.string("HONEST", "Fill mode", options = ["LEGACY", "HONEST"],
+     tooltip = "LEGACY = stop exits book the stop price (paper-bot fiction). HONEST = market exit after close crosses the stop.")
+compound  = input.bool(true, "Compound sizing (else fixed $5K)")
+
+// deployed-bot constants (scripts/run_v2.1.sh / run_v2.2.sh)
+LEV        = 5.0
+RSI_LEN    = 9
+RSI_LONG   = 35.0
+RSI_SHORT  = 65.0
+GAP_MIN    = 0.0020   // 15m EMA20/50 gap ≥ 0.20%
+ATR_MAX    = 0.008    // SMA-14 of TR ≤ 0.80% of price
+DCA_SPACE  = 0.005    // L2 at 0.50% adverse from worst
+TP_SINGLE  = 0.005    // 0.50% TP while 1 leg
+SL_WORST   = 0.006    // 0.6% catastrophic SL, 1-leg only
+BE_WAIT    = 6        // bars after L2 before BE/trail arms
+TRAIL_ARM  = 0.05     // % favourable (close-based) to arm trail
+TRAIL_BUF  = 0.025    // % trail buffer
+COOLDOWN_MS = 15 * 60 * 1000
+DAILY_MAX_LOSS = 0.04
+
+tpDca      = preset == "v2.1" ? 0.0025 : 0.0100
+timeSlBars = preset == "v2.1" ? 72 : 144
+legacy     = fillMode == "LEGACY"
+
+// ─────────────────────────── indicators ───────────────────────────
+rsi    = ta.rsi(close, RSI_LEN)                       // Wilder, matches live
+atrPct = ta.sma(ta.tr(true), 14) / close              // live uses SMA of TR, not RMA
+
+// last CLOSED 15m EMA20/50 (non-repainting [1] + lookahead_on = confirmed value)
+[e20c, e50c] = request.security(syminfo.tickerid, "15",
+     [ta.ema(close, 20)[1], ta.ema(close, 50)[1]],
+     lookahead = barmerge.lookahead_on)
+trendUp = e20c > e50c
+trendV  = trendUp ? 1 : -1
+gapV    = math.abs(e20c - e50c) / e50c
+
+// ─────────────────────────── state vars ───────────────────────────
+var float worstPx     = na    // worst entry (anchor for DCA trigger + 1-leg SL)
+var int   l2Bar       = na    // bar_index where L2 filled
+var float peakFav     = 0.0   // close-based favourable peak since L2 (%)
+var int   entryTrend  = na    // 15m trend snapshot at entry (flip exit)
+var int   lastLossTime = 0    // cooldown anchor
+var float dayLoss     = 0.0   // loss-only accumulator, resets daily
+var int   seenClosed  = 0     // closed-trade cursor
+// exit-reason counters (parity with the Python report)
+var int cTP = 0, var int cSL = 0, var int cBE = 0
+var int cTRAIL = 0, var int cFLIP = 0, var int cTIME = 0
+
+closedBal = strategy.initial_capital + strategy.netprofit
+legQty(px) => (compound ? closedBal : strategy.initial_capital) * 0.95 * LEV / px / 2.0
+
+// daily reset
+if ta.change(time("D")) != 0
+    dayLoss := 0.0
+
+// process newly closed trades: counters, daily-loss accumulator, cooldown
+if strategy.closedtrades > seenClosed
+    for i = seenClosed to strategy.closedtrades - 1
+        p   = strategy.closedtrades.profit(i)
+        cmt = strategy.closedtrades.exit_comment(i)
+        if p < 0
+            dayLoss += p
+        // live skips the 15-min cooldown on BE-DCA exits (2026-06-10 change)
+        if p < 0 and cmt != "BE-DCA"
+            lastLossTime := time
+        cTP    += cmt == "TP" ? 1 : 0
+        cSL    += cmt == "SL" ? 1 : 0
+        cBE    += cmt == "BE-DCA" ? 1 : 0
+        cTRAIL += cmt == "L2_TRAIL" ? 1 : 0
+        cFLIP  += cmt == "TREND_FLIP" ? 1 : 0
+        cTIME  += cmt == "TIME_SL" ? 1 : 0
+    seenClosed := strategy.closedtrades
+
+// ───────────────────── position state transitions ─────────────────────
+legs = strategy.opentrades
+dir  = strategy.position_size > 0 ? 1 : strategy.position_size < 0 ? -1 : 0
+
+if legs >= 1 and na(entryTrend)            // L1 just filled
+    entryTrend := trendV
+    worstPx    := strategy.opentrades.entry_price(0)
+    peakFav    := 0.0
+    l2Bar      := na
+if legs == 2 and na(l2Bar)                 // L2 just filled
+    l2Bar   := bar_index
+    worstPx := strategy.opentrades.entry_price(1)
+if legs == 0 and not na(entryTrend)        // went flat — reset + kill pending L2
+    strategy.cancel("L2")
+    entryTrend := na
+    worstPx    := na
+    l2Bar      := na
+    peakFav    := 0.0
+
+// ─────────────────────────── exits ───────────────────────────
+if legs >= 1
+    avg = strategy.position_avg_price
+    float tpPx = na
+    float slPx = na
+    string slReason = na
+
+    if legs == 1
+        tpPx := avg * (1 + dir * TP_SINGLE)
+        slPx := dir == 1 ? worstPx * (1 - SL_WORST) : worstPx * (1 + SL_WORST)
+        slReason := "SL"
+    else
+        tpPx := avg * (1 + dir * tpDca)
+        beArmed = (bar_index - l2Bar) >= BE_WAIT
+        if beArmed
+            if peakFav >= TRAIL_ARM
+                slPx := avg * (1 + dir * (peakFav - TRAIL_BUF) / 100.0)
+                slReason := "L2_TRAIL"
+            else
+                slPx := avg              // BE-DCA: stop at avg = "$0" exit
+                slReason := "BE-DCA"
+        // during the 6-bar BE wait there is NO stop at all (intentional —
+        // tested fix lost money; see memory feedback_l2_trail_wait)
+
+    if legacy
+        // resting stop order: TV books the fill AT slPx intrabar — the fiction
+        strategy.exit("XT", limit = tpPx, stop = slPx,
+             comment_profit = "TP", comment_loss = slReason)
+    else
+        // honest: TP stays a real limit order; stop becomes a close-crossing
+        // condition exited at MARKET (fills next bar open)
+        strategy.exit("XT", limit = tpPx, comment_profit = "TP")
+        if not na(slPx) and ((dir == 1 and close <= slPx) or (dir == -1 and close >= slPx))
+            strategy.cancel("L2")
+            strategy.close_all(comment = slReason)
+
+    // trend-flip exit, PROFIT-ONLY (live 2026-06-10 gate)
+    if trendV != entryTrend and strategy.openprofit > 0
+        strategy.cancel("L2")
+        strategy.close_all(comment = "TREND_FLIP")
+
+    // SMART time-SL: force exit after N bars ONLY if losing
+    if (bar_index - strategy.opentrades.entry_bar_index(0)) >= timeSlBars and strategy.openprofit < 0
+        strategy.cancel("L2")
+        strategy.close_all(comment = "TIME_SL")
+
+    // DCA L2: resting limit 0.50% adverse from worst (only while 1 leg)
+    if legs == 1
+        trig = dir == 1 ? worstPx * (1 - DCA_SPACE) : worstPx * (1 + DCA_SPACE)
+        strategy.entry("L2", dir == 1 ? strategy.long : strategy.short,
+             qty = legQty(trig), limit = trig)
+
+    // close-based trail peak — updated AFTER exit placement so this bar's
+    // close arms the trail for NEXT bar (matches the Python ordering; the
+    // live bot also can't see wick peaks, it samples once a minute)
+    if legs == 2
+        favClose = (close - avg) / avg * 100.0 * dir
+        peakFav := math.max(peakFav, favClose)
+
+// ─────────────────────────── entries ───────────────────────────
+// signal on bar close (RSI/ATR are last-closed-bar values at the live tick),
+// fills next bar open — same as the Python sim's pending-entry mechanics
+cooldownOk = time >= lastLossTime + COOLDOWN_MS
+dailyOk    = dayLoss > -DAILY_MAX_LOSS * closedBal
+gateOk     = gapV >= GAP_MIN and atrPct <= ATR_MAX and cooldownOk and dailyOk
+
+if legs == 0 and strategy.position_size == 0 and gateOk
+    if rsi <= RSI_LONG
+        strategy.entry("L1", strategy.long, qty = legQty(close))
+    else if rsi >= RSI_SHORT
+        strategy.entry("L1", strategy.short, qty = legQty(close))
+
+// ─────────────────────────── report table ───────────────────────────
+var table tbl = table.new(position.top_right, 2, 9, border_width = 1)
+if barstate.islast
+    table.cell(tbl, 0, 0, "Mode",  bgcolor = color.new(color.blue, 70))
+    table.cell(tbl, 1, 0, preset + " / " + fillMode, bgcolor = legacy ? color.new(color.red, 60) : color.new(color.green, 60))
+    table.cell(tbl, 0, 1, "Net profit")
+    table.cell(tbl, 1, 1, str.tostring(strategy.netprofit, "#,###") + " (" + str.tostring(strategy.netprofit / strategy.initial_capital * 100, "#.#") + "%)")
+    table.cell(tbl, 0, 2, "TP")
+    table.cell(tbl, 1, 2, str.tostring(cTP))
+    table.cell(tbl, 0, 3, "BE-DCA")
+    table.cell(tbl, 1, 3, str.tostring(cBE))
+    table.cell(tbl, 0, 4, "L2_TRAIL")
+    table.cell(tbl, 1, 4, str.tostring(cTRAIL))
+    table.cell(tbl, 0, 5, "SL")
+    table.cell(tbl, 1, 5, str.tostring(cSL))
+    table.cell(tbl, 0, 6, "TREND_FLIP")
+    table.cell(tbl, 1, 6, str.tostring(cFLIP))
+    table.cell(tbl, 0, 7, "TIME_SL")
+    table.cell(tbl, 1, 7, str.tostring(cTIME))
+    table.cell(tbl, 0, 8, "Closed trades")
+    table.cell(tbl, 1, 8, str.tostring(strategy.closedtrades))
