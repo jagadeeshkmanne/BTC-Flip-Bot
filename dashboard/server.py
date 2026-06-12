@@ -573,11 +573,13 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/bots/all':
             # 2026-06-10: 2 counter-trend 5× variants — v2.1 (TP 0.25/6h) vs v2.2 (TP 1.0/12h)
             # 2026-06-11: + momo_v1 (daily trend-momentum long/flat spot, honest fees)
-            ids = ['v2.1', 'v2.2', 'momo_v1']
+            # 2026-06-12: + v3_trend (4h trend portfolio, 4 perp pairs, long/flat 2x)
+            ids = ['v2.1', 'v2.2', 'momo_v1', 'v3_trend']
             id_to_dir = {
                 'v2.1': 'v2.1',
                 'v2.2': 'v2.2',
                 'momo_v1': 'momo_v1',
+                'v3_trend': 'v3_trend',
             }
             out = {}
             for sid in ids:
@@ -604,7 +606,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
         env_q = (qs.get('env', ['']) or [''])[0]
 
-        if strategy_q in ('v2.1', 'v2.2', 'momo_v1'):
+        if strategy_q in ('v2.1', 'v2.2', 'momo_v1', 'v3_trend'):
             env_dir = strategy_q
             state_filename = 'state.json'
             status_filename = 'status.json'

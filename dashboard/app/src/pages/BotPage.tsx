@@ -43,11 +43,12 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
       {/* Position panel — full width when in-trade (price-scale viz), waiting view when flat */}
       <PositionPanel status={status.data} state={state.data} strategy={strategy} />
 
-      {/* Chart */}
-      <PriceChart />
+      {/* Chart — BTC-only candles; hidden for the multi-pair portfolio bot */}
+      {strategy !== 'v3_trend' && <PriceChart />}
 
-      {/* Conditions checklist */}
-      <ConditionsPanel status={status.data} strategy={strategy} />
+      {/* Conditions checklist — rsiscalp-specific; hidden for v3 (its conditions
+          are per-pair EMA/ADX, shown in the strategy line + signals) */}
+      {strategy !== 'v3_trend' && <ConditionsPanel status={status.data} strategy={strategy} />}
 
       {/* Trade log */}
       <TradeLogTable trades={trades} />

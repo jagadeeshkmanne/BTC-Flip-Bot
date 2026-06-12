@@ -13,7 +13,7 @@ const ALIAS: Record<string, string> = {
   'v1':   'v2.1',
   'v1.1': 'v2.1',
   'v2':   'v2.1',
-  'v3':   'v2.1',
+  // 2026-06-12: 'v3' now resolves to the live 4h trend portfolio bot (short name)
   'v4':   'v2.1',
   'v5':   'v2.1',
 };

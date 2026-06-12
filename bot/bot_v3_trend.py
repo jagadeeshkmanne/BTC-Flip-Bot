@@ -136,11 +136,16 @@ def close_position(state: dict, sym: str, live: float, reason: str) -> None:
     state["stats"]["pnl"] += net
     state["stats"]["wins" if net > 0 else "losses"] += 1
     state.setdefault("trade_log", []).append({
-        "pair": sym, "entry": pos["entry"], "exit": fill, "qty": pos["qty"],
+        # UI-compatible fields (dashboard TradeLogTable) + v3 extras
+        "pair": sym, "side": "LONG",
+        "entry": pos["entry"], "avg_entry": pos["entry"], "first_entry": pos["entry"],
+        "exit": fill, "qty": pos["qty"], "qty_total": pos["qty"],
+        "pnl_usd": net, "pnl_pct": net / pos["margin"] * 100,
         "net_usd": net, "net_pct": net / pos["margin"] * 100,
         "funding_paid": pos.get("funding_paid", 0.0),
         "entry_time": pos["entry_time"],
-        "exit_time": datetime.now(timezone.utc).isoformat(), "reason": reason})
+        "exit_time": datetime.now(timezone.utc).isoformat(),
+        "reason": f"{sym.replace('USDT','')}: {reason}"})
     state["trade_log"] = state["trade_log"][-400:]
     log.warning(f"  CLOSE {sym} @ ${fill:,.2f} net ${net:+,.2f} "
                 f"({net / pos['margin'] * 100:+.2f}% of margin) — {reason}")
@@ -235,13 +240,24 @@ def main() -> None:
         "pair": "+".join(p.replace("USDT", "") for p in PAIRS),
         "price": ind["BTCUSDT"]["close"], "live_price": live["BTCUSDT"],
         "balance": equity, "peak_equity": peak, "drawdown_pct": dd_pct,
-        "position": ({"side": "LONG",
-                      "pairs": {s: {"qty": p["qty"], "entry": p["entry"],
-                                    "unrealized_usd": unreal.get(s, 0.0)}
-                                for s, p in state["positions"].items()},
-                      "filled": len(state["positions"])}
-                     if state["positions"] else None),
-        "signal": {s: ("LONG" if sigs[s] else "FLAT") for s in PAIRS},
+        # position: UI panel renders the BTC sleeve (leader gate => BTC is held
+        # whenever anything is); per-pair detail in "pairs". cat-SL shown as sl_px.
+        "position": (lambda ps: ({
+            "side": "LONG",
+            "first_entry": ps.get("BTCUSDT", list(ps.values())[0])["entry"],
+            "avg_entry": ps.get("BTCUSDT", list(ps.values())[0])["entry"],
+            "worst_entry": ps.get("BTCUSDT", list(ps.values())[0])["entry"],
+            "qty_total": ps.get("BTCUSDT", list(ps.values())[0])["qty"],
+            "filled": 1, "tp_px": None,
+            "sl_px": ps.get("BTCUSDT", list(ps.values())[0])["entry"] * (1 - CAT_SL_PCT),
+            "fav_pct": 0.0,
+            "entry_time": ps.get("BTCUSDT", list(ps.values())[0])["entry_time"],
+            "pairs": {s: {"qty": p["qty"], "entry": p["entry"],
+                          "unrealized_usd": unreal.get(s, 0.0)} for s, p in ps.items()},
+            "held_count": len(ps),
+        } if ps else None))(state["positions"]),
+        "signal": ("LONG" if any(sigs[s] for s in PAIRS) else None),
+        "signals": {s: ("LONG" if sigs[s] else "FLAT") for s in PAIRS},
         "indicators": {s: ind[s] for s in PAIRS},
         "stats": state["stats"],
         "strategy": (f"v3 — 4h trend portfolio, long/flat {LEVERAGE:.0f}x perp. LONG when "
