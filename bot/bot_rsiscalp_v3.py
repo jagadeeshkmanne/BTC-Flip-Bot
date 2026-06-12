@@ -170,6 +170,38 @@ INITIAL_BALANCE = 5000.0
 COMMISSION_PCT = float(os.environ.get("RSISCALP_COMMISSION_PCT", "0.00055"))
 # 2026-06-05: data source migrated Binance fapi → Bybit V5 (USDT-M perp).
 
+# ─── 2026-06-12: EQUITY RATCHET KILL-SWITCH (account-level) ───
+# Per-trade exits cannot fix a zero-edge entry (FINDINGS.md #2 + the 9-family
+# exit sweep), but the ACCOUNT can bank favorable variance and bound the bleed:
+#   - hard floor starts at INITIAL × FLOOR_START (max experiment loss);
+#   - once peak balance ≥ INITIAL × RATCHET_ARM, the floor ratchets up to
+#     peak × (1 − RATCHET_GIVEBACK) and never moves back down;
+#   - when FLAT and balance ≤ floor → entries halt PERMANENTLY
+#     (state["halted_reason"]; edit state.json manually to resume).
+# Open positions are never force-closed; they exit via their normal rules.
+RATCHET_FLOOR_START = float(os.environ.get("RSISCALP_FLOOR_START", "0.90"))
+RATCHET_ARM         = float(os.environ.get("RSISCALP_RATCHET_ARM", "1.04"))
+RATCHET_GIVEBACK    = float(os.environ.get("RSISCALP_RATCHET_GIVEBACK", "0.03"))
+
+# ─── 2026-06-12: MTM BASKET STOP (per-position unrealized-loss cap) ───
+# User concern: winners ~+$60, one bad basket -$200+ (R:R ~1:3.5 at 5x).
+# Honest A/B (backtest/mtm_guard_ab.py, 2021-2026, real fills+fees):
+#   worst trade -$818 -> -$270/-$380, avg loss -10-13%, PF 0.59->0.64 (v2.2);
+#   covers the 6-bar BE-wait window which otherwise has NO stop. 2% cap was
+#   too tight (worse PF); +2% profit-lock never helped (TPs are closer). Does
+#   NOT make the strategy profitable (no exit can, FINDINGS.md #2) — it caps
+#   per-basket damage. 0 disables.
+MTM_STOP_PCT = float(os.environ.get("RSISCALP_MTM_STOP_PCT", "0.04"))
+
+# ─── 2026-06-12: TREND-LINE STOP (with-trend mode companion) ───
+# SL anchored to the 15m EMA50 ("the trend line") instead of %-from-entry:
+#   LONG: stop = EMA50 * (1 - pct);  SHORT: stop = EMA50 * (1 + pct).
+# Frozen at entry (matches backtest). Only meaningful in WITH-trend mode
+# (entries happen AT the line); counter-trend entries can sit on the wrong
+# side of the line, so leave 0 there. Honest sweep: avg loss ~$46 at 0.10%,
+# expectancy unchanged vs other placements (placement-invariance).
+TRENDLINE_SL_PCT = float(os.environ.get("RSISCALP_TRENDLINE_SL_PCT", "0"))
+
 # ─── Logging ───
 log = logging.getLogger("bot_rsiscalp_v11")
 log.setLevel(logging.INFO)
@@ -347,6 +379,16 @@ def open_position(state, side: str, entry_px: float, rsi_val: float) -> None:
         "weekend_2x": is_weekend,
         "entry_trend": entry_trend_snapshot,
     }
+    # 2026-06-12: trend-line stop — freeze SL at 15m EMA50 ± pct at entry time.
+    if TRENDLINE_SL_PCT > 0:
+        line = state.get("_last_ema_slow")
+        if line:
+            tl = line * (1 - TRENDLINE_SL_PCT) if side == "LONG" else line * (1 + TRENDLINE_SL_PCT)
+            # entry already at/through the line -> enforce a minimum stop distance
+            if (side == "LONG" and tl >= entry_px * 0.9995) or (side == "SHORT" and tl <= entry_px * 1.0005):
+                tl = entry_px * (1 - 2 * TRENDLINE_SL_PCT) if side == "LONG" else entry_px * (1 + 2 * TRENDLINE_SL_PCT)
+            state["position"]["trendline_sl"] = tl
+            log.info(f"  trend-line stop set: ${tl:,.2f} (EMA50 ${line:,.2f} ∓ {TRENDLINE_SL_PCT*100:.2f}%)")
     log.warning(f"  OPENED {side} {qty}@${entry_px:.2f} (RSI {rsi_val:.1f}){'  [WEEKEND 2x]' if is_weekend else ''} | entry_trend={entry_trend_snapshot} | balance ${state['balance']:.2f}")
 
 
@@ -430,6 +472,8 @@ def main():
             trend_gap_pct = (ema_f_v - ema_s_v) / ema_s_v * 100.0
             # v3 fix 2026-06-08: stash trend for open_position() snapshot.
             state["_last_trend"] = trend
+            # 2026-06-12: stash the trend line for the trend-line stop.
+            state["_last_ema_slow"] = ema_s_v
         else:
             log.warning(f"  {TREND_TF} trend: insufficient data — gate inactive this tick")
 
@@ -521,6 +565,16 @@ def main():
                     slp = None
             else:
                 slp = sl_price(side, pos["worst_entry"])
+            # 2026-06-12: trend-line stop acts as a FLOOR under every state
+            # (incl. the BE-wait window where slp is None). Trail above it wins.
+            tl = pos.get("trendline_sl")
+            if TRENDLINE_SL_PCT > 0 and tl:
+                if slp is None:
+                    slp = tl
+                elif side == "LONG":
+                    slp = max(slp, tl)
+                else:
+                    slp = min(slp, tl)
             if slp is not None and ((side == "LONG" and live_px <= slp) or (side == "SHORT" and live_px >= slp)):
                 if USE_BE_AFTER_DCA and pos.get("filled", 1) >= 2:
                     # Tag as L2_TRAIL when trail SL is armed and above avg
@@ -535,6 +589,20 @@ def main():
                 # losses; that fiction was the entire backtest edge
                 # (see backtest/live_faithful.py legacy-vs-open).
                 exit_reason, exit_px = reason_tag, live_px
+
+        # 2026-06-12: MTM BASKET STOP — close the whole basket at market once
+        # unrealized loss reaches MTM_STOP_PCT of balance. Runs after the
+        # regular SL checks and ALSO during the BE-wait window (slp is None
+        # there — this is the only stop protecting that window).
+        if exit_px is None and MTM_STOP_PCT > 0:
+            qty_total = pos.get("qty_total", 0.0)
+            unreal = ((live_px - avg_entry) * qty_total if side == "LONG"
+                      else (avg_entry - live_px) * qty_total)
+            cap_d = MTM_STOP_PCT * state["balance"]
+            if unreal <= -cap_d:
+                log.warning(f"  MTM STOP: unrealized ${unreal:+.2f} <= cap -${cap_d:.2f} "
+                            f"({MTM_STOP_PCT*100:.1f}% of ${state['balance']:.0f}) — closing basket")
+                exit_reason, exit_px = "MTM_STOP", live_px
 
         # 2026-06-06: TREND FLIP EXIT — close on 15m EMA reversal (early reversal catch)
         # 2026-06-08 FIX: compare current trend to ENTRY trend (not side).
@@ -600,6 +668,26 @@ def main():
 
     # Entry — RSI (+ optional 15m trend gate + circuit breaker). Don't re-enter on the tick we just exited.
     block_reason = None
+
+    # ─── 2026-06-12: equity ratchet kill-switch (constants near COMMISSION_PCT) ───
+    peak_now = max(float(state.get("peak_equity", INITIAL_BALANCE)),
+                   float(state.get("balance", 0.0)))
+    eq_floor = INITIAL_BALANCE * RATCHET_FLOOR_START
+    if peak_now >= INITIAL_BALANCE * RATCHET_ARM:
+        eq_floor = max(eq_floor, peak_now * (1 - RATCHET_GIVEBACK))
+    eq_floor = max(eq_floor, float(state.get("equity_floor") or 0.0))  # monotonic
+    state["equity_floor"] = eq_floor
+    if (not state.get("halted_reason") and state.get("position") is None
+            and float(state.get("balance", 0.0)) <= eq_floor):
+        state["halted_reason"] = (
+            f"EQUITY RATCHET {datetime.now(timezone.utc).isoformat()[:16]}: balance "
+            f"${state['balance']:.2f} <= floor ${eq_floor:.2f} (peak ${peak_now:.2f}) — "
+            f"entries halted permanently (edit state.json to resume)")
+        log.warning(f"  *** {state['halted_reason']} ***")
+    if sig and state.get("halted_reason"):
+        block_reason = state["halted_reason"]
+        log.info(f"  {block_reason}")
+        sig = None
 
     # 2026-06-06: DAILY MAX LOSS circuit breaker
     # 2026-06-10: PCT-based — auto-scales with balance ($500 → $20/day, $5K → $200/day, etc).
@@ -779,6 +867,7 @@ def main():
         "env": os.environ.get("RSISCALP_DATA_DIR", "v2.1"),
         "pair": PAIR, "price": close_px, "live_price": live_px,
         "balance": state["balance"], "peak_equity": peak, "drawdown_pct": dd_pct,
+        "equity_floor": state.get("equity_floor"), "halted_reason": state.get("halted_reason"),
         "position": pos_status, "signal": sig,
         "indicators": {"rsi": rsi_val, "rsi_oversold": RSI_OVERSOLD, "rsi_overbought": RSI_OVERBOUGHT,
                        "price": close_px, "trend_gap_pct": trend_gap_pct, "trend_gap_min_pct": TREND_GAP_MIN*100,
