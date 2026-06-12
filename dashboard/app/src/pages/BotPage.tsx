@@ -4,6 +4,7 @@ import { MarketHeader } from '@/components/MarketHeader';
 import { BotStatsStrip } from '@/components/BotStatsStrip';
 import { PositionPanel } from '@/components/PositionPanel';
 import { ConditionsPanel } from '@/components/ConditionsPanel';
+import { V3ConditionsPanel } from '@/components/V3ConditionsPanel';
 import { PriceChart } from '@/components/PriceChart';
 import { TradeLogTable } from '@/components/TradeLogTable';
 import { STRATEGY_TO_BOT, type StrategyId } from '@/types/bot';
@@ -46,9 +47,10 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
       {/* Chart — BTC-only candles; hidden for the multi-pair portfolio bot */}
       {strategy !== 'v3_trend' && <PriceChart />}
 
-      {/* Conditions checklist — rsiscalp-specific; hidden for v3 (its conditions
-          are per-pair EMA/ADX, shown in the strategy line + signals) */}
-      {strategy !== 'v3_trend' && <ConditionsPanel status={status.data} strategy={strategy} />}
+      {/* Conditions checklist — rsiscalp panel for v2.x; per-pair EMA/ADX panel for v3 */}
+      {strategy !== 'v3_trend'
+        ? <ConditionsPanel status={status.data} strategy={strategy} />
+        : <V3ConditionsPanel status={status.data} />}
 
       {/* Trade log */}
       <TradeLogTable trades={trades} />
