@@ -1,4 +1,8 @@
 #!/bin/bash
+# 2026-06-12: time-SL switched SMART 12h (losers-only) -> HARD 6h (user req):
+#   close the basket unconditionally after 72 bars, booked at LIVE price.
+#   Honest sweep evidence (timestop_sweep REAL mode): all time-stop variants
+#   within ~$50 of each other at PF ~0.64 — risk hygiene, not edge.
 # v2.2 COUNTER-TREND OPTIMIZED L2 EXITS (2026-06-10):
 #   v2.1 base config (5× lev, no weekend, counter-trend) + 2 changes:
 #     TP for L2 (DCA): 0.25% → 1.00%   (catch bigger bounces)
@@ -20,7 +24,7 @@ RSISCALP_DATA_DIR=v2.2 \
 RSISCALP_LEVERAGE=5.0 \
 RSISCALP_WEEKEND_QTY_MULT=1.0 \
 RSISCALP_TREND=1 \
-RSISCALP_SMART_TIME_SL=1 \
+RSISCALP_SMART_TIME_SL=0 \
 RSISCALP_RSI_OVERSOLD=35 \
 RSISCALP_RSI_OVERBOUGHT=65 \
 RSISCALP_V2_GAP_MIN=0.0020 \
@@ -28,6 +32,8 @@ RSISCALP_ATR_MAX_PCT=0.80 \
 RSISCALP_BE_WAIT_BARS=6 \
 RSISCALP_COUNTER_TREND=1 \
 RSISCALP_TP_DCA=0.01 \
-RSISCALP_TIME_SL_BARS=144 \
+RSISCALP_TIME_SL_BARS=72 \
+RSISCALP_MTM_STOP_PCT=0 \
+RSISCALP_DAILY_MAX_LOSS_PCT=0 \
   /usr/bin/flock -n /tmp/v2.2.lock \
   /usr/bin/python3 bot/bot_rsiscalp_v3.py 2>&1 || exit 0
