@@ -28,3 +28,6 @@ static/bots/
 # Gainium backtester library (cloned from github.com/Gainium/backtester)
 backtest/gainium/node_modules/
 backtest/gainium/dist/
+
+# Jesse validation venv (recreate: python3.11 -m venv .venv-jesse && pip install jesse)
+.venv-jesse/
