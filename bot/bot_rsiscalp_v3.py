@@ -202,6 +202,74 @@ MTM_STOP_PCT = float(os.environ.get("RSISCALP_MTM_STOP_PCT", "0.04"))
 # expectancy unchanged vs other placements (placement-invariance).
 TRENDLINE_SL_PCT = float(os.environ.get("RSISCALP_TRENDLINE_SL_PCT", "0"))
 
+# ─── 2026-06-14: v2.3 REGIME ROUTER (optional; INERT unless RSISCALP_REGIME_TF set) ───
+# One bot, two legs, switched each closed bar by HTF ADX (trend STRENGTH):
+#   ADX >= TREND_ADX  -> TREND leg  (with-trend: v2.1 params)
+#   ADX <  RANGE_ADX  -> RANGE leg  (counter-trend: v2.2 params)  [if RANGE_ON]
+#   in between        -> FLAT (no new entries; open positions still managed)
+# When RSISCALP_REGIME_TF == "" this whole feature is skipped -> v2.1/v2.2 unaffected.
+# Honest backtest (FINDINGS #14): no config is profitable; best is trend-leg-only
+# (RANGE_ON=0) at PF 0.72 / -20% / 90d. This bot exists to OBSERVE the switch live.
+REGIME_TF        = os.environ.get("RSISCALP_REGIME_TF", "")           # "" = off; "1h"/"15m"
+REGIME_ADX_LEN   = int(os.environ.get("RSISCALP_REGIME_ADX_LEN", "14"))
+REGIME_TREND_ADX = float(os.environ.get("RSISCALP_REGIME_TREND_ADX", "25"))
+REGIME_RANGE_ADX = float(os.environ.get("RSISCALP_REGIME_RANGE_ADX", "20"))
+REGIME_RANGE_ON  = os.environ.get("RSISCALP_REGIME_RANGE_ON", "1") == "1"
+REGIME_DUAL_TF   = os.environ.get("RSISCALP_REGIME_DUAL_TF", "")       # e.g. "15m" to require agreement
+# Per-leg params (defaults: trend leg = v2.1, range leg = v2.2).
+REGIME_TREND_LEG = dict(os=int(os.environ.get("RSISCALP_REGIME_TREND_OS", "30")),
+                        ob=int(os.environ.get("RSISCALP_REGIME_TREND_OB", "70")),
+                        ct=False, gap=float(os.environ.get("RSISCALP_REGIME_TREND_GAP", "0.0015")),
+                        tps=0.005, tpd=0.0025)
+REGIME_RANGE_LEG = dict(os=int(os.environ.get("RSISCALP_REGIME_RANGE_OS", "35")),
+                        ob=int(os.environ.get("RSISCALP_REGIME_RANGE_OB", "65")),
+                        ct=True,  gap=float(os.environ.get("RSISCALP_REGIME_RANGE_GAP", "0.0020")),
+                        tps=0.005, tpd=0.010)
+
+
+def _adx_last_closed(df, n):
+    """ADX(n) of the last CLOSED bar. df = klines oldest-first incl. forming bar."""
+    import numpy as np
+    if df is None or len(df) < n + 30:
+        return None
+    d = df.iloc[:-1]                                     # drop the forming bar
+    up = d["high"].diff(); dn = -d["low"].diff()
+    plus = pd.Series(((up > dn) & (up > 0)) * up, index=d.index).fillna(0.0)
+    minus = pd.Series(((dn > up) & (dn > 0)) * dn, index=d.index).fillna(0.0)
+    pc = d["close"].shift(1)
+    tr = pd.concat([d["high"] - d["low"], (d["high"] - pc).abs(),
+                    (d["low"] - pc).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / n, adjust=False).mean()
+    pdi = 100 * plus.ewm(alpha=1.0 / n, adjust=False).mean() / atr
+    mdi = 100 * minus.ewm(alpha=1.0 / n, adjust=False).mean() / atr
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+    adx = dx.ewm(alpha=1.0 / n, adjust=False).mean()
+    v = adx.iloc[-1]
+    return float(v) if pd.notna(v) else None
+
+
+def _regime_leg(log):
+    """Returns (leg, adx) where leg in {'trend','range',None}. None = flat/blocked.
+    Fail-closed: if regime data is unavailable, returns (None, adx) to block entry."""
+    df = fetch_klines(REGIME_TF, 300)
+    adx = _adx_last_closed(df, REGIME_ADX_LEN)
+    if adx is None:
+        return None, None
+    def lab(a):
+        if a >= REGIME_TREND_ADX:
+            return "trend"
+        if a < REGIME_RANGE_ADX:
+            return "range"
+        return None                                     # dead zone
+    leg = lab(adx)
+    if leg and REGIME_DUAL_TF:                           # require a 2nd TF to agree
+        a2 = _adx_last_closed(fetch_klines(REGIME_DUAL_TF, 300), REGIME_ADX_LEN)
+        if a2 is None or lab(a2) != leg:
+            return None, adx
+    if leg == "range" and not REGIME_RANGE_ON:
+        return None, adx
+    return leg, adx
+
 # ─── Logging ───
 log = logging.getLogger("bot_rsiscalp_v11")
 log.setLevel(logging.INFO)
@@ -422,6 +490,10 @@ def maybe_dca(pos, live_px: float, balance: float, state) -> bool:
 
 # ─── Main tick ───
 def main():
+    # v2.3 regime router reassigns these per-leg each tick (inert when REGIME_TF == "").
+    # Each cron tick is a fresh process, so reassignment is process-local and safe.
+    global RSI_OVERSOLD, RSI_OVERBOUGHT, USE_COUNTER_TREND, USE_TREND_FILTER
+    global TREND_GAP_MIN, TP_PCT_SINGLE, TP_PCT_DCA
     log.info("=" * 60)
     sl_desc = f"SL {SL_FROM_WORST*100:.1f}% from worst" if USE_STOP_LOSS else "NO SL"
     log.info(f"RSI-Scalp Paper Bot — RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} | {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% | "
@@ -452,7 +524,26 @@ def main():
     close_px = float(last["close"])
     rsi_val = float(last["rsi"]) if pd.notna(last["rsi"]) else None
 
+    # ── v2.3 REGIME ROUTER: pick the active leg by HTF ADX, set its params ──
+    regime_leg, regime_adx = None, None
+    if REGIME_TF:
+        regime_leg, regime_adx = _regime_leg(log)
+        leg_cfg = REGIME_TREND_LEG if regime_leg == "trend" else (
+            REGIME_RANGE_LEG if regime_leg == "range" else None)
+        if leg_cfg is not None:
+            RSI_OVERSOLD, RSI_OVERBOUGHT = leg_cfg["os"], leg_cfg["ob"]
+            USE_COUNTER_TREND = leg_cfg["ct"]
+            USE_TREND_FILTER = True                      # both legs need 15m (gap/dir)
+            TREND_GAP_MIN = leg_cfg["gap"]
+            TP_PCT_SINGLE, TP_PCT_DCA = leg_cfg["tps"], leg_cfg["tpd"]
+        log.info(f"  REGIME [{REGIME_TF} ADX {regime_adx if regime_adx is None else round(regime_adx,1)}] "
+                 f"-> leg={regime_leg or 'FLAT'} (trend>={REGIME_TREND_ADX:.0f}/range<{REGIME_RANGE_ADX:.0f})"
+                 + ("" if leg_cfg is None else
+                    f" | RSI {RSI_OVERSOLD}/{RSI_OVERBOUGHT} ct={USE_COUNTER_TREND} gap>={TREND_GAP_MIN*100:.2f}%"))
+
     sig = rsi_signal(rsi_val)
+    if REGIME_TF and regime_leg is None:                 # dead zone / blocked -> no new entries
+        sig = None
 
     # ── Optional 15m trend gate (entry only) ──
     trend = None  # "UP" / "DOWN" / None
@@ -894,6 +985,10 @@ def main():
                        "weekend_qty_mult": WEEKEND_QTY_MULT,
                        "sl_from_worst_pct": SL_FROM_WORST*100},
         "trend_15m": trend, "block_reason": block_reason,
+        "regime": ({"tf": REGIME_TF, "adx": regime_adx, "leg": regime_leg,
+                    "trend_adx": REGIME_TREND_ADX, "range_adx": REGIME_RANGE_ADX,
+                    "range_on": REGIME_RANGE_ON, "dual_tf": REGIME_DUAL_TF or None}
+                   if REGIME_TF else None),
         "stats": state["stats"],
         "strategy": f"RSI-Scalp ULTIMATE v1.1 (RSI{RSI_PERIOD} {RSI_OVERSOLD}/{RSI_OVERBOUGHT} / 15m EMA{TREND_EMA_FAST}/{TREND_EMA_SLOW} + GAP ≥{TREND_GAP_MIN*100:.2f}% / TP {TP_PCT_SINGLE*100:.2f}%·{TP_PCT_DCA*100:.2f}% / {DCA_LEVELS} DCA @ {DCA_SPACING*100:.2f}% / SL {SL_FROM_WORST*100:.2f}% / +TF exit / +weekend {WEEKEND_QTY_MULT:.1f}× / +daily-stop ${DAILY_MAX_LOSS:.0f} / +TIME-SL {TIME_SL_BARS} bars) [PAPER]",
         "paper_mode": True, "state": "IN_POSITION" if pos else "FLAT",
