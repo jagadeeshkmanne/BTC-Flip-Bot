@@ -216,15 +216,17 @@ REGIME_TREND_ADX = float(os.environ.get("RSISCALP_REGIME_TREND_ADX", "25"))
 REGIME_RANGE_ADX = float(os.environ.get("RSISCALP_REGIME_RANGE_ADX", "20"))
 REGIME_RANGE_ON  = os.environ.get("RSISCALP_REGIME_RANGE_ON", "1") == "1"
 REGIME_DUAL_TF   = os.environ.get("RSISCALP_REGIME_DUAL_TF", "")       # e.g. "15m" to require agreement
-# Per-leg params (defaults: trend leg = v2.1, range leg = v2.2).
+# Per-leg params. 2026-06-14: UNIFIED — both legs use the same RSI/gap/TP as
+# v2.1/v2.2 (RSI 30/70, gap 0.20%, TP 0.5/0.25%); they differ ONLY in ct
+# (with-trend vs counter-trend), so v2.3 = "v2.1 in trends, v2.2 in ranges".
 REGIME_TREND_LEG = dict(os=int(os.environ.get("RSISCALP_REGIME_TREND_OS", "30")),
                         ob=int(os.environ.get("RSISCALP_REGIME_TREND_OB", "70")),
-                        ct=False, gap=float(os.environ.get("RSISCALP_REGIME_TREND_GAP", "0.0015")),
+                        ct=False, gap=float(os.environ.get("RSISCALP_REGIME_TREND_GAP", "0.0020")),
                         tps=0.005, tpd=0.0025)
-REGIME_RANGE_LEG = dict(os=int(os.environ.get("RSISCALP_REGIME_RANGE_OS", "35")),
-                        ob=int(os.environ.get("RSISCALP_REGIME_RANGE_OB", "65")),
+REGIME_RANGE_LEG = dict(os=int(os.environ.get("RSISCALP_REGIME_RANGE_OS", "30")),
+                        ob=int(os.environ.get("RSISCALP_REGIME_RANGE_OB", "70")),
                         ct=True,  gap=float(os.environ.get("RSISCALP_REGIME_RANGE_GAP", "0.0020")),
-                        tps=0.005, tpd=0.010)
+                        tps=0.005, tpd=0.0025)
 
 
 def _adx_last_closed(df, n):
