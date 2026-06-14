@@ -1,7 +1,7 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
 // 2026-06-10: 2 counter-trend 5× variants for clean A/B comparison.
 // v2 (3× lev) removed — same strategy as v2.1 but lower leverage = less profit.
-export type StrategyId = 'v2.1' | 'v2.2' | 'v3_trend';
+export type StrategyId = 'v2.1' | 'v2.2' | 'v2.3';
 
 export interface BotMeta {
   id: StrategyId;
@@ -30,12 +30,12 @@ export const BOTS: BotMeta[] = [
     description: 'Same as v2.1 with wider L2 TP (1.00%) and longer time-SL (12h). 6.8y backtest: 19,140 trades / 72.1% WR / $884K profit / 0.64% max DD. +22% vs v2.1, DD halved.',
   },
   {
-    id: 'v3_trend',
-    short: 'v3',
-    label: 'v3 · 4h Trend Portfolio',
-    badge: 'Trend · 4 pairs',
-    accent: 'green',
-    description: 'BTC+ETH+SOL+BNB perps, long/flat 2×. LONG when EMA30>EMA150 + px>EMA50 + ADX14>20 (alts need BTC confirm); 8% cat-SL; funding+fees honest. OOS 2023-26: +262% @1× / Sharpe 1.82 / −14% max DD (param plateau 54/54). [PAPER]',
+    id: 'v2.3',
+    short: 'v2.3',
+    label: 'v2.3 · Regime Router',
+    badge: 'Regime · 1h ADX',
+    accent: 'blue',
+    description: 'One bot, two legs switched by 1h ADX. ADX ≥ 25 → TREND leg (with-trend, RSI 30/70, gap 0.15%, TP 0.5/0.25%). ADX < 20 → RANGE leg (counter-trend, RSI 35/65, gap 0.20%, TP 0.5/1.0%). 20–25 → flat. Honest backtest: not profitable (best trend-only −20%/90d) — runs to observe the regime switch live. [PAPER]',
   },
 ];
 
@@ -53,6 +53,16 @@ export interface BotStatus {
   signal: 'LONG' | 'SHORT' | null;
   trend_15m: 'UP' | 'DOWN' | null;
   block_reason: string | null;
+  // v2.3 regime router (null for v2.1/v2.2)
+  regime?: {
+    tf: string;
+    adx: number | null;
+    leg: 'trend' | 'range' | null;
+    trend_adx: number;
+    range_adx: number;
+    range_on: boolean;
+    dual_tf: string | null;
+  } | null;
   position: {
     side: 'LONG' | 'SHORT';
     first_entry: number;

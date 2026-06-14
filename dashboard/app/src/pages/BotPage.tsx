@@ -4,7 +4,6 @@ import { MarketHeader } from '@/components/MarketHeader';
 import { BotStatsStrip } from '@/components/BotStatsStrip';
 import { PositionPanel } from '@/components/PositionPanel';
 import { ConditionsPanel } from '@/components/ConditionsPanel';
-import { V3ConditionsPanel } from '@/components/V3ConditionsPanel';
 import { PriceChart } from '@/components/PriceChart';
 import { TradeLogTable } from '@/components/TradeLogTable';
 import { STRATEGY_TO_BOT, type StrategyId } from '@/types/bot';
@@ -44,13 +43,11 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
       {/* Position panel — full width when in-trade (price-scale viz), waiting view when flat */}
       <PositionPanel status={status.data} state={state.data} strategy={strategy} />
 
-      {/* Chart — BTC-only candles; hidden for the multi-pair portfolio bot */}
-      {strategy !== 'v3_trend' && <PriceChart />}
+      {/* Chart — BTC candles */}
+      <PriceChart />
 
-      {/* Conditions checklist — rsiscalp panel for v2.x; per-pair EMA/ADX panel for v3 */}
-      {strategy !== 'v3_trend'
-        ? <ConditionsPanel status={status.data} strategy={strategy} />
-        : <V3ConditionsPanel status={status.data} />}
+      {/* Conditions checklist — rsiscalp panel (v2.x incl. v2.3 regime router) */}
+      <ConditionsPanel status={status.data} strategy={strategy} />
 
       {/* Trade log */}
       <TradeLogTable trades={trades} />

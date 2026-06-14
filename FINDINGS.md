@@ -383,6 +383,54 @@ REUSABLE INFRA: .venv-jesse + jesse_port/{fetch_1m,strategy_v2,run_jesse_v2}.py
 — headless jesse.research.backtest harness with real 1m Bybit candles, for
 any future strategy cross-check.
 
+## 13. Range-gating does NOT rescue counter-trend; confirmed ranges are WORST (2026-06-14)
+
+The v2.3 hypothesis (from a user-shared analysis): gate v2.2's counter-trend leg
+to confirmed 1h ranges (ADX<20) and it should "dominate the sideways chop." Tested
+directly on the Jesse harness (backtest/jesse_port/strategy_v2.py V22_R* variants +
+run_range_test.py), 90d real 1m Bybit, 5x, fees:
+  v2.2 baseline (gap0.20, no ADX):  455 tr, WR57%, PF 0.65, -79%
+  range 1h ADX<20 (gap off):        197 tr, WR46%, PF 0.50, -56%  <- WORSE than baseline
+  range 1h ADX<25 (gap off):        373 tr, WR50%, PF 0.61, -71%
+  range ADX<20 + gap0.20:            72 tr, WR60%, PF 0.69, -17%  (least-bad = fewest trades)
+  range ADX<20 + RSI30/70:          168 tr, WR44%, PF 0.44, -53%
+FALSIFIED: every variant PF < 1. Gating to pure ADX<20 ranges made the bot WORSE
+(WR 57%->46%), the opposite of the theory. PF rises as the gate LOOSENS (0.50 ->
+0.61 -> 0.65), i.e. allowing more trend conditions helps, not hurts. The only
+"less bad" cell (range+gap, -17%) just trades 6x less = less exposure to a -EV
+core, not better edge (same "optimal is don't trade" signature as the gap sweep).
+Why the theory fails on BTC: 1h ADX<20 = low-vol chop / coiling-before-break, not
+clean S/R oscillation; ADX lags so it confirms ranges that are about to break, and
+the break runs over the DCAs (the exact risk the gate was meant to prevent). Also
+(FINDINGS #12 context) BTC is in 1h-ADX<20 range only ~26% of the time, not the
+"70%" the analysis assumed. CONCLUSION: a regime-routed v2.1+v2.2 bot is sound for
+SAFETY (stops counter-trend fighting trends) but cannot manufacture edge — the
+RSI-scalp cores have no edge at any gating. Do not build v2.3 expecting profit.
+
+## 14. Best achievable v2.3 regime-router = drop the counter-trend leg (2026-06-14)
+
+Built the full v2.3 regime router (backtest/jesse_port/strategy_v2.py V23*: 1h ADX
+switches v2.1 with-trend leg in trends / v2.2 counter-trend leg in ranges; leg-
+specific RSI+TP; optional 15m+1h dual confirm) and swept it (run_v23_sweep.py),
+90d real 1m, 5x, fees:
+  v2.1 standalone:                200 tr, PF 0.51, -44%
+  v2.2 standalone:                455 tr, PF 0.65, -79%, DD -81%
+  v2.3 router 1h (trend>25/rng<20): 322 tr, PF 0.64, -58%, DD -59%
+  v2.3 wide (trend>28/rng<18):    265 tr, PF 0.70, -42%
+  v2.3 DUAL 15m+1h confirm:       173 tr, PF 0.54, -43%, DD -44%
+  v2.3 TREND-LEG ONLY (ADX>25):   119 tr, PF 0.72, -20%, DD -26%  <- BEST
+ALL PF<1 (no profit). BEST config DELETES the counter-trend leg: trend-leg gated
+to 1h ADX>25 nearly HALVES v2.1's loss (PF 0.51->0.72, -44%->-20%). The range leg
+subtracts value everywhere — the more you include it (looser range gate, no dead
+zone), the worse it gets. So optimizing "combine v2.1+v2.2" collapses to "a more
+selective trend bot" — i.e. it converges on the v3 thesis (trend-only), just on
+LTF with no proven edge. DUAL 15m+1h confirm = risk lever only: cuts trades/DD
+(-59%->-44%) but LOWERS PF (0.64->0.54), so it reduces exposure, not improves edge.
+RECOMMENDATION: there is no profitable v2.3; the least-bad is trend-leg-only
+ADX>25 (-20%/90d). Don't deploy expecting profit; if built, it's a selective
+trend bot that still bleeds. The dynamic switch mechanism (V23._regime, 1h ADX
+each closed bar) works correctly and is reusable.
+
 ## File map for analysis
 
 - bot/bot_rsiscalp_v3.py + bot/core_rsiscalp.py — live strategy (env

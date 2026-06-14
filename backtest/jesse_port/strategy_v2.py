@@ -34,6 +34,10 @@ class RsiScalpV2(Strategy):
     TIME_SL_BARS = 72             # hard 6h
     PAUSE_MS = 15 * 60 * 1000     # circuit breaker: 15min after every loss
     LEV = 5.0
+    # ── regime gate (the v2.3 test): only enter when HTF ADX is in range/trend ──
+    REGIME_ADX_MAX = None         # if set, require <REGIME_TF> ADX < this (confirmed RANGE)
+    REGIME_TF = "1h"
+    GAP_OFF = False               # True = drop the 15m gap-firmness filter entirely
 
     # ── helpers ──
     def _c15(self):
@@ -41,6 +45,17 @@ class RsiScalpV2(Strategy):
         if len(c) and self.time < c[-1][0] + 900_000:   # last 15m bar forming
             c = c[:-1]
         return c
+
+    def _adx_htf(self):
+        """ADX14 on the last CLOSED REGIME_TF bar (no lookahead)."""
+        tf = self.REGIME_TF
+        ms = 3_600_000 if tf == "1h" else (900_000 if tf == "15m" else 14_400_000)
+        c = self.get_candles(self.exchange, self.symbol, tf)
+        if len(c) and self.time < c[-1][0] + ms:        # drop the forming HTF bar
+            c = c[:-1]
+        if len(c) < 30:
+            return None
+        return float(ta.adx(c, period=14, sequential=False))
 
     def _trend(self):
         c = self._c15()
@@ -87,7 +102,11 @@ class RsiScalpV2(Strategy):
         if not self.COUNTER_TREND:                           # WITH-trend gate
             if (side == "LONG") != (trend == "UP"):
                 return False
-        if abs(gap) < self.GAP_MIN_PCT:                      # knife-edge filter
+        if self.REGIME_ADX_MAX is not None:                  # v2.3: confirmed-RANGE gate
+            adx = self._adx_htf()
+            if adx is None or adx >= self.REGIME_ADX_MAX:
+                return False
+        if not self.GAP_OFF and abs(gap) < self.GAP_MIN_PCT:  # knife-edge filter
             return False
         a = self._atr_pct()
         if a is None or a > self.ATR_MAX_PCT:                # chop filter
@@ -167,8 +186,11 @@ class RsiScalpV2(Strategy):
         e = pos.entry_price
         q = abs(pos.qty)
         dca_filled = self.vars.get("l2_index") is not None
-        # TP from avg — adaptive by fill count
-        tp_pct = self.TP_DCA if dca_filled else self.TP_SINGLE
+        # TP from avg — adaptive by fill count; v2.3 stamps leg-specific TP in vars
+        _ts, _td = self.vars.get("tp_single"), self.vars.get("tp_dca")
+        tp_single = _ts if _ts is not None else self.TP_SINGLE
+        tp_dca = _td if _td is not None else self.TP_DCA
+        tp_pct = tp_dca if dca_filled else tp_single
         self.take_profit = q, e * (1 + sgn * tp_pct)
         # SL ladder
         if not dca_filled:
@@ -216,9 +238,137 @@ class V21(RsiScalpV2):
 
 
 class V22(RsiScalpV2):
-    """Counter-trend, RSI 35/65, gap 0.30%, TP 0.5/1.0%, no trend-line stop."""
+    """Counter-trend, RSI 35/65, gap 0.20% (as deployed 2026-06-14), TP 0.5/1.0%."""
     RSI_OS, RSI_OB = 35, 65
     COUNTER_TREND = True
-    GAP_MIN_PCT = 0.30
+    GAP_MIN_PCT = 0.20
     TP_SINGLE, TP_DCA = 0.005, 0.01
     TRENDLINE_SL_PCT = 0.0
+
+
+# ── v2.3 "what about range?" test: gate counter-trend to confirmed 1h ranges ──
+class V22_R20(V22):
+    """Range-gated: 1h ADX < 20, gap firmness filter REMOVED (range gate replaces it)."""
+    REGIME_ADX_MAX = 20.0
+    GAP_OFF = True
+
+
+class V22_R25(V22):
+    """Looser range gate: 1h ADX < 25 (more trades), gap filter removed."""
+    REGIME_ADX_MAX = 25.0
+    GAP_OFF = True
+
+
+class V22_R20_GAP(V22):
+    """Both filters: 1h ADX < 20 AND 15m gap >= 0.20%."""
+    REGIME_ADX_MAX = 20.0
+    GAP_OFF = False
+
+
+class V22_R20_3070(V22):
+    """Range gate ADX<20 + RSI 30/70 (fewer, deeper extremes)."""
+    RSI_OS, RSI_OB = 30, 70
+    REGIME_ADX_MAX = 20.0
+    GAP_OFF = True
+
+
+# ══ v2.3: the combined REGIME ROUTER (v2.1 leg in trends + v2.2 leg in ranges) ══
+class V23(RsiScalpV2):
+    """Dynamic switch by ADX regime, evaluated each closed bar:
+        ADX >= TREND_ADX -> TREND leg  (with-trend, RSI TREND_RSI, gap TREND_GAP, TP 0.5/0.25)
+        ADX <  RANGE_ADX -> RANGE leg  (counter-trend, RSI RANGE_RSI, TP 0.5/1.0)
+        in between        -> FLAT (no entry)
+       DUAL_TF=True requires 15m AND 1h ADX to AGREE on the regime (stricter).
+       RANGE_ON=False disables the counter-trend leg (trend-only router)."""
+    TREND_ADX = 25.0
+    RANGE_ADX = 20.0
+    TREND_RSI = (30, 70)
+    RANGE_RSI = (35, 65)
+    TREND_GAP = 0.15
+    RANGE_ON = True
+    DUAL_TF = False               # require 15m+1h agreement
+
+    def _regime(self):
+        """'trend' / 'range' / None on the last closed HTF bar(s)."""
+        a1 = self._adx_htf()      # REGIME_TF (default 1h)
+        if a1 is None:
+            return None
+        def lab(a):
+            if a >= self.TREND_ADX:
+                return "trend"
+            if a < self.RANGE_ADX:
+                return "range"
+            return None
+        r = lab(a1)
+        if r is None:
+            return None
+        if self.DUAL_TF:
+            c = self._c15()       # 15m ADX must agree
+            if len(c) < 30:
+                return None
+            a15 = float(ta.adx(c, period=14, sequential=False))
+            if lab(a15) != r:
+                return None
+        if r == "range" and not self.RANGE_ON:
+            return None
+        return r
+
+    def _signal(self):
+        leg = self._regime()
+        if leg is None:
+            return None
+        os_, ob = self.TREND_RSI if leg == "trend" else self.RANGE_RSI
+        r = ta.rsi(self.candles, 9, sequential=False)
+        if np.isnan(r):
+            return None
+        self.vars["_leg"] = leg
+        if r <= os_:
+            return "LONG"
+        if r >= ob:
+            return "SHORT"
+        return None
+
+    def _entry_ok(self, side: str) -> bool:
+        if self.vars.get("pause_until", 0) > self.time:
+            return False
+        leg = self.vars.get("_leg") or self._regime()
+        if leg is None:
+            return False
+        trend, gap = self._trend()
+        if trend is None or gap is None:
+            return False
+        if leg == "trend":                                   # with-trend gate + firmness
+            if (side == "LONG") != (trend == "UP"):
+                return False
+            if abs(gap) < self.TREND_GAP:
+                return False
+            self.vars["tp_single"], self.vars["tp_dca"] = 0.005, 0.0025
+        else:                                                # range = counter-trend, wider DCA TP
+            self.vars["tp_single"], self.vars["tp_dca"] = 0.005, 0.01
+        a = self._atr_pct()
+        if a is None or a > self.ATR_MAX_PCT:
+            return False
+        self.vars["entry_trend"] = trend
+        return True
+
+
+class V23_NoDeadzone(V23):
+    """No flat zone: every bar is trend OR range (split at 20)."""
+    TREND_ADX = 20.0
+    RANGE_ADX = 20.0
+
+
+class V23_Dual(V23):
+    """Require 15m AND 1h ADX to agree on the regime."""
+    DUAL_TF = True
+
+
+class V23_TrendOnly(V23):
+    """Router with the counter-trend (range) leg DISABLED — trend leg only."""
+    RANGE_ON = False
+
+
+class V23_Wide(V23):
+    """Wider dead zone: trend>28, range<18 (only act on clear regimes)."""
+    TREND_ADX = 28.0
+    RANGE_ADX = 18.0
