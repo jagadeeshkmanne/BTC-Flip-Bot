@@ -431,6 +431,32 @@ ADX>25 (-20%/90d). Don't deploy expecting profit; if built, it's a selective
 trend bot that still bleeds. The dynamic switch mechanism (V23._regime, 1h ADX
 each closed bar) works correctly and is reusable.
 
+## 15. v2.3 regime router works on HIGH timeframes, not low (2026-06-14)
+
+backtest/v23_timeframe_sweep.py + v23_tune_1d4h.py — backtested the v2.3 regime
+router (ADX regime switch: with-trend in trends / counter-trend in ranges) across
+4 timeframe pairs (regime/exec), exits scaled ~sqrt(time), 2-leg DCA, honest
+fills+fees. PF improves MONOTONICALLY with timeframe:
+  15m/5m  PF 0.59 | 1h/15m PF 0.69 | 4h/1h PF 0.76 | 1d/4h PF 1.06
+Only 1d/4h crosses PF>1. Leverage is the DD killer not the signal (PF is
+leverage-invariant): 1d/4h at 1x = -2%/-39%DD (≈breakeven, 6.5y), at 5x =
+-79%/-96%DD. So 5x was destroying a small real edge.
+
+TUNING (1d/4h, IS<2024 / OOS≥2024, 162-cell RSI×gap×SL×TP×HTF-RSI sweep, 2x):
+34/162 configs ROBUST (PF>1 BOTH halves). Coherent winning direction: WIDER gap
+(×1.5 ≈ 3% on 1d EMA20/50) + WIDER SL (×1.5 ≈ 6%) — i.e. be more selective on
+entries and give 4h trades room. Best balanced robust cell: RSI 35/65, gap×1.5,
+SL×1.5, TP×1.5, N=206 → IS +25%/PF1.18, OOS +52%/PF1.58 (positive both halves).
+Baseline (30/70, mults 1.0): PF 1.05/1.03 both halves but net-negative. HTF-RSI
+confirmation (1d RSI gating 4h entries) did NOT help — consistent with the old
+5m "1h RSI 50-split" reversion. median OOS PF 0.93 (most cells still lose).
+
+CAVEATS: 21% robust rate invites multiple-testing overfit (but the gap+SL
+direction is coherent, not scattered); sqrt-time exit scaling is an assumption;
+~30 trades/yr (slow). This is the first tuned rsiscalp-family config positive in
+BOTH IS+OOS besides v3 — worth a FORWARD test (de-levered ~2x), NOT real money.
+Mirrors v3/momo: this strategy family has signal on HTF, none on 5m.
+
 ## File map for analysis
 
 - bot/bot_rsiscalp_v3.py + bot/core_rsiscalp.py — live strategy (env
