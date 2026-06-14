@@ -228,10 +228,11 @@ REGIME_RANGE_LEG = dict(os=int(os.environ.get("RSISCALP_REGIME_RANGE_OS", "35"))
 
 
 def _adx_last_closed(df, n):
-    """ADX(n) of the last CLOSED bar. df = klines oldest-first incl. forming bar."""
+    """(ADX, direction) of the last CLOSED bar. direction = 'up'/'down' from +DI/-DI.
+    df = klines oldest-first incl. forming bar. Returns (None, None) if unavailable."""
     import numpy as np
     if df is None or len(df) < n + 30:
-        return None
+        return None, None
     d = df.iloc[:-1]                                     # drop the forming bar
     up = d["high"].diff(); dn = -d["low"].diff()
     plus = pd.Series(((up > dn) & (up > 0)) * up, index=d.index).fillna(0.0)
@@ -245,16 +246,20 @@ def _adx_last_closed(df, n):
     dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
     adx = dx.ewm(alpha=1.0 / n, adjust=False).mean()
     v = adx.iloc[-1]
-    return float(v) if pd.notna(v) else None
+    if pd.isna(v):
+        return None, None
+    direction = "up" if float(pdi.iloc[-1]) >= float(mdi.iloc[-1]) else "down"
+    return float(v), direction
 
 
 def _regime_leg(log):
-    """Returns (leg, adx) where leg in {'trend','range',None}. None = flat/blocked.
-    Fail-closed: if regime data is unavailable, returns (None, adx) to block entry."""
+    """Returns (leg, adx, direction). leg in {'trend','range',None}; direction
+    'up'/'down' from 1h +DI/-DI. None leg = flat/dead-zone/blocked.
+    Fail-closed: if regime data is unavailable, returns (None, adx, dir) to block."""
     df = fetch_klines(REGIME_TF, 300)
-    adx = _adx_last_closed(df, REGIME_ADX_LEN)
+    adx, direction = _adx_last_closed(df, REGIME_ADX_LEN)
     if adx is None:
-        return None, None
+        return None, None, None
     def lab(a):
         if a >= REGIME_TREND_ADX:
             return "trend"
@@ -263,12 +268,12 @@ def _regime_leg(log):
         return None                                     # dead zone
     leg = lab(adx)
     if leg and REGIME_DUAL_TF:                           # require a 2nd TF to agree
-        a2 = _adx_last_closed(fetch_klines(REGIME_DUAL_TF, 300), REGIME_ADX_LEN)
+        a2, _ = _adx_last_closed(fetch_klines(REGIME_DUAL_TF, 300), REGIME_ADX_LEN)
         if a2 is None or lab(a2) != leg:
-            return None, adx
+            return None, adx, direction
     if leg == "range" and not REGIME_RANGE_ON:
-        return None, adx
-    return leg, adx
+        return None, adx, direction
+    return leg, adx, direction
 
 # ─── Logging ───
 log = logging.getLogger("bot_rsiscalp_v11")
@@ -525,9 +530,9 @@ def main():
     rsi_val = float(last["rsi"]) if pd.notna(last["rsi"]) else None
 
     # ── v2.3 REGIME ROUTER: pick the active leg by HTF ADX, set its params ──
-    regime_leg, regime_adx = None, None
+    regime_leg, regime_adx, regime_dir = None, None, None
     if REGIME_TF:
-        regime_leg, regime_adx = _regime_leg(log)
+        regime_leg, regime_adx, regime_dir = _regime_leg(log)
         leg_cfg = REGIME_TREND_LEG if regime_leg == "trend" else (
             REGIME_RANGE_LEG if regime_leg == "range" else None)
         if leg_cfg is not None:
@@ -536,7 +541,8 @@ def main():
             USE_TREND_FILTER = True                      # both legs need 15m (gap/dir)
             TREND_GAP_MIN = leg_cfg["gap"]
             TP_PCT_SINGLE, TP_PCT_DCA = leg_cfg["tps"], leg_cfg["tpd"]
-        log.info(f"  REGIME [{REGIME_TF} ADX {regime_adx if regime_adx is None else round(regime_adx,1)}] "
+        log.info(f"  REGIME [{REGIME_TF} ADX {regime_adx if regime_adx is None else round(regime_adx,1)} "
+                 f"dir={regime_dir or '?'}] "
                  f"-> leg={regime_leg or 'FLAT'} (trend>={REGIME_TREND_ADX:.0f}/range<{REGIME_RANGE_ADX:.0f})"
                  + ("" if leg_cfg is None else
                     f" | RSI {RSI_OVERSOLD}/{RSI_OVERBOUGHT} ct={USE_COUNTER_TREND} gap>={TREND_GAP_MIN*100:.2f}%"))
@@ -986,6 +992,7 @@ def main():
                        "sl_from_worst_pct": SL_FROM_WORST*100},
         "trend_15m": trend, "block_reason": block_reason,
         "regime": ({"tf": REGIME_TF, "adx": regime_adx, "leg": regime_leg,
+                    "dir": regime_dir,
                     "trend_adx": REGIME_TREND_ADX, "range_adx": REGIME_RANGE_ADX,
                     "range_on": REGIME_RANGE_ON, "dual_tf": REGIME_DUAL_TF or None}
                    if REGIME_TF else None),

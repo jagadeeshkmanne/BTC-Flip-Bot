@@ -58,6 +58,7 @@ export interface BotStatus {
     tf: string;
     adx: number | null;
     leg: 'trend' | 'range' | null;
+    dir: 'up' | 'down' | null;
     trend_adx: number;
     range_adx: number;
     range_on: boolean;

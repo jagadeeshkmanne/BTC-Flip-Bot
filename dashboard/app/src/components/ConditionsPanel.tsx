@@ -103,6 +103,23 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
     });
   }
 
+  // 2026-06-14: v2.3 — 1h regime as a top-level condition (like the 15m gap row).
+  // The regime is the MASTER gate: it decides which leg is active and whether an
+  // entry is allowed at all. Shown first so it reads top-down.
+  if (s.regime) {
+    const r = s.regime;
+    const adxTxt = r.adx != null ? r.adx.toFixed(1) : '—';
+    const stateLabel =
+      r.leg === 'range' ? 'RANGE' :
+      r.leg === 'trend' ? (r.dir === 'up' ? 'BULL ↑' : 'BEAR ↓') :
+                          `FLAT (dead ${r.range_adx}–${r.trend_adx})`;
+    // LONG permitted when: range leg (fade both ways) OR trend leg in an uptrend.
+    const longOk = r.leg === 'range' || (r.leg === 'trend' && r.dir === 'up');
+    const shortOk = r.leg === 'range' || (r.leg === 'trend' && r.dir === 'down');
+    LONG.unshift({ label: '1h regime allows LONG', value: `${stateLabel} · ADX ${adxTxt}`, ok: longOk });
+    SHORT.unshift({ label: '1h regime allows SHORT', value: `${stateLabel} · ADX ${adxTxt}`, ok: shortOk });
+  }
+
   return { LONG, SHORT };
 }
 
@@ -122,15 +139,21 @@ export function ConditionsPanel({ status, strategy }: { status?: BotStatus; stra
 }
 
 function RegimeBanner({ regime }: { regime: NonNullable<BotStatus['regime']> }) {
-  const { leg, adx, trend_adx, range_adx, tf, range_on } = regime;
-  const legLabel =
-    leg === 'trend' ? 'TREND-FOLLOWING leg' :
-    leg === 'range' ? 'COUNTER-TREND leg' :
-                      'FLAT · dead zone (no new entries)';
-  const legColor =
-    leg === 'trend' ? 'bg-accent-green/15 text-accent-green' :
-    leg === 'range' ? 'bg-accent-purple/15 text-accent-purple' :
-                      'bg-accent-red/15 text-accent-red';
+  const { leg, adx, dir, trend_adx, range_adx, tf, range_on } = regime;
+  const up = dir === 'up';
+
+  // Market STATE = strength (leg) + direction (dir)
+  const state =
+    leg === 'range' ? { label: 'RANGE', arrow: '↔', color: 'bg-accent-purple/15 text-accent-purple',
+                        sub: 'sideways · counter-trend leg active (fade extremes)' } :
+    leg === 'trend' ? (up
+      ? { label: 'BULL', arrow: '↑', color: 'bg-accent-green/15 text-accent-green',
+          sub: 'uptrend · trend leg active (long pullbacks)' }
+      : { label: 'BEAR', arrow: '↓', color: 'bg-accent-red/15 text-accent-red',
+          sub: 'downtrend · trend leg active (short rallies)' })
+    : { label: `TRANSITION ${up ? '↑' : '↓'}`, arrow: '', color: 'bg-accent-orange/15 text-accent-orange',
+        sub: `dead zone (ADX ${range_adx}–${trend_adx}) · no new entries, leaning ${up ? 'up' : 'down'}` };
+
   const SCALE = 50;
   const clampPct = (v: number) => Math.max(0, Math.min(100, (v / SCALE) * 100));
 
@@ -140,18 +163,20 @@ function RegimeBanner({ regime }: { regime: NonNullable<BotStatus['regime']> }) 
         <span class="text-xs font-semibold uppercase tracking-wider text-text-muted">
           Regime · {tf} ADX(14)
         </span>
-        <span class={clsx('text-2xs font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded', legColor)}>
-          {legLabel}
+        <span class={clsx('text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded', state.color)}>
+          {state.arrow} {state.label}
         </span>
       </div>
-      <div class="flex items-end gap-3 mb-3">
+      <div class="flex items-end gap-3 mb-1">
         <div class="text-3xl font-bold font-mono leading-none">
           {adx != null ? adx.toFixed(1) : '—'}
         </div>
         <div class="text-2xs text-text-dim leading-relaxed pb-0.5">
+          ADX = strength · {up ? '+DI > −DI (up)' : '−DI > +DI (down)'}<br />
           range &lt; {range_adx}{range_on ? '' : ' (off)'} · dead {range_adx}–{trend_adx} · trend ≥ {trend_adx}
         </div>
       </div>
+      <div class="text-2xs text-text-muted mb-2">{state.sub}</div>
       {/* gauge: range zone (purple) | dead zone | trend zone (green), marker at live ADX */}
       <div class="relative h-2 rounded-full overflow-hidden bg-bg-hover">
         <div class="absolute inset-y-0 left-0 bg-accent-purple/40" style={{ width: `${clampPct(range_adx)}%` }} />
