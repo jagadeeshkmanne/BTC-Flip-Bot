@@ -57,7 +57,7 @@ export function Layout({ active, children }: Props) {
             {BOTS.map(b => (
               <Link
                 key={b.id}
-                to={`/bots/${b.short}`}
+                to={`/bots/${b.id}`}
                 class={clsx(
                   'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors',
                   b.id === active
@@ -117,7 +117,7 @@ export function Layout({ active, children }: Props) {
                     'w-full text-left p-3 rounded-lg transition-colors flex items-center justify-between gap-3',
                     b.id === active ? 'bg-bg-hover ring-1 ring-accent-blue/30' : 'hover:bg-bg-hover'
                   )}
-                  onClick={() => navigate(`/bots/${b.short}`)}
+                  onClick={() => navigate(`/bots/${b.id}`)}
                 >
                   <div class="flex items-center gap-2 min-w-0 flex-1">
                     <span class="font-semibold">{b.label}</span>

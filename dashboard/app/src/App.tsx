@@ -6,16 +6,16 @@ import { BOTS, type StrategyId } from '@/types/bot';
 // short ("v1") → strategy id ("rsiscalp_trend")
 const SHORT_TO_ID = Object.fromEntries(BOTS.map(b => [b.short, b.id])) as Record<string, StrategyId>;
 
-// Backward-compat aliases — old URLs redirect to renamed/removed bots.
-// 2026-06-10: fleet reduced to v2.1 + v2.2 (counter-trend 5×). v1 / v2 / v3
-// removed — they all redirect to v2.1 as the safe default.
+// Backward-compat aliases — old URLs redirect to the trend bot (the new default).
+// 2026-06-16: v2.1/v2.2 retired; everything legacy points at trend_btc.
 const ALIAS: Record<string, string> = {
-  'v1':   'v2.1',
-  'v1.1': 'v2.1',
-  'v2':   'v2.1',
-  // 2026-06-12: 'v3' now resolves to the live 4h trend portfolio bot (short name)
-  'v4':   'v2.1',
-  'v5':   'v2.1',
+  'v1':   'trend_btc',
+  'v1.1': 'trend_btc',
+  'v2':   'trend_btc',
+  'v2.1': 'trend_btc',
+  'v2.2': 'trend_btc',
+  'v4':   'trend_btc',
+  'v5':   'trend_btc',
 };
 
 export function App() {
@@ -23,11 +23,12 @@ export function App() {
     <Switch>
       <Route path="/bots/:short">
         {({ short }) => {
-          // Check alias first (handles bookmarks to /bots/v1, /bots/v3, /bots/v4 etc.)
+          // Check alias first (handles bookmarks to /bots/v1, /bots/v2.1 etc.)
           const aliased = ALIAS[short!];
           if (aliased) return <Redirect to={`/bots/${aliased}`} />;
-          const id = SHORT_TO_ID[short!];
-          if (!id) return <Redirect to="/bots/v2.1" />;
+          // Resolve by id (URL slug = bot id) first, then by short name as fallback.
+          const id = (BOTS.find(b => b.id === short)?.id) ?? SHORT_TO_ID[short!];
+          if (!id) return <Redirect to="/bots/trend_btc" />;
           return (
             <Layout active={id}>
               <BotPage strategy={id} />
@@ -35,8 +36,8 @@ export function App() {
           );
         }}
       </Route>
-      <Route path="/bots"><Redirect to="/bots/v2.1" /></Route>
-      <Route><Redirect to="/bots/v2.1" /></Route>
+      <Route path="/bots"><Redirect to="/bots/trend_btc" /></Route>
+      <Route><Redirect to="/bots/trend_btc" /></Route>
     </Switch>
   );
 }

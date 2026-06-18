@@ -7,6 +7,23 @@ interface Cond { label: string; value: string; ok: boolean; }
 
 function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SHORT: Cond[] } {
   const i = s.indicators as any;
+
+  // ── trend_btc: dynamic-leverage 4h trend (no RSI / no shorts) ──
+  if (strategy === 'trend_btc') {
+    const px = s.live_price ?? s.price;
+    const LONG: Cond[] = [
+      { label: 'EMA13 > EMA20 (fast above slow)', value: `${i.ema_f?.toFixed(0)} > ${i.ema_s?.toFixed(0)}`, ok: i.ema_f > i.ema_s },
+      { label: 'Price > EMA200 (uptrend)', value: `${px?.toFixed(0)} vs ${i.ema_g?.toFixed(0)}`, ok: px > i.ema_g },
+    ];
+    const conviction: Cond[] = [
+      { label: 'ADX > 20 (trend strength → 5× cap)', value: `${i.adx?.toFixed(0)}`, ok: i.adx > 20 },
+      { label: 'Weekly close > weekly EMA50', value: i.weekly_bull ? 'bull' : 'bear', ok: !!i.weekly_bull },
+      { label: 'Daily not in bear (price > daily EMA200)', value: i.daily_bear ? 'bear → ½ size' : 'ok', ok: !i.daily_bear },
+      { label: 'Effective leverage', value: `${i.leverage?.toFixed(2)}× (cap ${i.cap}×)`, ok: true },
+    ];
+    return { LONG, SHORT: conviction };
+  }
+
   const rsi = i.rsi;
   const rsiOS = i.rsi_oversold ?? 30;
   const rsiOB = i.rsi_overbought ?? 70;
@@ -20,8 +37,7 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
   // 2026-06-10: v2.1 + v2.2 are both COUNTER-TREND.
   // 2026-06-14: v2.3 regime router switches leg by 1h ADX — counter-trend only
   // when the active leg is 'range'; with-trend when 'trend'.
-  const isCounterTrend = strategy === 'v2.1' || strategy === 'v2.2'
-    || (strategy === 'v2.3' && s.regime?.leg === 'range');
+  const isCounterTrend = strategy === 'v2.3' && s.regime?.leg === 'range';
 
   // Fleet-wide filters
   const hour = i.current_hour_utc;
@@ -131,8 +147,17 @@ export function ConditionsPanel({ status, strategy }: { status?: BotStatus; stra
     <div class="space-y-3">
       {status.regime && <RegimeBanner regime={status.regime} />}
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <CondCard side="LONG" conds={LONG} />
-        <CondCard side="SHORT" conds={SHORT} />
+        {strategy === 'trend_btc' ? (
+          <>
+            <CondCard side="LONG" title="ENTRY (long)" conds={LONG} />
+            <CondCard side="LONG" title="CONVICTION → LEVERAGE" conds={SHORT} />
+          </>
+        ) : (
+          <>
+            <CondCard side="LONG" conds={LONG} />
+            <CondCard side="SHORT" conds={SHORT} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -195,13 +220,13 @@ function RegimeBanner({ regime }: { regime: NonNullable<BotStatus['regime']> }) 
   );
 }
 
-function CondCard({ side, conds }: { side: 'LONG' | 'SHORT'; conds: Cond[] }) {
+function CondCard({ side, conds, title }: { side: 'LONG' | 'SHORT'; conds: Cond[]; title?: string }) {
   const met = conds.filter(c => c.ok).length;
   const isLong = side === 'LONG';
   return (
     <div class="card">
       <div class="flex items-center justify-between mb-3">
-        <span class={clsx('pill', isLong ? 'pill-green' : 'pill-red')}>{side}</span>
+        <span class={clsx('pill', isLong ? 'pill-green' : 'pill-red')}>{title ?? side}</span>
         <span class="text-xs text-text-muted">{met}/{conds.length} met</span>
       </div>
       <div class="space-y-2">

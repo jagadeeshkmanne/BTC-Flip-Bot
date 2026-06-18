@@ -303,9 +303,9 @@ function WaitingForEntry({ status, state, strategy }: { status: BotStatus; state
   const gapMin = i.trend_gap_min_pct ?? 0.25;
   const trendUp = status.trend_15m === 'UP';
   const trendDown = status.trend_15m === 'DOWN';
-  // 2026-06-10: fleet is v2.1 + v2.2 — both counter-trend. They bypass
-  // the 15m trend gate. With-trend bots have been removed from the fleet.
-  const isCounterTrend = strategy === 'v2.1' || strategy === 'v2.2';
+  // 2026-06-16: fleet is trend_btc (with-trend) + v2.3 (range leg can be
+  // counter-trend) + momo_v1 (with-trend). Only v2.3 range leg is counter-trend.
+  const isCounterTrend = strategy === 'v2.3' && status.regime?.leg === 'range';
 
   // Which side is the bot hunting?
   // - v1 (with-trend): determined by 15m trend direction
