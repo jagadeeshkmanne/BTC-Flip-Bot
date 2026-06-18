@@ -478,10 +478,10 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
             pw_set = bool(get_dashboard_password())
             return self._json_response({"password_set": pw_set})
 
-        # 2026-06-10: dashboard.html removed. Root redirects straight to v2.1.
+        # 2026-06-16: v2.1/v2.2 retired. Root redirects to the trend bot.
         if path == '/' or path == '/dashboard.html':
             self.send_response(302)
-            self.send_header('Location', '/bots/v2.1')
+            self.send_header('Location', '/bots/trend_btc')
             self.end_headers()
             return
 
@@ -571,16 +571,11 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # 6 connections every 5s) down to 1 connection. Big perf win for the
         # toy http.server.
         if path == '/api/bots/all':
-            # 2026-06-10: 2 counter-trend 5× variants — v2.1 (TP 0.25/6h) vs v2.2 (TP 1.0/12h)
-            # 2026-06-11: + momo_v1 (daily trend-momentum long/flat spot, honest fees)
-            # 2026-06-12: + v3_trend (4h trend portfolio, 4 perp pairs, long/flat 2x)
-            # 2026-06-14: v3_trend removed (user req); + v2.3 regime router (1h ADX)
-            ids = ['v2.1', 'v2.2', 'v2.3', 'momo_v1']
+            # 2026-06-18: mean-reversion fleet (v2.1/v2.2/v2.3 rsiscalp) removed —
+            # no real edge. Only the validated 4h trend bot remains.
+            ids = ['trend_btc']
             id_to_dir = {
-                'v2.1': 'v2.1',
-                'v2.2': 'v2.2',
-                'v2.3': 'v2.3',
-                'momo_v1': 'momo_v1',
+                'trend_btc': 'trend_btc',
             }
             out = {}
             for sid in ids:
@@ -607,17 +602,17 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
         env_q = (qs.get('env', ['']) or [''])[0]
 
-        if strategy_q in ('v2.1', 'v2.2', 'v2.3', 'momo_v1'):
+        if strategy_q in ('trend_btc',):
             env_dir = strategy_q
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
         else:
-            # Default to active v2.1 bot when no strategy specified
-            env_dir = 'v2.1'
-            state_filename = 'state_paper.json'
-            status_filename = 'status_paper.json'
-            log_filename = 'bot_paper.log'
+            # Default to the trend bot when no strategy specified
+            env_dir = 'trend_btc'
+            state_filename = 'state.json'
+            status_filename = 'status.json'
+            log_filename = 'bot.log'
 
         if path == '/api/bot/day/state':
             sf = os.path.join(BOT_DIR, 'data', env_dir, state_filename)
@@ -645,7 +640,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # Live Binance position — for paper mode, return synthetic position
         # built from state_paper.json + mainnet ticker.
         if path == '/api/bot/day/binance':
-            if env_dir in ('v2', 'v2.1', 'v2.2', 'v2.3'):
+            if env_dir in ('trend_btc',):
                 return self._json_response(_query_paper_position(
                     state_subdir=env_dir,
                     state_filename='state.json',

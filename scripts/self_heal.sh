@@ -6,9 +6,9 @@
 set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
-# 2026-06-10: fleet is v2.1 + v2.2 (counter-trend 5×). With-trend + 3× bots removed.
-V21_DIR="$BOT_DIR/data/v2.1"
-V22_DIR="$BOT_DIR/data/v2.2"
+# 2026-06-18: mean-reversion fleet (v2.1/v2.2/v2.3) removed — no real edge.
+# Only the validated 4h trend bot remains.
+TREND_DIR="$BOT_DIR/data/trend_btc"
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -83,7 +83,6 @@ check_bot() {
 }
 
 # ── Check 2/3/4: RSI-Scalp +Trend fleet (v1.1, v2.0, v5.0) ─────────────
-check_bot "v2.1" "$V21_DIR/bot.log" "$V21_DIR/state.json"
-check_bot "v2.2" "$V22_DIR/bot.log" "$V22_DIR/state.json"
+check_bot "trend_btc" "$TREND_DIR/bot.log" "$TREND_DIR/state.json"
 
 exit 0
