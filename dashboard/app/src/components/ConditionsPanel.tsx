@@ -29,17 +29,18 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
     const g = (s as any).v2gates ?? {};
     const ddh = g.dd_from_high != null ? (g.dd_from_high * 100).toFixed(0) : '—';
     const fmt = (n: any) => n != null ? `$${Math.round(Number(n)).toLocaleString()}` : '—';
+    // Plain-English so a non-trader can read it. LONG = "buy BTC", SHORT = "bet it falls".
     const LONG: Cond[] = [
-      { label: '4h trend up (EMA50 > EMA200)', value: g.f_bull ? 'up ✓' : `down (${i.ema50?.toFixed(0)} < ${i.ema200?.toFixed(0)})`, ok: !!g.f_bull },
-      { label: 'Daily trend up (EMA50 > EMA200)', value: g.d_bull ? 'up ✓' : 'down', ok: !!g.d_bull },
-      { label: 'Macro: price > 9-month SMA', value: g.macro_ok ? 'above ✓' : 'below', ok: !!g.macro_ok },
-      { label: '→ LONG triggers when BTC rises above', value: fmt(g.long_fires_above), ok: !!g.bull },
+      { label: 'Recent price trend is up (last few weeks)', value: g.f_bull ? 'yes ✓' : 'no — falling', ok: !!g.f_bull },
+      { label: 'Bigger-picture trend is up (months)', value: g.d_bull ? 'yes ✓' : 'no — falling', ok: !!g.d_bull },
+      { label: 'In a bull market (above 9-month average)', value: g.macro_ok ? 'yes ✓' : 'no — below', ok: !!g.macro_ok },
+      { label: '→ Buys BTC once price climbs above', value: fmt(g.long_fires_above), ok: !!g.bull },
     ];
     const SHORT: Cond[] = [
-      { label: 'Down > 10% from 35-day high', value: g.drop_ok ? `yes (${ddh}% off high)` : 'no', ok: !!g.drop_ok },
-      { label: 'Daily momentum bearish', value: g.d_macd_bear ? 'bear ✓' : 'not yet', ok: !!g.d_macd_bear },
-      { label: 'Bear-depth short size', value: `${g.ssize ?? '—'}× @ ${ddh}% drawdown`, ok: true },
-      { label: '→ SHORT triggers when BTC closes below', value: fmt(g.short_fires_below), ok: !!g.bear },
+      { label: 'Has fallen more than 10% from its recent high', value: g.drop_ok ? `yes (${ddh}% below the high)` : 'no', ok: !!g.drop_ok },
+      { label: 'Still dropping right now (not bouncing back up)', value: g.d_macd_bear ? 'yes ✓' : 'not yet — bouncing', ok: !!g.d_macd_bear },
+      { label: 'Bet size (bigger when the fall is deeper)', value: `${g.ssize ?? '—'}× @ ${ddh}% down`, ok: true },
+      { label: '→ Bets down (shorts ETH) once BTC closes below', value: fmt(g.short_fires_below), ok: !!g.bear },
     ];
     return { LONG, SHORT };
   }
@@ -171,6 +172,11 @@ export function ConditionsPanel({ status, strategy }: { status?: BotStatus; stra
           <>
             <CondCard side="LONG" title="ENTRY (long)" conds={LONG} />
             <CondCard side="LONG" title="CONVICTION → LEVERAGE" conds={SHORT} />
+          </>
+        ) : strategy === 'btcv2' ? (
+          <>
+            <CondCard side="LONG" title="WHEN IT BUYS BTC (bets up)" conds={LONG} />
+            <CondCard side="SHORT" title="WHEN IT BETS DOWN (shorts ETH)" conds={SHORT} />
           </>
         ) : (
           <>
