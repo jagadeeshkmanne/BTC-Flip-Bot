@@ -173,6 +173,7 @@ def compute_signals(df):
         "parab": bool(px > PARAB_MULT * parab_sma.iloc[i]) if pd.notna(parab_sma.iloc[i]) else False,
         "ssize": ssize, "dd_from_high": dd_from_high,
         "e50": float(e50.iloc[i]), "e200": float(e200.iloc[i]),
+        "d_ema50": round(float(de50.iloc[-1])), "d_ema200": round(float(de200.iloc[-1])),
         # plain-price triggers for the dashboard
         "short_fires_below": round(short_fires_below) if short_fires_below else None,
         "long_fires_above": round(macro_level) if macro_level else None,
@@ -356,7 +357,8 @@ def main():
                     "macro_ok": sig["macro_ok"], "drop_ok": sig["drop_ok"], "d_macd_bear": sig["d_macd_bear"],
                     "parab": sig["parab"], "ssize": sig["ssize"], "dd_from_high": sig["dd_from_high"],
                     "short_fires_below": sig.get("short_fires_below"), "long_fires_above": sig.get("long_fires_above"),
-                    "macd_cross_px": sig.get("macd_cross_px"), "drop_level": sig.get("drop_level")},
+                    "macd_cross_px": sig.get("macd_cross_px"), "drop_level": sig.get("drop_level"),
+                    "d_ema50": sig.get("d_ema50"), "d_ema200": sig.get("d_ema200")},
         "indicators": {"close": sig["close"], "ema50": sig["e50"], "ema200": sig["e200"],
                        "atr": sig["atr"], "adx": sig.get("adx"), "conviction": sig.get("conviction"),
                        "long_lev": sig.get("long_lev"), "closed_bar": bar_id},
