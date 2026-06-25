@@ -21,7 +21,7 @@ export const BOTS: BotMeta[] = [
     label: 'BTC V2 · 4h',
     badge: 'V2 · 4h',
     accent: 'red',
-    description: "BTC V2 (4h) — the bot. Macro-filtered MTF long BTC (4h+daily EMA50/200 AND close>9mo SMA) with conviction leverage (1×→2.5× by ADX+EMA-gap) + pyramid@2R + lock-33%@6R + parabolic de-risk; shorts ETH on BTC's bear signal (down>10% from 35d high AND daily MACD<sig), bear-depth sized 0.5/1.0/1.0 (config C). Full 2017–2026, all 3 bears green: CAGR ~171%, −35% DD, ret/DD 4.90. Robust ex-2021 (ret/DD ~2.9). [PAPER]",
+    description: "BTC V2 (4h) — the bot. Macro-filtered MTF long BTC (4h+daily EMA50/200 AND close>9mo SMA) with conviction leverage (1×→2.5× by ADX+EMA-gap) + pyramid@2R + lock-33%@6R + parabolic de-risk; shorts ETH on BTC's bear signal (down>10% from 35d high AND daily MACD<sig), bear-depth sized 0.5/1.0/1.0 + trailing exit (low+3.5×ATR after +1R) — config D. Full 2017–2026, all 3 bears green: CAGR ~188%, −33% DD, ret/DD 5.61, 2022 +75%. Robust ex-2021. [PAPER]",
   },
 ];
 

@@ -10,7 +10,8 @@ backtests + 15 verification agents). BTC only (does NOT generalize to alts), 1x 
           exit on stop or regime flip (4h or daily trend down).
   SHORT : enter when close down >10% from 40-day high AND prior-day daily MACD < signal.
           size by BEAR DEPTH: 0.50/1.00/1.00x equity at -10/-20/-30% drawdown from 180-day high.
-          stop = entry + 5*ATR(14) capped 15%; break-even at +1R; exit on stop or bear-gate clear.
+          stop = entry + 6*ATR(14) capped 20%; break-even at +1R; TRAILING stop (low_since+3.5*ATR)
+          once +1R — rides sustained bears, locks before counter-rallies; exit on stop or bear-gate clear.
 
 HONEST PAPER ACCOUNTING (same rules as the other bots):
   - fills at LIVE price (+/- slippage); taker fee 0.055%/side on traded notional
@@ -47,6 +48,7 @@ MACRO_MO = 9                              # macro filter: close > SMA(9 months)
 PARAB_MULT = 2.2                          # parabolic: close > 2.2*SMA(20wk) (=120% above)
 DROP_PCT, DROP_LOOK = 0.10, 35            # short gate: down 10% from 35-day high (was 40 — backtest 2026-06-25, config C)
 S_ATR, S_CAP = 6.0, 0.20                  # short stop (was 5.0/0.15 — wider stop = fewer whipsaw cover-outs)
+STRAIL_K, STRAIL_ARM_R = 3.5, 1.0         # trailing short exit (config D): once short is +1R, trail stop at low_since+3.5*ATR (tighten-only) — rides sustained bears, locks before counter-rallies. ret/DD 4.90->5.61, DD -35->-33%, 2022 +48->+75%
 LONG_LEV_MAX = 2.5                        # conviction leverage: long = 1x (weak) -> 2.5x (strong trend); short stays 1x
 LOCK_FRAC, LOCK_R = 0.33, 6.0             # lock 33% of the long at +6R (banks leveraged gains -> cuts DD)
 BYBIT = "https://api.bybit.com"
@@ -224,10 +226,11 @@ def main():
     # ---- ETH short leg (short ETH on BTC's bear signal) ----
     edf = fetch_btc_4h(symbol=SHORT_SYMBOL)
     eth_px = fetch_live_price(SHORT_SYMBOL, log)
-    eth_close = eth_atr = None
+    eth_close = eth_atr = eth_low = None
     if edf is not None and len(edf) > 20:
         eclosed = edf.iloc[:-1]
         eth_close = float(eclosed["close"].iloc[-1]); eth_atr = float(atr(eclosed, 14).iloc[-1])
+        eth_low = float(eclosed["low"].iloc[-1])
     bar_id = sig["bar_id"]
     bull = sig["f_bull"] and sig["d_bull"] and sig["macro_ok"]
     bear = sig["drop_ok"] and sig["d_macd_bear"]
@@ -264,6 +267,11 @@ def main():
                 if prof >= BE_R:  # break-even
                     be = pos["entry"] * (1 + BE_BUF) if pos["side"] == "LONG" else pos["entry"] * (1 - BE_BUF)
                     pos["stop"] = max(pos["stop"], be) if pos["side"] == "LONG" else min(pos["stop"], be)
+                if pos["side"] == "SHORT":  # trailing short exit (config D): ride sustained bears, lock before counter-rallies
+                    if eth_low is not None:
+                        pos["low_since"] = min(pos.get("low_since", eth_low), eth_low)
+                    if prof >= STRAIL_ARM_R and eth_atr is not None and pos.get("low_since") is not None:
+                        pos["stop"] = min(pos["stop"], pos["low_since"] + STRAIL_K * eth_atr)  # tighten only
                 if pos["side"] == "LONG" and not pos.get("pyramided") and prof >= PYR_R:  # pyramid
                     addn = PYR_FRAC * pos["notional0"]; fill = px * (1 + SLIP_PCT)
                     dq = addn / fill; st["balance"] -= FEE_PCT * addn
@@ -299,7 +307,7 @@ def main():
                     st["balance"] -= FEE_PCT * notional
                     st["position"] = {"side": "SHORT", "inst": SHORT_SYMBOL, "qty": qty, "entry": fill, "entry0": fill,
                                       "stop": stop, "R": stop - fill, "notional0": notional,
-                                      "pyramided": False, "parab_done": False,
+                                      "pyramided": False, "parab_done": False, "low_since": eth_close,
                                       "entry_time": datetime.now(timezone.utc).isoformat()}
                     st["armed_short"] = False
                     log.warning(f"  OPEN SHORT ETH {qty:.4f} @ ${fill:,.2f} stop ${stop:,.2f} (BTC depth {sig['dd_from_high']*100:.0f}% size {sig['ssize']})")
@@ -337,8 +345,8 @@ def main():
         "strategy": ("V2 — 4h. LONG BTC: macro-filtered MTF (EMA50/200 4h+daily + >9mo SMA) with "
                      "CONVICTION LEVERAGE (1x weak → 2.5x strong, by ADX+EMA-gap) + pyramid@2R + lock 33%@+6R "
                      "+ parabolic de-risk. SHORT ETH on BTC's bear signal (BTC down>10% from 35d high & BTC "
-                     "daily MACD<sig), bear-depth sized 0.5/1.0/1.0, 1x. Full 2017-2026: CAGR ~171%, DD -35%, "
-                     "ret/DD 4.90, green every year [PAPER]"),
+                     "daily MACD<sig), bear-depth sized 0.5/1.0/1.0, 1x, TRAILING exit (low+3.5*ATR after +1R). "
+                     "Full 2017-2026: CAGR ~188%, DD -33%, ret/DD 5.61, green every year [PAPER]"),
         "paper_mode": True,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
