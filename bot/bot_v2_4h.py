@@ -143,6 +143,24 @@ def compute_signals(df):
     ssize = 1.0 if dd_from_high <= -0.30 else (1.0 if dd_from_high <= -0.20 else 0.50)
     conv = min(1.0, max(0.0, float(adx_s.iloc[i]) / 35.0)) * 0.5 + min(1.0, max(0.0, float(egap.iloc[i]) / 0.12)) * 0.5
     long_lev = round(1.0 + (LONG_LEV_MAX - 1.0) * conv, 2)
+    # --- plain-PRICE trigger levels (so the dashboard shows "fires below $X" instead of raw MACD) ---
+    de12, de26 = ema(dd["close"], 12), ema(dd["close"], 26)
+    a12, a26 = 2.0 / 13.0, 2.0 / 27.0
+    # next daily close where MACD crosses below signal: solve newMACD(P) = current signal
+    macd_cross_px = (float(dsig.iloc[-1]) - (float(de12.iloc[-1]) * (1 - a12) - float(de26.iloc[-1]) * (1 - a26))) / (a12 - a26)
+    drop_level = float(hh_drop.iloc[i]) * (1 - DROP_PCT) if pd.notna(hh_drop.iloc[i]) else None
+    macro_level = float(macro_sma.iloc[i]) if pd.notna(macro_sma.iloc[i]) else None
+    _drop_ok = (px / float(hh_drop.iloc[i]) - 1 < -DROP_PCT) if pd.notna(hh_drop.iloc[i]) else False
+    _macd_bear = bool(dser_macd.iloc[-1]) if len(dser_macd) else False
+    # short fires only when BOTH (down>10% from high) AND (daily MACD bear) hold → watch the not-yet-met level
+    if _macd_bear and drop_level is not None:
+        short_fires_below = drop_level
+    elif _drop_ok:
+        short_fires_below = macd_cross_px
+    elif drop_level is not None:
+        short_fires_below = min(drop_level, macd_cross_px)
+    else:
+        short_fires_below = macd_cross_px
     return {
         "bar_id": str(closed["timestamp"].iloc[i]),
         "close": px, "atr": float(a.iloc[i]),
@@ -155,6 +173,10 @@ def compute_signals(df):
         "parab": bool(px > PARAB_MULT * parab_sma.iloc[i]) if pd.notna(parab_sma.iloc[i]) else False,
         "ssize": ssize, "dd_from_high": dd_from_high,
         "e50": float(e50.iloc[i]), "e200": float(e200.iloc[i]),
+        # plain-price triggers for the dashboard
+        "short_fires_below": round(short_fires_below) if short_fires_below else None,
+        "long_fires_above": round(macro_level) if macro_level else None,
+        "macd_cross_px": round(macd_cross_px), "drop_level": round(drop_level) if drop_level else None,
     }
 
 
@@ -332,7 +354,9 @@ def main():
         "signal": signal, "live_price": px, "short_symbol": SHORT_SYMBOL, "eth_price": eth_px,
         "v2gates": {"bull": bull, "bear": bear, "f_bull": sig["f_bull"], "d_bull": sig["d_bull"],
                     "macro_ok": sig["macro_ok"], "drop_ok": sig["drop_ok"], "d_macd_bear": sig["d_macd_bear"],
-                    "parab": sig["parab"], "ssize": sig["ssize"], "dd_from_high": sig["dd_from_high"]},
+                    "parab": sig["parab"], "ssize": sig["ssize"], "dd_from_high": sig["dd_from_high"],
+                    "short_fires_below": sig.get("short_fires_below"), "long_fires_above": sig.get("long_fires_above"),
+                    "macd_cross_px": sig.get("macd_cross_px"), "drop_level": sig.get("drop_level")},
         "indicators": {"close": sig["close"], "ema50": sig["e50"], "ema200": sig["e200"],
                        "atr": sig["atr"], "adx": sig.get("adx"), "conviction": sig.get("conviction"),
                        "long_lev": sig.get("long_lev"), "closed_bar": bar_id},
