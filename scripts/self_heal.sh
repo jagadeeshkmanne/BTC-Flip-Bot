@@ -7,8 +7,10 @@ set -u
 BOT_DIR="/home/jags/BTC-Flip-Bot"
 LOG_FILE="$BOT_DIR/data/self_heal.log"
 # 2026-06-18: mean-reversion fleet (v2.1/v2.2/v2.3) removed — no real edge.
-# Only the validated 4h trend bot remains.
+# 2026-06-19: added all-weather 4-coin basket (the STRATEGY.md FINAL).
 TREND_DIR="$BOT_DIR/data/trend_btc"
+ALLWEATHER_DIR="$BOT_DIR/data/allweather"
+BTCALTS_DIR="$BOT_DIR/data/btcalts"
 SERVER_PID_FILE="$BOT_DIR/data/server.pid"
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
@@ -82,7 +84,9 @@ check_bot() {
     fi
 }
 
-# ── Check 2/3/4: RSI-Scalp +Trend fleet (v1.1, v2.0, v5.0) ─────────────
+# ── Check 2: paper bots fired recently ─────────────────────────────────
 check_bot "trend_btc" "$TREND_DIR/bot.log" "$TREND_DIR/state.json"
+check_bot "allweather" "$ALLWEATHER_DIR/bot.log" "$ALLWEATHER_DIR/state.json"
+check_bot "btcalts" "$BTCALTS_DIR/bot.log" "$BTCALTS_DIR/state.json"
 
 exit 0

@@ -4,6 +4,7 @@ import { MarketHeader } from '@/components/MarketHeader';
 import { BotStatsStrip } from '@/components/BotStatsStrip';
 import { PositionPanel } from '@/components/PositionPanel';
 import { ConditionsPanel } from '@/components/ConditionsPanel';
+import { BacktestPanel } from '@/components/BacktestPanel';
 import { PriceChart } from '@/components/PriceChart';
 import { TradeLogTable } from '@/components/TradeLogTable';
 import { STRATEGY_TO_BOT, type StrategyId } from '@/types/bot';
@@ -48,6 +49,9 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
 
       {/* Conditions checklist — rsiscalp panel (v2.x incl. v2.3 regime router) */}
       <ConditionsPanel status={status.data} strategy={strategy} />
+
+      {/* Backtest results + month-by-month (btcv2 only) */}
+      {strategy === 'btcv2' && <BacktestPanel backtest={(status.data as any)?.backtest} />}
 
       {/* Trade log */}
       <TradeLogTable trades={trades} />

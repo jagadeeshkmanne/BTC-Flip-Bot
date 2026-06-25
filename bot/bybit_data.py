@@ -12,6 +12,7 @@ Bybit V5 reference:
 """
 from __future__ import annotations
 import logging
+import time
 import requests
 import pandas as pd
 
@@ -46,33 +47,37 @@ def fetch_klines(interval: str, limit: int = 500, symbol: str = "BTCUSDT",
         return None
     # Bybit caps limit at 1000; for safety match Binance's typical max.
     limit = max(1, min(limit, 1000))
-    try:
-        r = requests.get(
-            f"{BYBIT_BASE}/v5/market/kline",
-            params={"category": CATEGORY, "symbol": symbol, "interval": bb_int, "limit": limit},
-            timeout=10,
-        )
-        r.raise_for_status()
-        body = r.json()
-        if body.get("retCode") != 0:
-            if log: log.error(f"Bybit klines retCode={body.get('retCode')} {body.get('retMsg')}")
-            return None
-        rows = body.get("result", {}).get("list", [])
-        if not rows:
-            return None
-        # Bybit returns newest-first; reverse to oldest-first.
-        rows = list(reversed(rows))
-        return pd.DataFrame([{
-            "timestamp": pd.to_datetime(int(k[0]), unit="ms"),
-            "open":  float(k[1]),
-            "high":  float(k[2]),
-            "low":   float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5]),
-        } for k in rows])
-    except Exception as e:
-        if log: log.error(f"Bybit klines fetch failed ({interval}): {e}")
-        return None
+    # Retry on transient failures / rate limit (retCode 10006) so a brief hiccup
+    # doesn't drop a coin from the basket (which used to white-screen the dashboard).
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                f"{BYBIT_BASE}/v5/market/kline",
+                params={"category": CATEGORY, "symbol": symbol, "interval": bb_int, "limit": limit},
+                timeout=10,
+            )
+            r.raise_for_status()
+            body = r.json()
+            if body.get("retCode") != 0:
+                if log: log.error(f"Bybit klines retCode={body.get('retCode')} {body.get('retMsg')} ({symbol}, try {attempt+1})")
+                time.sleep(0.6 * (attempt + 1)); continue
+            rows = body.get("result", {}).get("list", [])
+            if not rows:
+                time.sleep(0.4); continue
+            # Bybit returns newest-first; reverse to oldest-first.
+            rows = list(reversed(rows))
+            return pd.DataFrame([{
+                "timestamp": pd.to_datetime(int(k[0]), unit="ms"),
+                "open":  float(k[1]),
+                "high":  float(k[2]),
+                "low":   float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            } for k in rows])
+        except Exception as e:
+            if log: log.error(f"Bybit klines fetch failed ({interval}, {symbol}, try {attempt+1}): {e}")
+            time.sleep(0.6 * (attempt + 1))
+    return None
 
 
 def fetch_live_price(symbol: str = "BTCUSDT", log: logging.Logger | None = None) -> float | None:

@@ -24,6 +24,23 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
     return { LONG, SHORT: conviction };
   }
 
+  // ── btcv2: macro-filtered MTF long + bear-depth short (4h). No RSI/ADX/15m. ──
+  if (strategy === 'btcv2') {
+    const g = (s as any).v2gates ?? {};
+    const ddh = g.dd_from_high != null ? (g.dd_from_high * 100).toFixed(0) : '—';
+    const LONG: Cond[] = [
+      { label: '4h trend up (EMA50 > EMA200)', value: `${i.ema50?.toFixed(0)} vs ${i.ema200?.toFixed(0)}`, ok: !!g.f_bull },
+      { label: 'Daily trend up (EMA50 > EMA200)', value: g.d_bull ? 'bull' : 'bear', ok: !!g.d_bull },
+      { label: 'Macro: price > 9-month SMA', value: g.macro_ok ? 'above' : 'below', ok: !!g.macro_ok },
+    ];
+    const SHORT: Cond[] = [
+      { label: 'Down > 10% from 40-day high', value: g.drop_ok ? `yes (${ddh}% off high)` : 'no', ok: !!g.drop_ok },
+      { label: 'Daily MACD < signal (bear)', value: g.d_macd_bear ? 'bear' : 'bull', ok: !!g.d_macd_bear },
+      { label: 'Bear-depth short size', value: `${g.ssize ?? '—'}× @ ${ddh}% drawdown`, ok: true },
+    ];
+    return { LONG, SHORT };
+  }
+
   const rsi = i.rsi;
   const rsiOS = i.rsi_oversold ?? 30;
   const rsiOB = i.rsi_overbought ?? 70;

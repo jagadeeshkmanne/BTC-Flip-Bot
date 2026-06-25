@@ -1,6 +1,7 @@
 import { Route, Switch, Redirect } from 'wouter';
 import { Layout } from '@/components/Layout';
 import { BotPage } from '@/pages/BotPage';
+import { BasketPage } from '@/pages/BasketPage';
 import { BOTS, type StrategyId } from '@/types/bot';
 
 // short ("v1") → strategy id ("rsiscalp_trend")
@@ -31,7 +32,9 @@ export function App() {
           if (!id) return <Redirect to="/bots/trend_btc" />;
           return (
             <Layout active={id}>
-              <BotPage strategy={id} />
+              {(id === 'allweather' || id === 'btcalts')
+                ? <BasketPage strategy={id} />
+                : <BotPage strategy={id} />}
             </Layout>
           );
         }}

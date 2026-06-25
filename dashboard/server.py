@@ -573,9 +573,12 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/bots/all':
             # 2026-06-18: mean-reversion fleet (v2.1/v2.2/v2.3 rsiscalp) removed —
             # no real edge. Only the validated 4h trend bot remains.
-            ids = ['trend_btc']
+            ids = ['trend_btc', 'allweather', 'btcalts', 'btcv2']
             id_to_dir = {
                 'trend_btc': 'trend_btc',
+                'allweather': 'allweather',
+                'btcalts': 'btcalts',
+                'btcv2': 'btcv2',
             }
             out = {}
             for sid in ids:
@@ -602,7 +605,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
         env_q = (qs.get('env', ['']) or [''])[0]
 
-        if strategy_q in ('trend_btc',):
+        if strategy_q in ('trend_btc', 'allweather', 'btcalts', 'btcv2'):
             env_dir = strategy_q
             state_filename = 'state.json'
             status_filename = 'status.json'
@@ -640,7 +643,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # Live Binance position — for paper mode, return synthetic position
         # built from state_paper.json + mainnet ticker.
         if path == '/api/bot/day/binance':
-            if env_dir in ('trend_btc',):
+            if env_dir in ('trend_btc', 'allweather', 'btcalts', 'btcv2'):
                 return self._json_response(_query_paper_position(
                     state_subdir=env_dir,
                     state_filename='state.json',
