@@ -4,27 +4,8 @@ import { useKlines } from '@/api/bots';
 import { useTickerStore } from '@/hooks/useBtcStream';
 import clsx from 'clsx';
 
-// Timeframe → seconds (so we know when a new bar starts)
-const TF_SECONDS: Record<string, number> = { '5m': 300, '15m': 900, '1h': 3600 };
-
-// Bollinger Bands (n, k) — same formula as bot's pandas .rolling(n).std(ddof=0).
-function bollinger(closes: number[], n = 20, k = 2.0) {
-  const up: (number | null)[] = new Array(closes.length).fill(null);
-  const mid: (number | null)[] = new Array(closes.length).fill(null);
-  const lo: (number | null)[] = new Array(closes.length).fill(null);
-  for (let i = n - 1; i < closes.length; i++) {
-    let s = 0;
-    for (let j = i - n + 1; j <= i; j++) s += closes[j];
-    const m = s / n;
-    let v = 0;
-    for (let j = i - n + 1; j <= i; j++) v += (closes[j] - m) ** 2;
-    const sd = Math.sqrt(v / n);
-    up[i] = m + k * sd;
-    mid[i] = m;
-    lo[i] = m - k * sd;
-  }
-  return { up, mid, lo };
-}
+// Timeframe → seconds (so we know when a new bar starts). btcv2 is a 4h/daily bot.
+const TF_SECONDS: Record<string, number> = { '4h': 14400, '1d': 86400 };
 
 // EMA — matches pandas .ewm(span=n, adjust=False).mean() (the bot's formula).
 function ema(closes: number[], n: number): (number | null)[] {
@@ -40,28 +21,22 @@ function ema(closes: number[], n: number): (number | null)[] {
   return out;
 }
 
-type TF = '5m' | '15m' | '1h';
-const TIMEFRAMES: TF[] = ['5m', '15m', '1h'];
+type TF = '4h' | '1d';
+const TIMEFRAMES: TF[] = ['4h', '1d'];
 
 export function PriceChart() {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  // Refs used across multiple effects — must be declared up top.
   const latestCandleRef = useRef<{ time: any; open: number; high: number; low: number; close: number } | null>(null);
   const didInitialFitRef = useRef(false);
-  const [tf, setTf] = useState<TF>('5m');
+  const [tf, setTf] = useState<TF>('4h');
 
-  // Re-fit viewport when user changes timeframe (different bar count needed)
-  useEffect(() => {
-    didInitialFitRef.current = false;
-  }, [tf]);
+  useEffect(() => { didInitialFitRef.current = false; }, [tf]);
 
-  // Load more bars (1000) for proper scroll/zoom history
-  const { data: klinesMain } = useKlines(tf, 1000);
-  const { data: klines15m }  = useKlines('15m', 500);
+  // 600 bars: 4h → 100 days, 1d → ~2yr — plenty for EMA200.
+  const { data: klinesMain } = useKlines(tf, 600);
 
-  // Init chart once — Binance-style: full drag/scroll/pinch-zoom, mouse-wheel zoom,
-  // magnetic crosshair, both axes scalable.
+  // Init chart once.
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
@@ -79,11 +54,8 @@ export function PriceChart() {
         borderColor: '#1f2937',
         timeVisible: true,
         secondsVisible: false,
-        // Binance-style: latest bar sits in middle-right with buffer space
-        // after it (so future bars have room to appear and you can see the
-        // current bar forming without it being glued to the right edge).
-        rightOffset: 20,
-        barSpacing: 6,
+        rightOffset: 12,
+        barSpacing: 8,
         minBarSpacing: 0.5,
         lockVisibleTimeRangeOnResize: false,
         rightBarStaysOnScroll: true,
@@ -91,27 +63,15 @@ export function PriceChart() {
       rightPriceScale: {
         borderColor: '#1f2937',
         scaleMargins: { top: 0.08, bottom: 0.08 },
-        minimumWidth: 60,                // cap label-column width so chart isn't pushed left
+        minimumWidth: 60,
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: { color: '#3b82f6', width: 1, labelBackgroundColor: '#3b82f6' },
         horzLine: { color: '#3b82f6', width: 1, labelBackgroundColor: '#3b82f6' },
       },
-      // Interactions: drag-to-pan + axis-drag-to-zoom + pinch.
-      // mouseWheel disabled on BOTH scroll and scale → page scroll passes through
-      // when wheeling over the chart (user requested 2026-06-05).
-      handleScroll: {
-        mouseWheel: false,           // wheel = page scroll, not chart pan
-        pressedMouseMove: true,      // drag to pan
-        horzTouchDrag: true,
-        vertTouchDrag: true,
-      },
-      handleScale: {
-        mouseWheel: false,           // wheel = page scroll, not chart zoom
-        pinch: true,                 // pinch-zoom on mobile
-        axisPressedMouseMove: { time: true, price: true },  // drag axes to zoom
-      },
+      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { mouseWheel: false, pinch: true, axisPressedMouseMove: { time: true, price: true } },
       kineticScroll: { touch: true, mouse: false },
     });
     chartRef.current = chart;
@@ -124,18 +84,13 @@ export function PriceChart() {
   }, []);
 
   const candleDataRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const bbUpRef = useRef<ISeriesApi<'Line'> | null>(null);
-  const bbLoRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const ema50Ref = useRef<ISeriesApi<'Line'> | null>(null);
+  const ema200Ref = useRef<ISeriesApi<'Line'> | null>(null);
 
-  // Update candles + BB (uses selected timeframe).
-  // 2026-06-05: stripped chart to just what matters for the bot's decisions —
-  //   - candles (price)
-  //   - 5m BB upper/lower (volatility envelope; thin dashed)
-  // 15m EMAs are added below (the bot's actual trend logic).
-  // Removed: 5m BB mid, 15m BB upper/mid/lower (too many lines, confusing).
+  // Candles + EMA50/EMA200 on the SELECTED timeframe (the bot's actual trend gate:
+  // EMA50 above EMA200 = uptrend → long allowed; below = downtrend).
   useEffect(() => {
-    const klines5m = klinesMain;
-    if (!chartRef.current || !klines5m?.length) return;
+    if (!chartRef.current || !klinesMain?.length) return;
     if (!candleDataRef.current) {
       candleDataRef.current = chartRef.current.addCandlestickSeries({
         upColor: '#0ecb81', downColor: '#f6465d',
@@ -143,118 +98,67 @@ export function PriceChart() {
         wickUpColor: '#0ecb81', wickDownColor: '#f6465d',
         priceFormat: { type: 'price', precision: 0, minMove: 1 },
       });
-      bbUpRef.current = chartRef.current.addLineSeries({
-        color: 'rgba(249, 115, 22, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed,
-        priceLineVisible: false, lastValueVisible: false,
+      ema50Ref.current = chartRef.current.addLineSeries({
+        color: '#fcd535', lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: 'EMA50',
       });
-      bbLoRef.current = chartRef.current.addLineSeries({
-        color: 'rgba(123, 255, 158, 0.5)', lineWidth: 1, lineStyle: LineStyle.Dashed,
-        priceLineVisible: false, lastValueVisible: false,
+      ema200Ref.current = chartRef.current.addLineSeries({
+        color: '#e879f9', lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: 'EMA200',
       });
     }
-    const candles = klines5m.map(k => ({
+    const candles = klinesMain.map(k => ({
       time: Math.floor(+k[0] / 1000) as any,
       open: +k[1], high: +k[2], low: +k[3], close: +k[4],
     }));
     candleDataRef.current.setData(candles);
-    const closes = klines5m.map(k => +k[4]);
-    const bb = bollinger(closes, 20, 2.0);
-    const tmap = candles.map(c => c.time);
-    bbUpRef.current!.setData(tmap.map((t, i) => bb.up[i] != null ? { time: t, value: bb.up[i]! } : null).filter(Boolean) as any);
-    bbLoRef.current!.setData(tmap.map((t, i) => bb.lo[i] != null ? { time: t, value: bb.lo[i]! } : null).filter(Boolean) as any);
-    // Stash the most recent candle so the live ticker can mutate it.
+    const closes = klinesMain.map(k => +k[4]);
+    const e50 = ema(closes, 50);
+    const e200 = ema(closes, 200);
+    const times = candles.map(c => c.time);
+    ema50Ref.current!.setData(times.map((t, i) => e50[i] != null ? { time: t, value: e50[i]! } : null).filter(Boolean) as any);
+    ema200Ref.current!.setData(times.map((t, i) => e200[i] != null ? { time: t, value: e200[i]! } : null).filter(Boolean) as any);
     latestCandleRef.current = candles[candles.length - 1] ?? null;
-    // Only set the visible range on FIRST data load. After that, leave the
-    // user's pan/zoom state alone — re-fetching klines every 30s should NOT
-    // snap the viewport back.
     if (!didInitialFitRef.current) {
-      // Two-step:
-      //   1) scrollToRealTime() — pins right edge to "now" with rightOffset
-      //      worth of empty buffer (so latest bar sits middle-right).
-      //   2) defer & shrink the visible range to ~120 bars so candles aren't
-      //      crammed into the left half. Doing this in a microtask lets the
-      //      scrollToRealTime() take effect first.
       const ts = chartRef.current.timeScale();
       ts.scrollToRealTime();
       requestAnimationFrame(() => {
         const cur = ts.getVisibleLogicalRange();
-        if (cur) {
-          ts.setVisibleLogicalRange({ from: cur.to - 120, to: cur.to });
-        }
+        if (cur) ts.setVisibleLogicalRange({ from: cur.to - 120, to: cur.to });
       });
       didInitialFitRef.current = true;
     }
   }, [klinesMain]);
 
-  // ─── LIVE TICKER → update the LAST candle in real-time (no full redraw) ───
-  // Subscribes to the BTC WebSocket store and patches just the current bar.
-  // When price crosses a TF boundary, a new bar is appended.
+  // Live ticker → patch the last candle in real-time.
   const livePrice = useTickerStore(s => s.price);
   useEffect(() => {
     if (!livePrice || !candleDataRef.current || !latestCandleRef.current || !chartRef.current) return;
-    const tfSec = TF_SECONDS[tf] ?? 300;
+    const tfSec = TF_SECONDS[tf] ?? 14400;
     const nowSec = Math.floor(Date.now() / 1000);
     const currentBarTime = Math.floor(nowSec / tfSec) * tfSec;
     const last = latestCandleRef.current;
     if (currentBarTime > last.time) {
-      // New bar started — append it
       const newBar = { time: currentBarTime as any, open: livePrice, high: livePrice, low: livePrice, close: livePrice };
       candleDataRef.current.update(newBar);
       latestCandleRef.current = newBar;
-      // Auto-scroll to keep the latest bar visible — but only if user is
-      // currently watching near the right edge. If they're zoomed back in
-      // history, don't yank the viewport.
       const range = chartRef.current.timeScale().getVisibleRange();
       if (range && (Number(range.to) - Number(last.time)) < tfSec * 10) {
         chartRef.current.timeScale().scrollToRealTime();
       }
     } else {
-      // Same bar — update high/low/close
       const updated = {
-        time: last.time,
-        open: last.open,
-        high: Math.max(last.high, livePrice),
-        low: Math.min(last.low, livePrice),
-        close: livePrice,
+        time: last.time, open: last.open,
+        high: Math.max(last.high, livePrice), low: Math.min(last.low, livePrice), close: livePrice,
       };
       candleDataRef.current.update(updated);
       latestCandleRef.current = updated;
     }
   }, [livePrice, tf]);
 
-  // 15m EMA20/EMA50 — THE bot's trend gate. Gold above magenta = UP, below = DOWN.
-  const ema20Ref = useRef<ISeriesApi<'Line'> | null>(null);
-  const ema50Ref = useRef<ISeriesApi<'Line'> | null>(null);
-
-  useEffect(() => {
-    if (!chartRef.current || !klines15m?.length) return;
-    if (!ema20Ref.current) {
-      // 2026-06-08: lastValueVisible=false on EMAs — labels were eating ~120px
-      // of right-side width on mobile, pushing the price action off-screen.
-      // The legend in the chart header already names these lines.
-      ema20Ref.current = chartRef.current.addLineSeries({
-        color: '#fcd535', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        title: 'EMA20',
-      });
-      ema50Ref.current = chartRef.current.addLineSeries({
-        color: '#e879f9', lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-        title: 'EMA50',
-      });
-    }
-    const closes15 = klines15m.map(k => +k[4]);
-    const ema20 = ema(closes15, 20);
-    const ema50 = ema(closes15, 50);
-    const times = klines15m.map(k => Math.floor(+k[0] / 1000) as any);
-    ema20Ref.current!.setData(times.map((t, i) => ema20[i] != null ? { time: t, value: ema20[i]! } : null).filter(Boolean) as any);
-    ema50Ref.current!.setData(times.map((t, i) => ema50[i] != null ? { time: t, value: ema50[i]! } : null).filter(Boolean) as any);
-  }, [klines15m]);
-
   return (
     <div class="card p-0 overflow-hidden">
       <div class="section-head">
         <div class="flex items-center gap-3">
           <span class="section-title">BTCUSDT</span>
-          {/* Timeframe toggle — Binance-style */}
           <div class="flex items-center gap-0.5 bg-bg p-0.5 rounded">
             {TIMEFRAMES.map(t => (
               <button
@@ -262,17 +166,15 @@ export function PriceChart() {
                 onClick={() => setTf(t)}
                 class={clsx(
                   'px-2 py-0.5 rounded text-xs font-medium transition-colors',
-                  tf === t
-                    ? 'bg-bg-hover text-text'
-                    : 'text-text-muted hover:text-text'
+                  tf === t ? 'bg-bg-hover text-text' : 'text-text-muted hover:text-text'
                 )}
               >{t}</button>
             ))}
           </div>
         </div>
         <span class="text-2xs text-text-dim hidden md:inline">
-          <span style="color:#fcd535">━━ 15m EMA20</span> · <span style="color:#e879f9">━━ EMA50</span> ·
-          <span style="color:#f97316"> ┄┄ </span>/<span style="color:#7bff9e"> ┄┄ </span> 5m BB · drag to pan
+          <span style="color:#fcd535">━━ EMA50</span> · <span style="color:#e879f9">━━ EMA200</span> ·
+          gold above magenta = uptrend (long) · drag to pan
         </span>
       </div>
       <div ref={containerRef} class="w-full" style={{ height: 'min(55vh, 500px)' }} />

@@ -30,15 +30,16 @@ function buildConditions(s: BotStatus, strategy: StrategyId): { LONG: Cond[]; SH
     const ddh = g.dd_from_high != null ? (g.dd_from_high * 100).toFixed(0) : '—';
     const fmt = (n: any) => n != null ? `$${Math.round(Number(n)).toLocaleString()}` : '—';
     const LONG: Cond[] = [
-      { label: '4h trend up (EMA50 > EMA200)', value: `${i.ema50?.toFixed(0)} vs ${i.ema200?.toFixed(0)}`, ok: !!g.f_bull },
-      { label: 'Daily trend up (EMA50 > EMA200)', value: g.d_bull ? 'bull' : 'bear', ok: !!g.d_bull },
-      { label: 'Macro: price > 9-month SMA', value: g.macro_ok ? `above ${fmt(g.long_fires_above)}` : `below — needs > ${fmt(g.long_fires_above)}`, ok: !!g.macro_ok },
+      { label: '4h trend up (EMA50 > EMA200)', value: g.f_bull ? 'up ✓' : `down (${i.ema50?.toFixed(0)} < ${i.ema200?.toFixed(0)})`, ok: !!g.f_bull },
+      { label: 'Daily trend up (EMA50 > EMA200)', value: g.d_bull ? 'up ✓' : 'down', ok: !!g.d_bull },
+      { label: 'Macro: price > 9-month SMA', value: g.macro_ok ? 'above ✓' : 'below', ok: !!g.macro_ok },
+      { label: '→ LONG triggers when BTC rises above', value: fmt(g.long_fires_above), ok: !!g.bull },
     ];
     const SHORT: Cond[] = [
-      { label: 'Down > 10% from 35-day high', value: g.drop_ok ? `yes (${ddh}% off high)` : `no — needs < ${fmt(g.drop_level)}`, ok: !!g.drop_ok },
-      { label: 'Daily momentum bearish', value: g.d_macd_bear ? 'bear ✓' : `not yet — fires if daily close < ${fmt(g.macd_cross_px)}`, ok: !!g.d_macd_bear },
+      { label: 'Down > 10% from 35-day high', value: g.drop_ok ? `yes (${ddh}% off high)` : 'no', ok: !!g.drop_ok },
+      { label: 'Daily momentum bearish', value: g.d_macd_bear ? 'bear ✓' : 'not yet', ok: !!g.d_macd_bear },
       { label: 'Bear-depth short size', value: `${g.ssize ?? '—'}× @ ${ddh}% drawdown`, ok: true },
-      { label: '→ SHORT triggers when BTC closes below', value: fmt(g.short_fires_below), ok: !!(g.bull || g.bear) },
+      { label: '→ SHORT triggers when BTC closes below', value: fmt(g.short_fires_below), ok: !!g.bear },
     ];
     return { LONG, SHORT };
   }

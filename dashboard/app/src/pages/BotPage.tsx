@@ -4,6 +4,7 @@ import { MarketHeader } from '@/components/MarketHeader';
 import { BotStatsStrip } from '@/components/BotStatsStrip';
 import { PositionPanel } from '@/components/PositionPanel';
 import { ConditionsPanel } from '@/components/ConditionsPanel';
+import { DailyCloseCountdown } from '@/components/DailyCloseCountdown';
 import { BacktestPanel } from '@/components/BacktestPanel';
 import { PriceChart } from '@/components/PriceChart';
 import { TradeLogTable } from '@/components/TradeLogTable';
@@ -46,6 +47,14 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
 
       {/* Chart — BTC candles */}
       <PriceChart />
+
+      {/* Daily-close countdown — when the daily MACD updates / the short can fire (btcv2) */}
+      {strategy === 'btcv2' && (
+        <DailyCloseCountdown
+          shortTrigger={(status.data as any)?.v2gates?.short_fires_below}
+          longTrigger={(status.data as any)?.v2gates?.long_fires_above}
+        />
+      )}
 
       {/* Conditions checklist — rsiscalp panel (v2.x incl. v2.3 regime router) */}
       <ConditionsPanel status={status.data} strategy={strategy} />

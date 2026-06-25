@@ -38,7 +38,7 @@ export function useBotState(strategy: StrategyId) {
   };
 }
 
-export const useKlines = (interval: '5m' | '15m' | '1h', limit = 288) =>
+export const useKlines = (interval: '5m' | '15m' | '1h' | '4h' | '1d', limit = 288) =>
   useQuery({
     queryKey: ['klines', interval, limit],
     queryFn: () => fetchJSON<any[][]>(`/api/klines?interval=${interval}&limit=${limit}`),
