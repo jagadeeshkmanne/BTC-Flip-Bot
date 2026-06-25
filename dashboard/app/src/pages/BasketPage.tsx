@@ -1,6 +1,7 @@
 import clsx from 'clsx';
-import { useAllBots } from '@/api/bots';
+import { useAllBots, useTickers } from '@/api/bots';
 import { KpiCard } from '@/components/KpiCard';
+import { BacktestPanel } from '@/components/BacktestPanel';
 import { STRATEGY_TO_BOT, type BasketStatus, type BotState, type StrategyId } from '@/types/bot';
 
 const INITIAL = 5000;
@@ -12,13 +13,24 @@ export function BasketPage({ strategy = 'allweather' }: { strategy?: StrategyId 
     { subs?: Record<string, BotState> } | undefined;
   const bot = STRATEGY_TO_BOT[strategy];
 
-  const equity = status?.balance ?? 0;
+  const tickers = useTickers();
+  // Recompute each coin's P&L from the LIVE price — status.json is cron-time (~15min stale).
+  const coins = (status?.coins ?? []).map((c: any) => {
+    if (!c.ok) return c;
+    const px = tickers.data?.[c.symbol] ?? c.live_price;
+    const pos = c.position;
+    const bal = c.balance ?? ((c.sub_equity ?? 0) - (pos?.unrealized_usd ?? 0));
+    const upnl = pos ? (pos.side === 'LONG' ? 1 : -1) * (px - pos.avg_entry) * pos.qty : 0;
+    return { ...c, live_price: px, sub_equity: bal + upnl, position: pos ? { ...pos, unrealized_usd: upnl } : null };
+  });
+  const liveEquity = coins.length ? coins.reduce((a: number, c: any) => a + (c.sub_equity ?? 0), 0) : 0;
+  const equity = liveEquity || (status?.balance ?? 0);
   const pnlUsd = equity - INITIAL;
   const pnlPct = (pnlUsd / INITIAL) * 100;
-  const dd = (status?.drawdown_pct ?? 0) * 100;
+  const peak = Math.max(status?.peak_equity ?? equity, equity);
+  const dd = peak > 0 ? (equity / peak - 1) * 100 : 0;
   const st = status?.stats ?? { total: 0, wins: 0, losses: 0, pnl: 0 };
   const winRate = st.total > 0 ? (st.wins / st.total) * 100 : 0;
-  const coins = status?.coins ?? [];
 
   // aggregate recent trades across the 4 sub-accounts, newest first
   const trades = Object.values(state?.subs ?? {})
@@ -154,6 +166,9 @@ export function BasketPage({ strategy = 'allweather' }: { strategy?: StrategyId 
           </table>
         </div>
       </div>
+
+      {/* Backtest results + month-by-month */}
+      <BacktestPanel backtest={(status as any)?.backtest} />
     </div>
   );
 }

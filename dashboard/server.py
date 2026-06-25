@@ -481,7 +481,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # 2026-06-16: v2.1/v2.2 retired. Root redirects to the trend bot.
         if path == '/' or path == '/dashboard.html':
             self.send_response(302)
-            self.send_header('Location', '/bots/trend_btc')
+            self.send_header('Location', '/bots/btcv2')
             self.end_headers()
             return
 
@@ -528,6 +528,32 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
                     return self._json_response(cached['data'])
                 return self._json_response({"error": str(e)}, code=502)
 
+        if path == '/api/tickers':
+            # Live prices for the basket coins (Bybit, 2s cache). Lets the dashboard
+            # recompute position P&L in real time instead of the cron-time snapshot.
+            now_ms = int(time.time() * 1000)
+            cached = _TICKER_CACHE.get('multi')
+            if cached and (now_ms - cached.get('cached_at_ms', 0)) < 2000:
+                return self._json_response(cached['data'])
+            out = {}
+            for sym in ('BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'):
+                try:
+                    with urllib.request.urlopen(
+                        f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={sym}",
+                        timeout=3) as r:
+                        row = json.loads(r.read()).get("result", {}).get("list", [{}])[0]
+                        px = row.get("lastPrice") or row.get("markPrice")
+                        if px is not None:
+                            out[sym] = float(px)
+                except Exception:
+                    pass
+            if out:
+                _TICKER_CACHE['multi'] = {'data': out, 'cached_at_ms': now_ms}
+                return self._json_response(out)
+            if cached:
+                return self._json_response(cached['data'])
+            return self._json_response({"error": "tickers unavailable"}, code=502)
+
         if path == '/api/klines':
             # 5m kline proxy. Bybit returns newest-first; reorder to oldest-first
             # and reshape each row to [openTime, o, h, l, c, v, closeTime] so the
@@ -573,11 +599,8 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         if path == '/api/bots/all':
             # 2026-06-18: mean-reversion fleet (v2.1/v2.2/v2.3 rsiscalp) removed —
             # no real edge. Only the validated 4h trend bot remains.
-            ids = ['trend_btc', 'allweather', 'btcalts', 'btcv2']
+            ids = ['btcv2']
             id_to_dir = {
-                'trend_btc': 'trend_btc',
-                'allweather': 'allweather',
-                'btcalts': 'btcalts',
                 'btcv2': 'btcv2',
             }
             out = {}
@@ -605,14 +628,14 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         strategy_q = (qs.get('strategy', ['']) or [''])[0]
         env_q = (qs.get('env', ['']) or [''])[0]
 
-        if strategy_q in ('trend_btc', 'allweather', 'btcalts', 'btcv2'):
+        if strategy_q in ('btcv2',):
             env_dir = strategy_q
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
         else:
-            # Default to the trend bot when no strategy specified
-            env_dir = 'trend_btc'
+            # Default to the flagship when no strategy specified
+            env_dir = 'btcv2'
             state_filename = 'state.json'
             status_filename = 'status.json'
             log_filename = 'bot.log'
@@ -643,7 +666,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # Live Binance position — for paper mode, return synthetic position
         # built from state_paper.json + mainnet ticker.
         if path == '/api/bot/day/binance':
-            if env_dir in ('trend_btc', 'allweather', 'btcalts', 'btcv2'):
+            if env_dir in ('btcv2',):
                 return self._json_response(_query_paper_position(
                     state_subdir=env_dir,
                     state_filename='state.json',
@@ -656,7 +679,7 @@ class BotHandler(http.server.SimpleHTTPRequestHandler):
         # static handler and 404 on the SPA paths).
         if path == '/bots' or path == '/bots/':
             self.send_response(302)
-            self.send_header('Location', '/bots/v1')
+            self.send_header('Location', '/bots/btcv2')
             self.end_headers()
             return
         if path.startswith('/bots/'):

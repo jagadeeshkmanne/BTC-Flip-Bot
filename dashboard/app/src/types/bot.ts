@@ -1,7 +1,9 @@
 // Strategy IDs match the Python bot's STRATEGY query param + data dir slugs.
-// 2026-06-18: mean-reversion fleet (v2.1/v2.2/v2.3 rsiscalp) removed — no real
-// edge. 2026-06-19: added the all-weather 4-coin basket (STRATEGY.md FINAL).
-export type StrategyId = 'trend_btc' | 'allweather' | 'btcalts' | 'btcv2';
+// 2026-06-25: fleet narrowed to btcv2 ONLY. Retired trend_btc (redundant),
+// allweather (-76% DD), and btcalts (ret/DD collapses to 0.80 ex-2021 — its
+// record was almost entirely the one-off 2021 alt bull). btcv2 holds ret/DD
+// ~2.9 every year incl. ex-2021, and is the robust, regime-aware engine.
+export type StrategyId = 'btcv2';
 
 export interface BotMeta {
   id: StrategyId;
@@ -14,36 +16,12 @@ export interface BotMeta {
 
 export const BOTS: BotMeta[] = [
   {
-    id: 'trend_btc',
-    short: 'Trend',
-    label: 'Trend · 4h Dynamic-Lev',
-    badge: 'Trend · 4h',
-    accent: 'green',
-    description: 'Dynamic-leverage 4h BTC perp trend, long/flat — no shorts, no fixed TP. LONG when EMA13>EMA20 AND close>EMA200; exit on flip (full ride). Leverage 2.5×↔5× by ADX+weekly conviction, vol-targeted, de-levered in high-vol/funding/daily-bear (avg ~1.1×). Backtest OOS ~50–65% CAGR / ~28% DD, zero liquidations in 6.7y. The session-winner config. [PAPER]',
-  },
-  {
-    id: 'allweather',
-    short: 'Basket',
-    label: 'All-Weather · 4-coin',
-    badge: 'Basket · 4h',
-    accent: 'purple',
-    description: 'All-weather 4-coin basket (BTC+ETH+BNB+SOL, equal weight, 1×) — 4h perp, long/short reverse. Per coin: EMA8>EMA200 → LONG, else SHORT; enter on the cross, reverse on the opposite cross (no stop, no TP). Best risk-adjusted of ~30 backtests (ret/DD 2.21, realistic ~42%/yr, −45% DD, in-sample). The STRATEGY.md FINAL. [PAPER]',
-  },
-  {
-    id: 'btcalts',
-    short: 'BTC-Alts',
-    label: 'BTC-led Alts · 1h',
-    badge: 'Alts · 1h',
-    accent: 'orange',
-    description: "BTC-led alt basket (1h, long/short, 1× vol-scaled) — the session's walk-forward winner. BTC slow trend (EMA32>EMA800) → LONG, else SHORT, applied to equal-weight ETH/BNB/SOL (high-beta to BTC). Exposure vol-scaled (de-levers in high vol). Top-3 beats wider baskets; shorts add the bear-year capture. WF ret/DD ~1.3–2.0, CAGR ~58–76%, −52% DD. [PAPER]",
-  },
-  {
     id: 'btcv2',
     short: 'V2',
     label: 'BTC V2 · 4h',
     badge: 'V2 · 4h',
     accent: 'red',
-    description: "BTC V2 (4h, long/short, 1×) — the session's validated endpoint, derived from the Flip Bot V3 Pine, rebuilt honestly. Macro-filtered MTF long (4h+daily EMA50/200 AND close>9-month SMA) with pyramid@2R + parabolic de-risk (50% off when >120% above the 20-week SMA); bear-depth short (down>10% from 40d high AND daily MACD<sig, sized 0.25/0.5/1.0× by drawdown depth). Full 2017–2026, all 3 bears green: CAGR ~103%, −31% DD, ret/DD 3.34 (walk-forward 2.10). BTC-only — does not generalize to alts. [PAPER]",
+    description: "BTC V2 (4h) — the bot. Macro-filtered MTF long BTC (4h+daily EMA50/200 AND close>9mo SMA) with conviction leverage (1×→2.5× by ADX+EMA-gap) + pyramid@2R + lock-33%@6R + parabolic de-risk; shorts ETH on BTC's bear signal (down>10% from 35d high AND daily MACD<sig), bear-depth sized 0.5/1.0/1.0 (config C). Full 2017–2026, all 3 bears green: CAGR ~171%, −35% DD, ret/DD 4.90. Robust ex-2021 (ret/DD ~2.9). [PAPER]",
   },
 ];
 

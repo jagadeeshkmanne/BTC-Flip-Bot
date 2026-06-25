@@ -39,7 +39,7 @@ COINS = ["ETHUSDT", "BNBUSDT", "SOLUSDT"]
 EMA_F, EMA_S = 32, 800
 VOL_LEN, MED_LEN = 24, 720          # realised-vol window / rolling-median reference (30d)
 VOL_MIN, VOL_MAX = 0.2, 1.0         # vol-scale clamp
-REBAL_THRESH = 0.10                 # only rebalance when target exposure moves >10% of equity
+REBAL_THRESH = 0.20                 # only rebalance when target moves >20% of equity (was 0.10 — 20% halves the fee churn at better ret/DD, backtested 2026-06-25)
 INITIAL_BALANCE = 5000.0
 FEE_PCT = 0.00055
 SLIP_PCT = 0.0005
@@ -225,6 +225,14 @@ def main():
         for k in agg:
             agg[k] += state["subs"][c]["stats"][k]
 
+    bt_data = None
+    bt_path = os.path.join(DATA_DIR, "backtest.json")
+    if os.path.exists(bt_path):
+        try:
+            with open(bt_path) as f: bt_data = json.load(f)
+        except Exception:
+            pass
+
     atomic_write(STATE_FILE, state)
     atomic_write(STATUS_FILE, {
         "env": os.environ.get("BTCALTS_DATA_DIR", "btcalts"),
@@ -233,6 +241,7 @@ def main():
         "signal": target_side, "vol_frac": vol_frac,
         "indicators": {"btc_close": float(last["close"]), "ema_f": float(last["ema_f"]),
                        "ema_s": float(last["ema_s"]), "vol_frac": vol_frac, "closed_bar": bar_id},
+        "backtest": bt_data,
         "coins": coin_status, "stats": agg,
         "strategy": (f"BTC-led ALT basket — 1h, long/short, 1x vol-scaled. BTC EMA{EMA_F}>{EMA_S} -> "
                      f"LONG else SHORT, applied to eqw ETH/BNB/SOL; exposure scaled by BTC vol. "

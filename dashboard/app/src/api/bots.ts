@@ -44,3 +44,12 @@ export const useKlines = (interval: '5m' | '15m' | '1h', limit = 288) =>
     queryFn: () => fetchJSON<any[][]>(`/api/klines?interval=${interval}&limit=${limit}`),
     refetchInterval: 30_000,
   });
+
+// Live per-coin prices (Bybit, server-proxied, 2s cache) — recompute position
+// P&L in real time instead of the cron-time snapshot stored in status.json.
+export const useTickers = () =>
+  useQuery({
+    queryKey: ['tickers'],
+    queryFn: () => fetchJSON<Record<string, number>>('/api/tickers'),
+    refetchInterval: 3_000,
+  });

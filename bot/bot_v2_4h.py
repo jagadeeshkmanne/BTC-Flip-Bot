@@ -9,7 +9,7 @@ backtests + 15 verification agents). BTC only (does NOT generalize to alts), 1x 
           PARABOLIC DE-RISK: take 50% off when close > 120% above the 20-week SMA.
           exit on stop or regime flip (4h or daily trend down).
   SHORT : enter when close down >10% from 40-day high AND prior-day daily MACD < signal.
-          size by BEAR DEPTH: 0.25/0.50/1.00x equity at -10/-20/-30% drawdown from 180-day high.
+          size by BEAR DEPTH: 0.50/1.00/1.00x equity at -10/-20/-30% drawdown from 180-day high.
           stop = entry + 5*ATR(14) capped 15%; break-even at +1R; exit on stop or bear-gate clear.
 
 HONEST PAPER ACCOUNTING (same rules as the other bots):
@@ -45,8 +45,8 @@ BE_R, BE_BUF = 1.0, 0.01                  # break-even at +1R -> entry+1%
 PYR_R, PYR_FRAC = 2.0, 1.0                # pyramid at +2R, +100% of original notional
 MACRO_MO = 9                              # macro filter: close > SMA(9 months)
 PARAB_MULT = 2.2                          # parabolic: close > 2.2*SMA(20wk) (=120% above)
-DROP_PCT, DROP_LOOK = 0.10, 40            # short gate: down 10% from 40-day high
-S_ATR, S_CAP = 5.0, 0.15                  # short stop
+DROP_PCT, DROP_LOOK = 0.10, 35            # short gate: down 10% from 35-day high (was 40 — backtest 2026-06-25, config C)
+S_ATR, S_CAP = 6.0, 0.20                  # short stop (was 5.0/0.15 — wider stop = fewer whipsaw cover-outs)
 LONG_LEV_MAX = 2.5                        # conviction leverage: long = 1x (weak) -> 2.5x (strong trend); short stays 1x
 LOCK_FRAC, LOCK_R = 0.33, 6.0             # lock 33% of the long at +6R (banks leveraged gains -> cuts DD)
 BYBIT = "https://api.bybit.com"
@@ -137,7 +137,8 @@ def compute_signals(df):
     i = -1
     px = float(c.iloc[i])
     dd_from_high = px / float(hh180.iloc[i]) - 1 if pd.notna(hh180.iloc[i]) else 0.0
-    ssize = 1.0 if dd_from_high <= -0.30 else (0.50 if dd_from_high <= -0.20 else 0.25)
+    # bear-depth sizing — config C (2026-06-25): more aggressive in moderate drawdowns (was 0.25/0.50/1.0)
+    ssize = 1.0 if dd_from_high <= -0.30 else (1.0 if dd_from_high <= -0.20 else 0.50)
     conv = min(1.0, max(0.0, float(adx_s.iloc[i]) / 35.0)) * 0.5 + min(1.0, max(0.0, float(egap.iloc[i]) / 0.12)) * 0.5
     long_lev = round(1.0 + (LONG_LEV_MAX - 1.0) * conv, 2)
     return {
@@ -335,9 +336,9 @@ def main():
         "stats": st["stats"],
         "strategy": ("V2 — 4h. LONG BTC: macro-filtered MTF (EMA50/200 4h+daily + >9mo SMA) with "
                      "CONVICTION LEVERAGE (1x weak → 2.5x strong, by ADX+EMA-gap) + pyramid@2R + lock 33%@+6R "
-                     "+ parabolic de-risk. SHORT ETH on BTC's bear signal (BTC down>10% from 40d high & BTC "
-                     "daily MACD<sig), bear-depth sized 0.25/0.5/1.0, 1x. Full 2017-2026: CAGR ~150%, DD -36%, "
-                     "ret/DD 4.18, green every year [PAPER]"),
+                     "+ parabolic de-risk. SHORT ETH on BTC's bear signal (BTC down>10% from 35d high & BTC "
+                     "daily MACD<sig), bear-depth sized 0.5/1.0/1.0, 1x. Full 2017-2026: CAGR ~171%, DD -35%, "
+                     "ret/DD 4.90, green every year [PAPER]"),
         "paper_mode": True,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
