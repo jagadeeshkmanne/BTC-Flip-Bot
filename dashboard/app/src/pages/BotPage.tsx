@@ -17,7 +17,19 @@ export function BotPage({ strategy }: { strategy: StrategyId }) {
   const status = useBotStatus(strategy);
   const state = useBotState(strategy);
   const bot = STRATEGY_TO_BOT[strategy];
-  const trades = state.data?.trade_log ?? [];
+  // Normalize the bot's trade_log to the schema the table expects:
+  // bot writes {net_usd, exit_time, entry, exit, qty, reason}; table wants
+  // {pnl_usd, pnl_pct, entry_time, ...}. Map without touching the bot.
+  const trades = (state.data?.trade_log ?? []).map((t: any) => {
+    const pnl_usd = t.pnl_usd ?? t.net_usd ?? 0;
+    const notional = (t.qty ?? t.qty_total ?? 0) * (t.entry ?? t.avg_entry ?? 0);
+    return {
+      ...t,
+      pnl_usd,
+      pnl_pct: t.pnl_pct ?? (notional ? (pnl_usd / notional) * 100 : 0),
+      entry_time: t.entry_time ?? t.exit_time,   // bot logs only exit_time
+    };
+  });
 
   return (
     <div class="space-y-3 md:space-y-4 min-w-0">

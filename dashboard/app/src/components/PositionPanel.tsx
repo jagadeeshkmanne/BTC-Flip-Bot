@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { TrendingDown, TrendingUp, Check, X, Clock, Activity } from 'lucide-react';
 import type { BotStatus, BotState, StrategyId } from '@/types/bot';
 import { useTickerStore } from '@/hooks/useBtcStream';
+import { useTickers } from '@/api/bots';
 import { fmtTradeTime, fmtClockIST, fmtHourMinIST, utcHourToISTLabel } from '@/utils/time';
 
 // Compute "time until bot resumes" given the blocked hours list (UTC).
@@ -49,34 +50,43 @@ export function PositionPanel({ status, state, strategy }: Props) {
   if (!status) {
     return <div class="card-elev py-12 text-center text-text-muted text-sm">Loading…</div>;
   }
-  if (status.position) {
-    return <ActivePosition status={status} />;
+  // Position may live in state.json (btcv2) or status.json (older bots).
+  const pos: any = (state as any)?.position ?? status.position ?? null;
+  if (pos) {
+    return <ActivePosition status={status} pos={pos} />;
   }
   return <WaitingForEntry status={status} state={state} strategy={strategy} />;
 }
 
 /* ─────────────────────── ACTIVE POSITION ─────────────────────── */
 
-function ActivePosition({ status }: { status: BotStatus }) {
-  const pos = status.position!;
-  // Use WS-streamed live price for real-time tick updates (REST is only polled every 5s).
+function ActivePosition({ status, pos }: { status: BotStatus; pos: any }) {
+  // Use WS-streamed BTC price for real-time ticks; for a non-BTC leg (e.g. ETH short)
+  // use the per-coin ticker feed — never price an ETH position against BTC.
   const wsPrice = useTickerStore(s => s.price);
-  const live = wsPrice || status.live_price;
+  const tickers = useTickers();
+  const inst: string = pos.inst ?? (status as any)?.symbol ?? 'BTCUSDT';
+  const coin = inst.replace('USDT', '');
+  const live = (inst === 'BTCUSDT' ? (wsPrice || tickers.data?.[inst]) : tickers.data?.[inst])
+    || (inst === (status as any)?.short_symbol ? (status as any)?.eth_price : status.live_price) || 0;
   const isLong = pos.side === 'LONG';
-  const entry = pos.avg_entry;
+  // Schema-tolerant: bot writes qty/entry/stop; older bots wrote qty_total/avg_entry/sl_px.
+  const qty = pos.qty_total ?? pos.qty ?? 0;
+  const entry = pos.avg_entry ?? pos.entry ?? 0;
   const tp = pos.tp_px ?? entry;
-  const sl = pos.sl_px ?? entry;
+  const sl = pos.sl_px ?? pos.stop ?? entry;
 
-  // L2 DCA trigger: only relevant if not yet filled (filled = 1)
-  const showL2 = pos.filled < 2;
+  // No DCA legs on btcv2 — only show L2 if the bot actually tracks fills.
+  const filled = pos.filled ?? 1;
+  const showL2 = filled < 2 && pos.worst_entry != null;
   const l2 = showL2 ? (isLong ? pos.worst_entry * (1 - 0.005) : pos.worst_entry * (1 + 0.005)) : null;
 
-  // Unrealized — recompute from WS price every tick (don't trust status.fav_pct which is REST-stale)
+  // Unrealized — recompute from live price every tick.
   const sign = isLong ? 1 : -1;
-  const unrealizedUsd = pos.qty_total * (live - entry) * sign;
-  const unrealizedPct = ((live - entry) / entry) * 100 * sign;
+  const unrealizedUsd = qty * (live - entry) * sign;
+  const unrealizedPct = entry ? ((live - entry) / entry) * 100 * sign : 0;
   const isProfit = unrealizedPct >= 0;
-  const notional = pos.qty_total * entry;
+  const notional = qty * entry;
 
   return (
     <div class="card-elev p-0 overflow-hidden">
@@ -89,12 +99,12 @@ function ActivePosition({ status }: { status: BotStatus }) {
               {pos.side}
             </span>
             <span class="text-sm font-mono text-text">
-              {pos.qty_total.toFixed(4)} BTC <span class="text-text-muted">≈ ${notional.toFixed(2)}</span>
+              {qty.toFixed(4)} {coin} <span class="text-text-muted">≈ ${notional.toFixed(2)}</span>
             </span>
           </div>
           <div class="mt-1 text-2xs text-text-dim">
             entry <span class="font-mono">${entry.toFixed(2)}</span>
-            {pos.filled > 1 && <span class="ml-2 pill-orange">DCA L{pos.filled}</span>}
+            {filled > 1 && <span class="ml-2 pill-orange">DCA L{filled}</span>}
           </div>
         </div>
         <div class="text-right shrink-0 min-w-0">

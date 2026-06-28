@@ -1,5 +1,6 @@
 import clsx from 'clsx';
 import { useTickerStore } from '@/hooks/useBtcStream';
+import { useTickers } from '@/api/bots';
 import type { BotStatus, BotState } from '@/types/bot';
 
 const INITIAL = 5000;
@@ -15,38 +16,47 @@ const fmtPct  = (n: number, d = 2) => (n >= 0 ? '+' : '') + n.toFixed(d) + '%';
  * When flat: shows Balance + Realized + Win Rate + Trade count.
  */
 export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: BotState }) {
-  const tickerPrice = useTickerStore(s => s.price);   // real-time WS price
+  const tickerPrice = useTickerStore(s => s.price);   // real-time WS price (BTC)
+  const tickers = useTickers();                        // per-coin Bybit prices (BTC/ETH/BNB/SOL)
   const balance = state?.balance ?? status?.balance ?? 0;
   const peak = state?.peak_equity ?? status?.peak_equity ?? balance;
-  const realizedUsd = balance - INITIAL;
-  const realizedPct = (realizedUsd / INITIAL) * 100;
   const stats = state?.stats ?? status?.stats ?? { total: 0, wins: 0, pnl: 0 };
+  // Realized = CLOSED-trade P&L only (the bot tracks this in stats.pnl). The open
+  // trade's fees/price live in Unrealized — not Realized.
+  const realizedUsd = (stats as any).pnl ?? (balance - INITIAL);
+  const realizedPct = (realizedUsd / INITIAL) * 100;
   // 2026-06-10: count BE-DCA exits as NEUTRAL ($0 net), not losses.
-  // For old states that don't track neutrals/losses yet, derive them from trade_log.
+  // Bot's trade_log uses `net_usd`; older states used `pnl_usd` — accept either.
   const tlog = (state as any)?.trade_log ?? state?.trade_log ?? [];
-  const losses = (stats as any).losses ?? tlog.filter((t: any) => (t.pnl_usd ?? 0) < 0).length;
-  const neutrals = (stats as any).neutrals ?? tlog.filter((t: any) => (t.pnl_usd ?? 0) === 0).length;
-  const realWins = (stats as any).wins ?? tlog.filter((t: any) => (t.pnl_usd ?? 0) > 0).length;
+  const tpnl = (t: any) => t.pnl_usd ?? t.net_usd ?? 0;
+  const losses = (stats as any).losses ?? tlog.filter((t: any) => tpnl(t) < 0).length;
+  const neutrals = (stats as any).neutrals ?? tlog.filter((t: any) => tpnl(t) === 0).length;
+  const realWins = (stats as any).wins ?? tlog.filter((t: any) => tpnl(t) > 0).length;
   const winLossBase = realWins + losses;
   // True WR excludes neutrals from denominator
   const wr = winLossBase > 0 ? (realWins / winLossBase) * 100 : 0;
 
-  const pos = status?.position;
-  const live = tickerPrice || status?.live_price || 0;
-  let unrealizedUsd = 0, unrealizedPct = 0;
-  if (pos && pos.qty_total && pos.avg_entry && live) {
-    const sign = pos.side === 'LONG' ? 1 : -1;
-    unrealizedUsd = pos.qty_total * (live - pos.avg_entry) * sign;
-    unrealizedPct = ((live - pos.avg_entry) / pos.avg_entry) * 100 * sign;
-  }
-  const totalUsd = realizedUsd + unrealizedUsd;
+  // Position can be on a DIFFERENT instrument than BTC (btcv2 shorts ETH). Read it
+  // from state OR status, tolerate both field schemas (qty_total/avg_entry OR qty/entry),
+  // and price it against ITS OWN instrument — not the BTC stream.
+  const pos: any = (state as any)?.position ?? status?.position ?? null;
+  const qty = pos ? (pos.qty_total ?? pos.qty ?? 0) : 0;
+  const entry = pos ? (pos.avg_entry ?? pos.entry ?? 0) : 0;
+  const inst: string = pos ? (pos.inst ?? (status as any)?.symbol ?? 'BTCUSDT') : 'BTCUSDT';
+  const live = (inst === 'BTCUSDT' ? (tickerPrice || tickers.data?.[inst]) : tickers.data?.[inst])
+    || (inst === (status as any)?.short_symbol ? (status as any)?.eth_price : status?.live_price) || 0;
+  // Price-only unrealized (the position's mark-to-market move since entry).
+  const sign = pos?.side === 'LONG' ? 1 : -1;
+  const unrealizedPrice = (pos && qty && entry && live) ? qty * (live - entry) * sign : 0;
+  // Live equity = bot's recorded balance (= equity at entry, incl. fees) + price move.
+  const liveEquity = balance + unrealizedPrice;
+  const totalUsd = liveEquity - INITIAL;
+  // Unrealized P&L of the OPEN trade = everything not yet realized (incl. its fees).
+  const unrealizedUsd = pos ? (totalUsd - realizedUsd) : 0;
+  const unrealizedPct = (pos && entry && live) ? ((live - entry) / entry) * 100 * sign : 0;
   const totalPct = (totalUsd / INITIAL) * 100;
 
-  // Drawdown — current equity vs peak (includes unrealized for live DD view).
-  // If equity is at/above peak we're not in drawdown — clamp to 0 and update
-  // the displayed peak so the label doesn't show "+0.54% peak $5,028" while
-  // live equity is actually $5,055.
-  const liveEquity = balance + unrealizedUsd;
+  // Drawdown — current LIVE equity (incl. unrealized) vs peak. Clamp to 0 at/above peak.
   const displayedPeak = Math.max(peak, liveEquity);
   const ddUsd = Math.min(0, liveEquity - displayedPeak);
   const ddPct = displayedPeak > 0 ? (ddUsd / displayedPeak) * 100 : 0;
@@ -64,7 +74,7 @@ export function BotStatsStrip({ status, state }: { status?: BotStatus; state?: B
     <div class="card-elev px-3 md:px-5 py-3">
       {/* Mobile: 2-col grid. Desktop: horizontal flex with dividers. */}
       <div class="grid grid-cols-2 gap-y-3 gap-x-4 md:flex md:items-center md:flex-wrap md:gap-x-8 md:gap-y-3">
-        <Metric label="Balance" big value={fmtUsd(balance)} sub={`from ${fmtUsd(INITIAL, 0)}`} />
+        <Metric label="Balance" big value={fmtUsd(liveEquity)} sub={`from ${fmtUsd(INITIAL, 0)}`} />
         <Divider />
         <Metric
           label="Total P&L" big

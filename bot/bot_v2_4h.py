@@ -218,8 +218,9 @@ def _close_position(st, fill, reason):
     st["balance"] += pnl
     s = st["stats"]; s["total"] += 1; s["pnl"] += pnl; s["wins" if pnl > 0 else "losses"] += 1
     st.setdefault("trade_log", []).append({
-        "side": pos["side"], "entry": pos["entry"], "exit": fill, "qty": pos["qty"],
-        "net_usd": pnl, "reason": reason, "exit_time": datetime.now(timezone.utc).isoformat()})
+        "side": pos["side"], "inst": pos.get("inst"), "entry": pos["entry"], "exit": fill,
+        "qty": pos["qty"], "net_usd": pnl, "reason": reason,
+        "entry_time": pos.get("entry_time"), "exit_time": datetime.now(timezone.utc).isoformat()})
     st["trade_log"] = st["trade_log"][-100:]
     log.warning(f"  CLOSE {pos['side']} {pos['qty']:.4f} @ ${fill:,.0f} net ${pnl:+,.2f} ({reason})")
     st["position"] = None
@@ -231,8 +232,9 @@ def _partial_close(st, frac, fill, reason):
     st["balance"] += pnl; pos["qty"] -= q
     s = st["stats"]; s["pnl"] += pnl
     st.setdefault("trade_log", []).append({
-        "side": pos["side"] + "(50%)", "entry": pos["entry"], "exit": fill, "qty": q,
-        "net_usd": pnl, "reason": reason, "exit_time": datetime.now(timezone.utc).isoformat()})
+        "side": pos["side"] + "(50%)", "inst": pos.get("inst"), "entry": pos["entry"], "exit": fill,
+        "qty": q, "net_usd": pnl, "reason": reason,
+        "entry_time": pos.get("entry_time"), "exit_time": datetime.now(timezone.utc).isoformat()})
     st["trade_log"] = st["trade_log"][-100:]
     log.warning(f"  PARTIAL {reason} {q:.4f} @ ${fill:,.0f} net ${pnl:+,.2f}")
 
