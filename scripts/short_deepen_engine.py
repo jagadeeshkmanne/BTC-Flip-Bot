@@ -37,12 +37,13 @@ def run_ec3(short_inst="eth", long_lev=None, lock_frac=0.33, lock_r=6.0, mf=12, 
             # --- deepening knobs (default OFF -> identical to run_ec2) ---
             spyr_k=0.0, spyr_frac=0.5,
             strail_k=0.0, strail_arm_R=1.0,
-            s_reentry=False):
+            s_reentry=False, macd_shift=1, use_macro=True):
     btc,btcd=load4h("BTCUSDT"); eth,ethd=load4h("ETHUSDT")
     common=pd.Index(btc["timestamp"]).intersection(pd.Index(eth["timestamp"]))
     btc=btc[btc["timestamp"].isin(common)].reset_index(drop=True); eth=eth[eth["timestamp"].isin(common)].reset_index(drop=True)
     bc=btc["close"]; ec=eth["close"]
-    bull=((bt.ema(bc,50)>bt.ema(bc,200)).values & dbull_map(btc,btcd) & (bc>bt.sma(bc,9*30*BPD).shift(1)).fillna(False).values)
+    macro=(bc>bt.sma(bc,9*30*BPD).shift(1)).fillna(False).values if use_macro else np.ones(len(bc),bool)
+    bull=((bt.ema(bc,50)>bt.ema(bc,200)).values & dbull_map(btc,btcd) & macro)
     parab=(bc>2.2*bt.sma(bc,140*BPD).shift(1)).fillna(False).values
     ts4=pd.to_datetime(btc["timestamp"])
     if macd_tf=="4h":
@@ -50,7 +51,7 @@ def run_ec3(short_inst="eth", long_lev=None, lock_frac=0.33, lock_r=6.0, mf=12, 
         macd_bear=(ml4<sig4).shift(1).fillna(False).values
     else:
         mld=bt.ema(btcd["close"],mf)-bt.ema(btcd["close"],ms); sigd=bt.ema(mld,msig)
-        dmb=(mld<sigd).shift(1).fillna(False)
+        dmb=(mld<sigd).shift(macd_shift).fillna(False)
         macd_bear=pd.merge_asof(pd.DataFrame({"ts":ts4}).sort_values("ts"),
             pd.DataFrame({"ts":pd.to_datetime(btcd["timestamp"]),"b":dmb.values}).sort_values("ts"),
             on="ts",direction="backward")["b"].fillna(False).astype(bool).values
