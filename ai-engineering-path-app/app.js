@@ -3,6 +3,56 @@
   const h = React.createElement;
   const data = window.CURRICULUM_DATA;
   const STORAGE_KEY = "production-ai-engineering-progress-v1";
+  const MASTERCLASS_IDS = new Set([
+    // Mod 1: Python & Pydantic
+    "ygXn5nV5qFc", "M81pfi64eeM", "K56nNuBEd0c", "XIdQ6gO3Anc",
+    // Mod 2: LLM APIs (OpenAI, Gemini, Anthropic Claude)
+    "c-g6epk3fFE", "d9LAQWKUnx8", "7xVmf9lIj14", "YtHdaXuOAks",
+    // Mod 3: Prompting & Tool Calling
+    "W01f13b-pI8", "dL0wPz2t3pI", "-WB0T0XmDrY",
+    // Mod 4: FastAPI
+    "TO4aQ3ghFOc", "_1P0Uqk50Ps",
+    // Mod 5: Auth & SaaS API
+    "KxR3OONvDvo", "BvsBJynm64k",
+    // Mod 6: Postgres, pgvector & Semantic Cache
+    "FDBnyJu_Ndg", "eTO1WfbtoXA", "hAdEuDBN57g",
+    // Mod 7: Embeddings
+    "5M8Cg8JtK9w", "sNa_uiqSlJo",
+    // Mod 8: Vector DBs
+    "6diVTn3J7QE", "Bq6uhc27sPY",
+    // Mod 9: RAG
+    "sVcwVQRHIc8", "KnoVFU0yCUc",
+    // Mod 10: Advanced RAG, Hybrid Search & Reranking
+    "XvKiTfd6Xvo", "TlMNI0hTtYU",
+    // Mod 11: LangChain & LlamaIndex
+    "lG7Uxts9SXs", "D74el9mvNak", "6q0jMcdbijQ", "o126p1QN_RI",
+    // Mod 12: LangGraph & MCP & Claude Code
+    "jGg_1h0qzaM", "DosHnyq78xY", "5xqFjh56AwM", "uogzSxOw4LU", "SP-b_G74Nuk", "eSP7PLTXNy8",
+    // Mod 13: AI Agents, CrewAI, AutoGen, n8n
+    "bZzyPscbtI8", "G42J2MSKyc8", "yDpV_jgO93c", "GuaKeDS6UKU", "bTMPwUgLZf0",
+    // Mod 14: Background Workers & Evals
+    "eAHAKowv6hk", "a3SMraZWNNs", "402EyLS59ho",
+    // Mod 15: LLMOps & Observability
+    "tFXm5ijih98", "4FFspU4riHk",
+    // Mod 16: Guardrails & Production Safety
+    "7V1w5gnZ-kw", "uZ56v9xfcBw", "wTrv1hMQbVg", "ruiLq0OzjkI",
+    // Mod 17: Docker, K8s, CI/CD
+    "3c-iBn73dDE", "X48VuDVv0do", "pJ_nCklQ65w",
+    // Mod 18: Cloud AI (Bedrock, Azure, Vertex, AgentCore)
+    "Sq8Cq7RZM2o", "FAgmR9VV0GQ", "3OP39y4dO_Y", "N7FGbBq1mI4",
+    // Mod 19: Enterprise Tech Stack & Scale & SRE
+    "pUKvTs6Eg4k", "21_k2St8bBI", "o7uMZkuegEE",
+    // Mod 20: End-to-End Capstone
+    "AUQJ9eeP-Ls", "qF5il_9IwME",
+    // Mod 21: LLM Fine-Tuning, Training & Model Routing
+    "jiYqbEDPw7A", "00Q0G84kq3M", "ju7kKGVQRi0", "-cKUW6n8hBU", "E1DTsgbZPhw",
+    // Mod 22: FDE Consulting, Scoping & Stakeholder Mastery
+    "BBEDnRAgSpY", "9RvWcXVaAng", "3biaqcutASs", "pGK2EuLXL7A", "6Fx2dDs4qdU", "hd6L4DRWgvY",
+    // Mod 23: Enterprise Reliability, Disaster Recovery & High Availability
+    "ilgpzlE7Hds", "jZIaliFsPIw", "OmASCUJEVy8", "LdvduBxZRLs", "be6PLMKKSto", "OT1EJ_kyP_g",
+    // Mod 24: Production Lab Operations, Security Red Teaming & Load Testing
+    "EgpLj86ZHFQ", "IetyhDr48RI", "4QXtObc61Lw", "esIEW0aEKqk", "Q3z4EEd2VcQ", "ptRhf5pUEr0"
+  ]);
 
   function getRoute() {
     const hash = window.location.hash.replace(/^#\/?/, "");
@@ -23,9 +73,222 @@
 
   function youtubeId(url) {
     const value = String(url || "");
-    const match = value.match(/[?&]v=([^&]+)/) || value.match(/youtu\.be\/([^?&]+)/);
+    const match = value.match(/[?&]v=([^&]+)/) || value.match(/youtu\.be\/([^?&]+)/) || value.match(/youtube\.com\/embed\/([^?&]+)/);
     return match ? match[1] : "";
   }
+
+  // Permanently prune data to STRICTLY AND ONLY the Gold-Standard Masterclass tutorials & live builds
+  (function pruneTo40Masterclasses() {
+    const claudeVids = (data.claudeFdeTrack && data.claudeFdeTrack.videos) || [];
+    const cloudVids = (data.fdeCloudTrack && data.fdeCloudTrack.videos) || [];
+
+    if (data.modules && data.modules.length === 20) {
+      data.modules.push(
+        {
+          num: 21,
+          name: "LLM Fine-Tuning, Training & Model Routing",
+          desktop: {
+            title: "LLM Fine-Tuning, Training & Model Routing",
+            goal: "Master custom model optimization, fine-tuning GPT-4o/open-source models, training workflows, RAG vs fine-tuning trade-offs, and custom model routing.",
+            techs: ["Fine-Tuning", "LoRA/PEFT", "Model Routing", "DSPy", "PyTorch"]
+          },
+          videos: [
+            { id: "jiYqbEDPw7A", title: "Fine-Tune GPT-4o Model Step by Step", duration: "15m", url: "https://www.youtube.com/watch?v=jiYqbEDPw7A" },
+            { id: "00Q0G84kq3M", title: "RAG vs. Fine Tuning: When to Use Which", duration: "9m", url: "https://www.youtube.com/watch?v=00Q0G84kq3M" },
+            { id: "ju7kKGVQRi0", title: "How to Build Your Own Model Router", duration: "16m", url: "https://www.youtube.com/watch?v=ju7kKGVQRi0" },
+            { id: "-cKUW6n8hBU", title: "DSPy: The End of Prompt Engineering (Full Tutorial)", duration: "1h 13m", url: "https://www.youtube.com/watch?v=-cKUW6n8hBU" }
+          ],
+          projectVideos: [
+            { id: "E1DTsgbZPhw", title: "LLMOps in Action: Streamlining the Path from Prototype to Production", duration: "40m 49s", url: "https://www.youtube.com/watch?v=E1DTsgbZPhw" }
+          ]
+        },
+        {
+          num: 22,
+          name: "FDE Consulting, Scoping & Stakeholder Mastery",
+          desktop: {
+            title: "FDE Consulting, Scoping & Stakeholder Mastery",
+            goal: "Lead generative AI product discovery sprints, conduct solution scoping workshops, build enterprise business cases, execute change management, and explain technical architecture to non-technical stakeholders.",
+            techs: ["Discovery Sprints", "Solution Scoping", "Change Management", "Stakeholder Comm", "Business Case"]
+          },
+          videos: [
+            { id: "BBEDnRAgSpY", title: "Generative AI Product Discovery Sprint: Use Cases & Business Value Exploration", duration: "1h 52m", url: "https://www.youtube.com/watch?v=BBEDnRAgSpY" },
+            { id: "9RvWcXVaAng", title: "Integrating Generative AI Into Business Strategy", duration: "50m 47s", url: "https://www.youtube.com/watch?v=9RvWcXVaAng" },
+            { id: "3biaqcutASs", title: "AI & Change Management: What it Means for Change Managers", duration: "54m 16s", url: "https://www.youtube.com/watch?v=3biaqcutASs" }
+          ],
+          projectVideos: [
+            { id: "pGK2EuLXL7A", title: "Explaining Technical Information to Non-Technical People", duration: "6m 7s", url: "https://www.youtube.com/watch?v=pGK2EuLXL7A" },
+            { id: "6Fx2dDs4qdU", title: "How to Explain Technical Concepts to Non-Technical Stakeholders", duration: "5m 10s", url: "https://www.youtube.com/watch?v=6Fx2dDs4qdU" },
+            { id: "hd6L4DRWgvY", title: "How to Drive AI Adoption Internally", duration: "4m 22s", url: "https://www.youtube.com/watch?v=hd6L4DRWgvY" }
+          ]
+        },
+        {
+          num: 23,
+          name: "Enterprise Reliability, Disaster Recovery & High Availability",
+          desktop: {
+            title: "Enterprise Reliability, Disaster Recovery & High Availability",
+            goal: "Design fault-tolerant AI systems, multi-region cloud disaster recovery, RTO/RPO failover strategies, database sharding, and 99.999% high availability architectures.",
+            techs: ["Multi-Region HA", "Disaster Recovery", "RTO / RPO", "Database Sharding", "Failover"]
+          },
+          videos: [
+            { id: "ilgpzlE7Hds", title: "AWS Multi-Region Design Patterns and Best Practices", duration: "58m", url: "https://www.youtube.com/watch?v=ilgpzlE7Hds" },
+            { id: "jZIaliFsPIw", title: "AWS Multi-Region Disaster Recovery & Resilience Testing", duration: "51m", url: "https://www.youtube.com/watch?v=jZIaliFsPIw" },
+            { id: "OmASCUJEVy8", title: "The Ultimate Guide to Disaster Recovery: RTO, RPO, & Failover!", duration: "11m", url: "https://www.youtube.com/watch?v=OmASCUJEVy8" }
+          ],
+          projectVideos: [
+            { id: "LdvduBxZRLs", title: "Design Patterns for High Availability: What gets you 99.999% uptime?", duration: "13m", url: "https://www.youtube.com/watch?v=LdvduBxZRLs" },
+            { id: "be6PLMKKSto", title: "The Basics of Database Sharding and Partitioning in System Design", duration: "6m", url: "https://www.youtube.com/watch?v=be6PLMKKSto" },
+            { id: "OT1EJ_kyP_g", title: "Implement a Multi-Region Disaster Recovery Strategy Using AWS DRS", duration: "4m", url: "https://www.youtube.com/watch?v=OT1EJ_kyP_g" }
+          ]
+        },
+        {
+          num: 24,
+          name: "Production Lab Operations, Security Red Teaming & Load Testing",
+          desktop: {
+            title: "Production Lab Operations, Security Red Teaming & Load Testing",
+            goal: "Execute rigorous production quality gates: automated Pytest suites, API contract testing with Pact, Promptfoo LLM red teaming, and Locust performance load testing at scale.",
+            techs: ["Locust Load Testing", "Promptfoo Red Teaming", "Pytest", "Contract Testing", "WSO2 Guardrails"]
+          },
+          videos: [
+            { id: "EgpLj86ZHFQ", title: "Please Learn How To Write Tests in Python - Pytest Tutorial", duration: "33m", url: "https://www.youtube.com/watch?v=EgpLj86ZHFQ" },
+            { id: "IetyhDr48RI", title: "Contract Testing and How Pact Works", duration: "11m", url: "https://www.youtube.com/watch?v=IetyhDr48RI" },
+            { id: "4QXtObc61Lw", title: "Security & AI Governance: Reducing Risks in AI Systems", duration: "15m", url: "https://www.youtube.com/watch?v=4QXtObc61Lw" }
+          ],
+          projectVideos: [
+            { id: "esIEW0aEKqk", title: "Load Testing FastAPI with Locust Python (Performance at Scale)", duration: "21m", url: "https://www.youtube.com/watch?v=esIEW0aEKqk" },
+            { id: "Q3z4EEd2VcQ", title: "Promptfoo Red Teaming: Decoding LLM Security Architecture", duration: "38m", url: "https://www.youtube.com/watch?v=Q3z4EEd2VcQ" },
+            { id: "ptRhf5pUEr0", title: "WSO2 AI Guardrails: PII Masking, Prompt Injection & Safety", duration: "8m 50s", url: "https://www.youtube.com/watch?v=ptRhf5pUEr0" }
+          ]
+        }
+      );
+    }
+
+    data.modules.forEach((m) => {
+      const d = m.desktop || {};
+      let allVids = [...(m.videos || []), ...(d.videos || [])];
+      let projs = m.projectVideos || [];
+
+      if (m.num === 1) {
+        projs = [...projs, ...allVids.filter((v) => youtubeId(v.url) === "XIdQ6gO3Anc")];
+        allVids = allVids.filter((v) => youtubeId(v.url) !== "XIdQ6gO3Anc");
+      }
+      if (m.num === 2) {
+        const extraTuts = projs.filter((v) => youtubeId(v.url) === "c-g6epk3fFE" || youtubeId(v.url) === "d9LAQWKUnx8" || youtubeId(v.url) === "7xVmf9lIj14" || v.id === "7xVmf9lIj14");
+        const vids2 = allVids.filter((v) => youtubeId(v.url) === "7xVmf9lIj14" || v.id === "7xVmf9lIj14");
+        allVids = [...allVids, ...extraTuts, ...vids2];
+        projs = projs.filter((v) => youtubeId(v.url) === "YtHdaXuOAks");
+      }
+      if (m.num === 3) {
+        const extraPrj = projs.filter((v) => youtubeId(v.url) === "-WB0T0XmDrY");
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 4) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "_1P0Uqk50Ps");
+        allVids = allVids.filter((v) => youtubeId(v.url) !== "_1P0Uqk50Ps");
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 6) {
+        const tuts = projs.filter((v) => youtubeId(v.url) === "FDBnyJu_Ndg" || youtubeId(v.url) === "eTO1WfbtoXA");
+        const prjs = projs.filter((v) => youtubeId(v.url) === "hAdEuDBN57g");
+        allVids = [...allVids, ...tuts];
+        projs = prjs;
+      }
+      if (m.num === 7) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "sNa_uiqSlJo");
+        allVids = allVids.filter((v) => youtubeId(v.url) !== "sNa_uiqSlJo");
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 8) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "Bq6uhc27sPY");
+        allVids = allVids.filter((v) => youtubeId(v.url) !== "Bq6uhc27sPY");
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 10) {
+        const tuts = projs.filter((v) => youtubeId(v.url) === "XvKiTfd6Xvo");
+        const prjs = projs.filter((v) => youtubeId(v.url) === "TlMNI0hTtYU");
+        allVids = [...allVids, ...tuts];
+        projs = prjs;
+      }
+      if (m.num === 11) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "o126p1QN_RI");
+        const extraTut = allVids.filter((v) => youtubeId(v.url) === "lG7Uxts9SXs");
+        allVids = [...allVids.filter((v) => youtubeId(v.url) !== "o126p1QN_RI"), ...extraTut];
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 12) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "SP-b_G74Nuk");
+        const extraTuts = allVids.filter((v) => youtubeId(v.url) === "5xqFjh56AwM");
+        const claudeTut = claudeVids.filter((v) => youtubeId(v.url) === "uogzSxOw4LU");
+        const claudePrj = claudeVids.filter((v) => youtubeId(v.url) === "eSP7PLTXNy8");
+        allVids = [...allVids.filter((v) => youtubeId(v.url) !== "SP-b_G74Nuk"), ...extraTuts, ...claudeTut];
+        projs = [...projs, ...extraPrj, ...claudePrj];
+      }
+      if (m.num === 13) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "bTMPwUgLZf0");
+        const n8nTut = allVids.filter((v) => youtubeId(v.url) === "GuaKeDS6UKU");
+        allVids = [...allVids.filter((v) => youtubeId(v.url) !== "bTMPwUgLZf0"), ...n8nTut];
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 14) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "402EyLS59ho");
+        allVids = allVids.filter((v) => youtubeId(v.url) !== "402EyLS59ho");
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 17) {
+        const extraPrj = allVids.filter((v) => youtubeId(v.url) === "pJ_nCklQ65w");
+        allVids = allVids.filter((v) => youtubeId(v.url) !== "pJ_nCklQ65w");
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 18) {
+        const agentCorePrj = cloudVids.filter((v) => youtubeId(v.url) === "N7FGbBq1mI4");
+        projs = [...projs, ...agentCorePrj];
+      }
+      if (m.num === 19) {
+        const extraPrj = projs.filter((v) => youtubeId(v.url) === "o7uMZkuegEE");
+        projs = [...projs, ...extraPrj];
+      }
+      if (m.num === 20) {
+        const tuts = allVids.filter((v) => youtubeId(v.url) === "AUQJ9eeP-Ls");
+        const prjs = projs.filter((v) => youtubeId(v.url) === "qF5il_9IwME");
+        allVids = [...allVids, ...tuts];
+        projs = prjs;
+      }
+
+      let vids = allVids.filter((v) => MASTERCLASS_IDS.has(youtubeId(v.url)) || MASTERCLASS_IDS.has(v.id));
+      let pvids = projs.filter((v) => MASTERCLASS_IDS.has(youtubeId(v.url)) || MASTERCLASS_IDS.has(v.id));
+
+      const seenV = new Set();
+      m.videos = vids.filter((v) => {
+        const id = youtubeId(v.url) || v.id;
+        if (seenV.has(id)) return false;
+        seenV.add(id);
+        return true;
+      });
+      const seenP = new Set();
+      m.projectVideos = pvids.filter((v) => {
+        const id = youtubeId(v.url) || v.id;
+        if (seenP.has(id)) return false;
+        seenP.add(id);
+        return true;
+      });
+
+      m.videos.forEach((v, idx) => {
+        v.order = m.num + "." + (idx + 1);
+        v.step = v.order;
+      });
+      m.projectVideos.forEach((v, idx) => {
+        v.order = m.num + ".P" + (idx + 1);
+        v.step = v.order;
+      });
+      m.supplementalTracks = [];
+      if (d.videos) d.videos = [];
+    });
+    data.claudeFdeTrack = null;
+    data.fdeCloudTrack = null;
+    data.fdeAcademyConsultingTrack = null;
+    if (data.fdeRoadmap && data.fdeRoadmap.tracks) {
+      data.fdeRoadmap.tracks = [];
+    }
+  })();
 
   function slug(value) {
     return String(value || "")
@@ -54,29 +317,11 @@
     const items = [];
     (module.videos || []).forEach((video) => items.push(itemKey("module-" + module.num + "-lesson", video)));
     (module.projectVideos || []).forEach((video) => items.push(itemKey("module-" + module.num + "-project", video)));
-    (module.supplementalTracks || []).forEach((track) => {
-      (track.videos || []).forEach((video) => items.push(itemKey("module-" + module.num + "-track-" + track.id, video)));
-    });
-    if (module.num === 12 && data.claudeFdeTrack) {
-      (data.claudeFdeTrack.videos || []).forEach((video) => items.push(itemKey("module-12-claude-tooling", video)));
-    }
     return items;
   }
 
   function fdeItems() {
-    const items = [];
-    [
-      data.fdeCloudTrack,
-      awsOperationsTrack(),
-      fdeEnterpriseDeliveryTrack(),
-      enterpriseApmTrack(),
-      data.fdeLabOperationsTrack,
-      data.fdeAcademyTechnicalTrack,
-      data.fdeAcademyConsultingTrack
-    ].filter(Boolean).forEach((track) => {
-      (track.videos || []).forEach((video) => items.push(itemKey("fde-" + slug(track.title), video)));
-    });
-    return items;
+    return [];
   }
 
   function allItems() {
@@ -171,16 +416,9 @@
   }
 
   function App() {
-    const [route, setRoute] = useState(getRoute());
     const [completed, setCompleted] = useState(readCompleted);
     const allProgressItems = useMemo(() => allItems(), []);
     const courseProgress = progressFor(allProgressItems, completed);
-
-    useEffect(() => {
-      const onHashChange = () => setRoute(getRoute());
-      window.addEventListener("hashchange", onHashChange);
-      return () => window.removeEventListener("hashchange", onHashChange);
-    }, []);
 
     function toggleCompleted(key) {
       setCompleted((current) => {
@@ -192,41 +430,21 @@
       });
     }
 
-    return h(React.Fragment, null,
-      h(Header, { route, courseProgress }),
-      route.page === "curriculum" && h(CurriculumPage, { completed, toggleCompleted }),
-      route.page === "courses" && h(CoursesPage, { completed }),
-      route.page === "module" && h(ModulePage, { id: route.id, completed, toggleCompleted }),
-      route.page === "projects" && h(ProjectsPage),
-      route.page === "fde" && h(FdePage, { completed, toggleCompleted }),
+    return h("div", { className: "app-container" },
+      h(Header, { courseProgress }),
+      h(CurriculumPage, { completed, toggleCompleted }),
       h("footer", { className: "footer-note" },
         "Static React app for GitHub Pages. Video-first curriculum using curated YouTube lessons, project walkthroughs, and optional reference material."
       )
     );
   }
 
-  function Header({ route, courseProgress }) {
-    const items = [
-      ["#/", "Learning Path", "curriculum"]
-    ];
-    const activePage = route.page === "module" ? "curriculum" : route.page;
+  function Header({ courseProgress }) {
     return h("header", { className: "site-header" },
       h("div", { className: "header-inner" },
         h("a", { className: "brand", href: "#/" },
           h("div", { className: "brand-mark" }, "AI"),
-          h("span", null, "Production AI Engineering")
-        ),
-        h("button", {
-          className: "mobile-menu-button",
-          onClick: () => window.dispatchEvent(new CustomEvent("toggle-roadmap-menu")),
-          "aria-label": "Open roadmap menu"
-        }, "Menu"),
-        h("nav", { className: "top-nav", "aria-label": "Course pages" },
-          items.map(([href, label, page]) => h("a", {
-            key: href,
-            href,
-            className: activePage === page ? "active" : ""
-          }, label))
+          h("span", null, "Production AI Engineering & FDE")
         ),
         h("div", { className: "header-progress", "aria-label": "Course progress" },
           h("span", null, courseProgress.percent + "% complete"),
@@ -343,7 +561,7 @@
         "Before cloud rollout, make the system measurable and safer: background workers, evals, LangSmith, Langfuse, OpenTelemetry, Grafana, Splunk, Dynatrace, and guardrails.",
         ["Workers", "Evals", "LangSmith/Langfuse", "OpenTelemetry", "Grafana/Splunk/Dynatrace", "Guardrails"],
         [14, 15, 16],
-        [enterpriseApmTrack()]
+        []
       ),
       section(
         "Step 6",
@@ -351,7 +569,7 @@
         "Then deploy into enterprise environments: Docker, Kubernetes, CI/CD, Terraform/IaC, AWS Lambda/App Runner, Cloud Run, Azure Container Apps, Bedrock, Vertex, cost controls, and security.",
         ["Docker", "Kubernetes", "Terraform", "Serverless", "AWS Bedrock", "Azure/GCP", "Cost", "Security"],
         [17, 18, 19],
-        [cloudDeploymentPatternsTrack(), awsOperationsTrack(), data.fdeCloudTrack]
+        []
       ),
       section(
         "Step 7",
@@ -359,7 +577,7 @@
         "Finally add the forward-deployed layer: discovery, scoping, enterprise workflow delivery, auditability, HITL, stakeholder communication, rollout, adoption, and portfolio proof.",
         ["Discovery", "Scoping", "Auditability", "HITL", "Stakeholders", "Launch readiness", "Capstone"],
         [20],
-        [data.fdeAcademyConsultingTrack, fdeEnterpriseDeliveryTrack(), fdeOperatingModelTrack()]
+        []
       )
     ];
   }
@@ -545,110 +763,82 @@
   }
 
   function CurriculumPage({ completed, toggleCompleted }) {
-    const sections = learningSections();
+    const [playing, setPlaying] = useState(null);
+    const modules = data.modules || [];
+    function jumpToTopic(num) {
+      document.getElementById("topic-block-" + num)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    const allVids = modules.flatMap((m) => [...(m.videos || []), ...(m.projectVideos || [])]);
+    const playlist1Ids = allVids.slice(0, 43).map((v) => youtubeId(v.url) || v.id).filter(Boolean).join(",");
+    const playlist2Ids = allVids.slice(43).map((v) => youtubeId(v.url) || v.id).filter(Boolean).join(",");
+
     return h("main", { className: "page" },
       h("section", { className: "section page-hero" },
-        h("div", { className: "eyebrow" }, "Single Page Playlist"),
-        h("h1", null, "FDE Job Learning Path"),
+        h("div", { className: "eyebrow" }, "Comprehensive FDE & AI Engineer Roadmap"),
+        h("h1", null, "The Ultimate AI Engineer & FDE Masterclass"),
         h("p", { className: "section-lead" },
-          "Follow this exact order like a real enterprise AI build: language and LLM contracts first, then backend and data, then retrieval, agents, quality controls, deployment/cloud/scale, and finally customer delivery. Frontend/full-stack and generic system-design refreshers are intentionally removed from the main path."
+          "The complete, single-page chronological learning roadmap. Every competency required for both Technical and Consulting FDE tracks is covered in full depth: Python, LLM APIs (OpenAI, Claude, Gemini), Prompt Engineering, FastAPI, PostgreSQL pgvector, Caching, RAG, LangChain, LangGraph, MCP, Claude Code, AI Agents (CrewAI, AutoGen, n8n), Evals, Observability, Guardrails, Docker/K8s, Bedrock/Vertex AgentCore, LLM Fine-Tuning & Model Routing, FDE Consulting & Scoping Workshops, Enterprise Reliability & Disaster Recovery, and Locust Load Testing. Full Course Tutorials are listed first, followed immediately by Live Capstone Project Builds."
         )
       ),
-      h("div", { className: "learning-shell" },
-        h(QuickJumpMenu, { sections, completed }),
-        h("div", { className: "learning-content" },
-          sections.map((section) => h(LearningVideoSection, {
-            section,
+      h("section", { className: "section playlist-banner-section" },
+        h("div", { className: "playlist-banner-card" },
+          h("div", { className: "playlist-banner-header" },
+            h("h2", null, "⚡ 1-Click YouTube Master Playlists (85 Masterclasses)"),
+            h("p", null, "Save the entire 85-Video Ultimate Production AI Engineering & FDE curriculum directly into your YouTube account in 1 click! (Split into 2 parts due to YouTube's 50-video URL limit).")
+          ),
+          h("div", { className: "playlist-buttons-grid", style: { display: "flex", gap: "14px", flexWrap: "wrap" } },
+            h("a", {
+              className: "button primary playlist-btn-main",
+              href: "https://www.youtube.com/watch_videos?video_ids=" + playlist1Ids,
+              target: "_blank",
+              rel: "noreferrer",
+              style: { flex: "1 1 300px" }
+            }, "🏆 Part 1: Topics 1–12 (Foundations, FastAPI, RAG, LangGraph & MCP)"),
+            h("a", {
+              className: "button primary playlist-btn-main",
+              href: "https://www.youtube.com/watch_videos?video_ids=" + playlist2Ids,
+              target: "_blank",
+              rel: "noreferrer",
+              style: { flex: "1 1 300px" }
+            }, "🚀 Part 2: Topics 13–24 (Agents, n8n, Cloud, SRE, Consulting & Load Testing)")
+          ),
+          h("p", { className: "playlist-banner-footer" }, "💡 How to save: Click either button above → YouTube opens → Click the ", h("strong", null, "Save"), " button below the player → ", h("strong", null, "+ Create new playlist"), "!")
+        )
+      ),
+      h("section", { className: "section topic-jump-bar-section", style: { marginBottom: "30px", position: "sticky", top: "10px", zIndex: "100" } },
+        h("div", { className: "topic-jump-bar-container", style: { background: "#0f172a", padding: "14px", borderRadius: "14px", border: "1px solid rgba(255, 255, 255, 0.18)", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" } },
+          h("div", { className: "mobile-topic-select-wrap", style: { marginBottom: "10px" } },
+            h("select", {
+              onChange: (e) => { if (e.target.value) jumpToTopic(Number(e.target.value)); },
+              style: { width: "100%", padding: "12px 16px", fontSize: "0.95rem", borderRadius: "10px", background: "#1e293b", color: "#38bdf8", border: "1px solid #334155", fontWeight: "700", cursor: "pointer", outline: "none" },
+              ariaLabel: "Jump to Topic Navigation Menu"
+            },
+              h("option", { value: "" }, "⚡ 🧭 Mobile Menu: Jump directly to any Topic (1–24)..."),
+              modules.map((m) => h("option", { key: m.num, value: m.num }, `Topic ${m.num}: ${moduleTitle(m)} (${(m.videos||[]).length} Tuts, ${(m.projectVideos||[]).length} Projs)`))
+            )
+          ),
+          h("div", { className: "topic-jump-bar", style: { display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "4px" } },
+            modules.map((m) => h("button", {
+              key: m.num,
+              onClick: () => jumpToTopic(m.num),
+              className: "button",
+              style: { flexShrink: 0, padding: "6px 14px", fontSize: "0.8rem", background: "rgba(255, 255, 255, 0.08)", border: "1px solid rgba(255, 255, 255, 0.15)", borderRadius: "20px", color: "#f8fafc", cursor: "pointer", fontWeight: "600", transition: "all 0.2s" }
+            }, "Topic " + m.num))
+          )
+        )
+      ),
+      h("div", { className: "learning-shell", style: { display: "block", maxWidth: "1200px", margin: "0 auto" } },
+        h("div", { className: "learning-content", style: { width: "100%" } },
+          modules.map((module) => h(ModuleVideoBlock, {
+            module,
             completed,
             toggleCompleted,
-            key: section.id
+            playing,
+            setPlaying,
+            key: module.num
           }))
         )
       )
-    );
-  }
-
-  function QuickJumpMenu({ sections, completed }) {
-    const [open, setOpen] = useState(false);
-    useEffect(() => {
-      const openMenu = () => setOpen(true);
-      window.addEventListener("toggle-roadmap-menu", openMenu);
-      return () => window.removeEventListener("toggle-roadmap-menu", openMenu);
-    }, []);
-    function jumpTo(sectionId) {
-      setOpen(false);
-      document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-    return h("aside", { className: "quick-menu-wrap", "aria-label": "Learning path navigation" },
-      open && h("button", {
-        className: "quick-menu-backdrop",
-        onClick: () => setOpen(false),
-        "aria-label": "Close roadmap menu"
-      }),
-      h("div", { className: "quick-menu-panel" + (open ? " is-open" : "") },
-        h("div", { className: "quick-menu-title" },
-          h("span", null, "Roadmap"),
-          h("strong", null, "Learn In Order"),
-          h("button", {
-            className: "quick-menu-close",
-            onClick: () => setOpen(false),
-            "aria-label": "Close roadmap menu"
-          }, "Close")
-        ),
-        h("div", { className: "quick-menu" },
-          sections.map((section) => {
-            const progress = progressFor(sectionVideoKeys(section), completed);
-            return h("button", {
-              key: section.id,
-              className: "quick-menu-item",
-              onClick: () => jumpTo(section.id)
-            },
-              h("span", null, section.label),
-              h("strong", null, section.title),
-              h("em", null, progress.done + "/" + progress.total)
-            );
-          })
-        )
-      )
-    );
-  }
-
-  function LearningVideoSection({ section, completed, toggleCompleted }) {
-    const [playing, setPlaying] = useState(null);
-    const progress = progressFor(sectionVideoKeys(section), completed);
-    return h("section", { className: "section learning-section", id: section.id },
-      h("div", { className: "learning-section-head" },
-        h("div", null,
-          h("div", { className: "phase-kicker" }, section.label),
-          h("h2", { className: "section-title" }, section.title),
-          h("p", { className: "section-lead" }, section.subtitle),
-          h("div", { className: "topic-row" }, (section.focus || []).map(pill))
-        ),
-        h("div", { className: "phase-progress" },
-          h("strong", null, progress.percent + "%"),
-          h("span", null, progress.done + " of " + progress.total + " videos"),
-          h("div", { className: "progress-bar" }, h("div", { style: { width: progress.percent + "%" } }))
-        )
-      ),
-      (section.modules || []).map((module) => h(ModuleVideoBlock, {
-        module,
-        completed,
-        toggleCompleted,
-        playing,
-        setPlaying,
-        key: module.num
-      })),
-      (section.tracks || []).map((track) => h(TrackVideoBlock, {
-        track,
-        completed,
-        toggleCompleted,
-        playing,
-        setPlaying,
-        key: track.title
-      })),
-      section.title === "Deployment, Cloud And Scale" && h(PaidCourseReference),
-      section.title === "FDE Customer Delivery And Enterprise Product" && h(FdePaidReferences),
-      section.title === "FDE Customer Delivery And Enterprise Product" && h(InterviewPrepPdf)
     );
   }
 
@@ -801,7 +991,10 @@
 
   function ModuleVideoBlock({ module, completed, toggleCompleted, playing, setPlaying }) {
     const desktop = module.desktop || {};
-    return h("article", { className: "video-topic-block" },
+    const displayVideos = module.videos || [];
+    const displayProjects = module.projectVideos || [];
+
+    return h("article", { className: "video-topic-block", id: "topic-block-" + module.num },
       h("div", { className: "video-topic-head" },
         h("div", null,
           h("div", { className: "module-number" }, "Topic " + module.num),
@@ -810,9 +1003,9 @@
         ),
         h("div", { className: "topic-row" }, ((desktop.techs || []).slice(0, 6)).map(pill))
       ),
-      h("h4", null, "Lessons"),
-      h("div", { className: "lesson-list compact-lessons" },
-        (module.videos || []).map((video) => h(Lesson, {
+      displayVideos.length > 0 && h("h4", { className: "subheading tutorial-heading", style: { margin: "20px 0 12px 0", fontSize: "1.15rem", color: "#60a5fa", display: "flex", alignItems: "center", gap: "8px" } }, "📚 Full Course Tutorial"),
+      displayVideos.length > 0 && h("div", { className: "lesson-list compact-lessons" },
+        displayVideos.map((video) => h(Lesson, {
           key: video.id || video.url,
           video,
           itemKey: itemKey("module-" + module.num + "-lesson", video),
@@ -822,9 +1015,9 @@
           setPlaying
         }))
       ),
-      h("h4", null, "Project Builds"),
-      h("div", { className: "lesson-list compact-lessons" },
-        (module.projectVideos || []).map((video) => h(ProjectVideo, {
+      displayProjects.length > 0 && h("h4", { className: "subheading project-heading", style: { margin: "28px 0 12px 0", fontSize: "1.15rem", color: "#34d399", display: "flex", alignItems: "center", gap: "8px" } }, "🛠️ Live Project Building (Apply This Skill)"),
+      displayProjects.length > 0 && h("div", { className: "lesson-list compact-lessons" },
+        displayProjects.map((video) => h(ProjectVideo, {
           key: video.url,
           video,
           itemKey: itemKey("module-" + module.num + "-project", video),
@@ -833,35 +1026,7 @@
           isPlaying: playing === youtubeId(video.url),
           setPlaying
         }))
-      ),
-      (module.supplementalTracks || []).map((track) => h(TrackVideoBlock, {
-        key: track.id,
-        track: {
-          title: "Additional: " + track.title,
-          subtitle: "Optional extra videos for this topic.",
-          coverage: track.techs || [],
-          videos: (track.videos || []).map((video) => ({
-            title: video.step + ". " + video.title,
-            creator: video.creator,
-            url: video.url,
-            duration: video.duration,
-            why: video.whyBest,
-            cost: video.difficulty
-          })),
-          keyPrefix: "module-" + module.num + "-track-" + track.id
-        },
-        completed,
-        toggleCompleted,
-        playing,
-        setPlaying
-      })),
-      module.num === 12 && data.claudeFdeTrack && h(TrackVideoBlock, {
-        track: Object.assign({ keyPrefix: "module-12-claude-tooling" }, data.claudeFdeTrack),
-        completed,
-        toggleCompleted,
-        playing,
-        setPlaying
-      })
+      )
     );
   }
 
@@ -957,6 +1122,10 @@
     const previousModule = moduleByNum(module.num - 1);
     const nextModule = moduleByNum(module.num + 1);
     const phase = roadmapPhases.find((item) => item.modules.includes(module.num));
+
+    const displayVideos = module.videos || [];
+    const displayProjects = module.projectVideos || [];
+
     return h("main", { className: "page" },
       h("section", { className: "section detail-page" },
         h("a", { className: "back-link", href: "#/curriculum" }, "Back to curriculum"),
@@ -967,7 +1136,7 @@
             h("div", { className: "detail-meta" },
               phase && h("span", null, phase.title),
               h("span", null, module.time),
-              h("span", null, module.videos.length + " curated videos"),
+              h("span", null, displayVideos.length + " curated videos"),
               h("span", null, progress.done + "/" + progress.total + " completed")
             )
           ),
@@ -992,28 +1161,24 @@
                 h("span", null, nextModule ? "Then continue to Module " + nextModule.num + ": " + moduleTitle(nextModule) : "Then continue to FDE Readiness.")
               )
             ),
-            h("div", { className: "info-box quality-box" },
-              h("strong", null, "Video-only learning rule: "),
-              "watch the lessons below in order, then follow the project videos. The text on this page is only navigation and optional reference."
-            ),
-            h("h2", { className: "subheading" }, "YouTube Course Videos"),
-            h("div", { className: "lesson-list" },
-              module.videos.map((video) => h(Lesson, {
-                key: video.id,
+            displayVideos.length > 0 && h("h2", { className: "subheading" }, "🌟 Curated Masterclass Lesson"),
+            displayVideos.length > 0 && h("div", { className: "lesson-list" },
+              displayVideos.map((video) => h(Lesson, {
+                key: video.id || video.url,
                 video,
                 itemKey: itemKey("module-" + module.num + "-lesson", video),
                 completed,
                 toggleCompleted,
-                isPlaying: playing === video.id,
+                isPlaying: playing === (video.id || youtubeId(video.url)),
                 setPlaying
               }))
             ),
-            h("h2", { className: "subheading" }, "Project Walkthrough Videos"),
-            h("p", { className: "module-note" },
+            displayProjects.length > 0 && h("h2", { className: "subheading" }, "🚀 Hands-On Capstone Project Build"),
+            displayProjects.length > 0 && h("p", { className: "module-note" },
               "Follow these after the lessons. I kept these practical and local-friendly where possible, so you do not need paid servers just to learn the module."
             ),
-            h("div", { className: "lesson-list compact-lessons" },
-              (module.projectVideos || []).map((video) => h(ProjectVideo, {
+            displayProjects.length > 0 && h("div", { className: "lesson-list compact-lessons" },
+              displayProjects.map((video) => h(ProjectVideo, {
                 key: video.url,
                 video,
                 itemKey: itemKey("module-" + module.num + "-project", video),
@@ -1041,31 +1206,7 @@
                 ))
               )
             ),
-            (module.supplementalTracks || []).map((track) => h(SupplementalTrack, {
-              key: track.id,
-              module,
-              track,
-              completed,
-              toggleCompleted
-            })),
-            module.num === 12 && data.claudeFdeTrack && h("section", { className: "supplemental-track" },
-              h("h2", { className: "subheading" }, "Optional Track: Claude Code, Skills, MCP And Agent SDK"),
-              h("p", { className: "module-note" },
-                "This belongs here as AI engineering tooling after MCP and stateful agents. It is useful for delivery speed, code workflows, and tool integration, but it is not part of the core FDE path."
-              ),
-              h("div", { className: "topic-row" }, (data.claudeFdeTrack.coverage || []).map(pill)),
-              h("div", { className: "lesson-list compact-lessons" },
-                (data.claudeFdeTrack.videos || []).map((video) => h(ProjectVideo, {
-                  key: video.url,
-                  video: Object.assign({ cost: "Optional YouTube" }, video),
-                  itemKey: itemKey("module-12-claude-tooling", video),
-                  completed,
-                  toggleCompleted,
-                  isPlaying: playing === youtubeId(video.url),
-                  setPlaying
-                }))
-              )
-            ),
+
             h("details", { className: "optional-reference" },
               h("summary", null, "Optional reference after watching"),
               h("div", { className: "reference-grid" },
@@ -1117,13 +1258,14 @@
     const complete = completed.has(itemKey);
     const skipText = String(video.skip || "").trim();
     const hasUsefulSkip = skipText && !/^none\.?$/i.test(skipText);
+    const prefix = video.order || video.step || "";
     return h("div", { className: "lesson-card" + (complete ? " is-complete" : "") },
       h("button", { className: "thumb", onClick: () => setPlaying(isPlaying ? null : video.id) },
         h("img", { src: "https://img.youtube.com/vi/" + video.id + "/mqdefault.jpg", alt: "" }),
         h("span", { className: "play" }, "▶")
       ),
       h("div", null,
-        h("h3", null, video.order + ". " + video.title),
+        h("h3", null, prefix ? prefix + ". " + video.title : video.title),
         h("div", { className: "lesson-meta" }, video.creator + " | " + video.duration + " | " + video.difficulty),
         h("p", { className: "lesson-copy" }, video.why),
         hasUsefulSkip && h("div", { className: "skip" }, "Skip: " + skipText),
@@ -1147,13 +1289,14 @@
   function ProjectVideo({ video, itemKey, completed, toggleCompleted, isPlaying, setPlaying }) {
     const id = youtubeId(video.url);
     const complete = itemKey && completed && completed.has(itemKey);
+    const prefix = video.order || video.step || "";
     return h("div", { className: "project-video-card" + (complete ? " is-complete" : "") },
       id && h("button", { className: "thumb small-thumb", onClick: () => setPlaying(isPlaying ? null : id) },
         h("img", { src: "https://img.youtube.com/vi/" + id + "/mqdefault.jpg", alt: "" }),
         h("span", { className: "play" }, "▶")
       ),
       h("div", null,
-        h("h3", null, video.title),
+        h("h3", null, prefix ? prefix + ". " + video.title : video.title),
         h("div", { className: "lesson-meta" }, video.creator + " | " + video.duration + " | " + video.cost),
         h("p", { className: "lesson-copy" }, video.why)
       ),
@@ -1183,7 +1326,7 @@
         (track.videos || []).map((video) => h(ProjectVideo, {
           key: video.url,
           video: {
-            title: video.step + ". " + video.title,
+            title: (video.step ? video.step + ". " : "") + video.title,
             creator: video.creator,
             url: video.url,
             duration: video.duration,
@@ -1277,22 +1420,79 @@
     );
   }
 
-  function ProjectsPage() {
+  function ProjectsPage({ completed, toggleCompleted }) {
+    const [playing, setPlaying] = useState(null);
+    const [selectedMod, setSelectedMod] = useState("all");
+
+    const allProjects = useMemo(() => {
+      const list = [];
+      (data.modules || []).forEach((m) => {
+        const pvs = m.projectVideos || [];
+        pvs.forEach((v) => {
+          list.push({
+            ...v,
+            cost: v.cost || "Free YouTube",
+            creator: v.creator || v.author || v.channel || "Expert Creator",
+            modNum: m.num,
+            modTitle: m.name || m.title
+          });
+        });
+      });
+      return list;
+    }, []);
+
+    const modsWithProjects = useMemo(() => {
+      const set = new Set();
+      allProjects.forEach((p) => set.add(p.modNum));
+      return Array.from(set).sort((a, b) => a - b);
+    }, [allProjects]);
+
+    const displayProjects = selectedMod === "all" ? allProjects : allProjects.filter((p) => String(p.modNum) === String(selectedMod));
+
     return h("main", { className: "page" },
       h("section", { className: "section page-hero" },
-        h("div", { className: "eyebrow" }, "Portfolio Track"),
-        h("h1", null, "Production Portfolio Systems"),
+        h("div", { className: "eyebrow" }, "Portfolio & Hands-On Builds"),
+        h("h1", null, "Production Portfolio & Capstone Projects (53 Builds)"),
         h("p", { className: "section-lead" },
-          "Build one deeply, then use the rest as smaller implementations or architecture writeups. These are the artifacts that make the AI Engineer/FDE transition credible."
+          "Here are all 53 hands-on project builds, capstone implementations, and production code walkthroughs from across all 20 modules. Build these artifacts to make your transition into an FDE or AI SRE undeniable."
         )
       ),
       h("section", { className: "section" },
+        h("h2", { className: "section-title" }, "🏆 Architecture Capstone Blueprint Targets"),
+        h("p", { className: "section-lead" }, "Aim to build at least one of these 4 flagship enterprise architectures end-to-end for your GitHub portfolio:"),
         h("div", { className: "capstone-grid" },
-          data.capstones.map((project) => h("div", { className: "capstone", key: project.id },
+          (data.capstones || []).map((project) => h("div", { className: "capstone", key: project.id },
             h("h2", null, project.title),
             h("p", null, project.desc),
-            h("div", { className: "topic-row" }, project.techs.map(pill))
+            h("div", { className: "topic-row" }, (project.techs || []).map(pill))
           ))
+        )
+      ),
+      h("section", { className: "section" },
+        h("div", { className: "projects-header-row" },
+          h("h2", { className: "section-title" }, "🎬 All 53 Hands-On Video Code Builds"),
+          h("div", { className: "filter-buttons" },
+            h("button", {
+              className: "button " + (selectedMod === "all" ? "primary" : ""),
+              onClick: () => setSelectedMod("all")
+            }, "All Modules (" + allProjects.length + ")"),
+            modsWithProjects.map((num) => h("button", {
+              key: num,
+              className: "button " + (String(selectedMod) === String(num) ? "primary" : ""),
+              onClick: () => setSelectedMod(String(num))
+            }, "Mod " + num))
+          )
+        ),
+        h("div", { className: "lesson-list projects-list-grid" },
+          displayProjects.map((video, idx) => h(ProjectVideo, {
+            key: (video.url || idx) + "-" + video.modNum,
+            video: video,
+            itemKey: itemKey("proj-mod-" + video.modNum, video),
+            completed: completed,
+            toggleCompleted: toggleCompleted,
+            isPlaying: playing === youtubeId(video.url),
+            setPlaying: setPlaying
+          }))
         )
       )
     );

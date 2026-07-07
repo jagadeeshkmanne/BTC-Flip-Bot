@@ -2185,3 +2185,79 @@ button {
     padding-right: 8px;
   }
 }
+
+/* 1-Click Playlists Banner & Projects UI */
+.playlist-banner-section {
+  margin-bottom: 32px;
+}
+.playlist-banner-card {
+  background: linear-gradient(135deg, var(--soft-blue) 0%, var(--paper) 100%);
+  border: 2px solid var(--blue);
+  border-radius: var(--radius);
+  padding: 24px;
+  box-shadow: var(--shadow);
+}
+.playlist-banner-header h2 {
+  margin: 0 0 8px 0;
+  color: var(--blue);
+  font-size: 22px;
+}
+.playlist-banner-header p {
+  margin: 0 0 20px 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+.playlist-buttons-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.playlist-btn-main {
+  font-size: 16px !important;
+  padding: 14px 24px !important;
+  text-align: center;
+  font-weight: 700 !important;
+  box-shadow: 0 4px 12px rgba(36, 84, 214, 0.25);
+}
+.playlist-subgroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+}
+.playlist-label {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ink);
+  margin-right: 4px;
+}
+.playlist-banner-footer {
+  margin: 16px 0 0 0;
+  font-size: 13px;
+  color: var(--teal);
+}
+.projects-header-row {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.filter-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.filter-buttons .button {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+.projects-list-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
